@@ -105,6 +105,14 @@ class Boards(unittest.TestCase):
         c = cb.counters(m, rows, TODAY)
         self.assertEqual((c["requests"], c["overdue"], c["drafts_pending"], c["links_expiring_14d"]), (4, 1, 1, 1))
 
+    def test_banner_names_unavailable_sources_and_complete_run_has_none(self):
+        page = cb.render_board(self.model(), TODAY)
+        self.assertIn('<div role="status" class="diag">Some information could not be loaded: received documents. '
+                      'Counts that depend on it show as unknown.</div>', page)  # build() writes no received-items.json
+        put(self.project / "run-outputs" / RUN / "outcomes/received-items.json",
+            {"schema": "records-received-item-v1", "run_id": RUN, "items": []})
+        self.assertNotIn("could not be loaded", cb.render_board(self.model(), TODAY))
+
     def test_filters(self):
         rows = cb.board_rows(self.model(), TODAY)
         ids = lambda f: [r["request_id"] for r in rows if cb.keep(r, f)]

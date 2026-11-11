@@ -175,6 +175,8 @@ class Calendar(unittest.TestCase):
             self.assertTrue(got[key]["source"], key)
         self.assertFalse([k for k in got if k[2] == "R-3"], "unknown clock yields no entry")
         self.assertIn("no clock: 1 open requests", " ".join(notes))
+        self.assertIn('<div role="status" class="diag">1 requests have no usable date.</div>', html)
+        self.assertNotIn("could not be loaded", html)
         self.assertIn("no stated expiry for 1 release links", " ".join(notes))
         self.assertIn("follow-up drafting is off for this agency", " ".join(notes))
         self.assertRegex(html, r"<td>17<br>Link expiry")

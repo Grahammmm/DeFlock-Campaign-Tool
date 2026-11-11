@@ -15,8 +15,15 @@ from tests.records import test_console_calendar as cal
 NOW = datetime(2026, 11, 5, tzinfo=timezone.utc)
 
 
+def put_received(project):
+    """The received-items source the complete fixture reads; Home counts waiting requests only when it is present."""
+    put(project / "run-outputs" / RUN / "outcomes/received-items.json",
+        {"schema": "records-received-item-v1", "run_id": RUN, "items": []})
+
+
 def fixture(project):
     build(project)
+    put_received(project)
     path = project / "run-outputs" / RUN / "outcomes/timeline.json"
     doc = json.loads(path.read_text())
     for request, days in zip(doc["requests"], (None, 30, None, None)):
@@ -287,6 +294,43 @@ class Home(unittest.TestCase):
         self.assertTrue(all(r["overdue_days"] is None for r in home.decision_rows(model, NOW.date())))
 
 
+class UnknownCounts(unittest.TestCase):
+    """DFGL-13: a source that cannot be read is named in a banner and its counts print as unknown, never 0."""
+    setUp, model = Home.setUp, Home.model
+
+    def test_complete_fixture_has_no_banner_and_known_counts(self):
+        page = home.render_home(self.model(), '')
+        self.assertNotIn('Some information could not be loaded', page)
+        self.assertNotIn('unknown need your decision', page)
+        self.assertRegex(page, r'<p role="status">\d+ need your decision')
+        self.assertIn('waiting on agencies (', page)
+
+    def test_missing_received_items_banner_and_no_zero_waiting(self):
+        (self.project / "run-outputs" / RUN / "outcomes/received-items.json").unlink()
+        page = home.render_home(self.model(), '')
+        self.assertIn('<div role="status" class="diag">Some information could not be loaded: received documents. '
+                      'Counts that depend on it show as unknown.</div>', page)
+        self.assertIn('waiting on agencies: unknown', page)
+        self.assertNotRegex(page, r'\b0 waiting')
+        self.assertNotIn('No requests waiting on agencies', page)
+        self.assertNotRegex(page, r'\d+ waiting on agencies \(')
+        # a request list that is empty because the source is missing is "not known", not "none"
+        timeline = self.project / "run-outputs" / RUN / "outcomes/timeline.json"
+        put(timeline, json.loads(timeline.read_text()) | {"requests": []})
+        page = home.render_home(self.model(), '')
+        self.assertIn('Not known: received documents not loaded.', page)
+        self.assertNotIn('No requests waiting on agencies', page)
+
+    def test_unreadable_decision_source_makes_decision_count_unknown(self):
+        for source in ("queue", "public", "packets", "sends"):
+            model = self.model()
+            model[source] = {"state": "unavailable", "code": "synthetic_bad"}
+            page = home.render_home(model, '')
+            self.assertIn('unknown need your decision', page, source)
+            self.assertNotRegex(page, r'\b0 need your decision')
+            self.assertIn('Some information could not be loaded: ', page)
+
+
 class Week(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -370,6 +414,7 @@ class Waiting(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.project = Path(tmp.name)
         build(self.project)
+        put_received(self.project)
         self.path = self.project / 'run-outputs' / RUN / 'outcomes/timeline.json'
         self.doc = json.loads(self.path.read_text())
         self.template = self.doc['requests'][1]
