@@ -1061,7 +1061,7 @@ MODULE_FUNCTIONS = {
         'Journal._change', 'Journal.allocate', 'PrivateDir.write', 'admit', 'build_board', 'entry',
         'postrun_entry'
     ),
-    'records.e2e_proof': ('replay', 'replay.console', 'replay.telegram_text',),  # replay writes only under a new --out proof dir (OUT_EXISTS refuses reuse); sends and publishes nothing
+    'records.e2e_proof': ('replay', 'replay.console', 'replay.telegram_text', '_apply_seed',),  # replay writes only under a new --out proof dir (OUT_EXISTS refuses reuse); _apply_seed writes only the replay sandbox ledger and its fact-sheets file (SEED_NOT_SANDBOX refuses any other project); sends and publishes nothing
     'records.export_clearance': ('clearance',),
     'records.first_request': ('main',),  # prints a draft to stdout; --queue appends only via the approval journal
     'records.extract.ocr': (
