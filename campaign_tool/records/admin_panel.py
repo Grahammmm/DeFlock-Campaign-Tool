@@ -956,7 +956,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if link is not None:
             try:
                 unmatched.append_link(project, rows[ident]["item_id"], link[0], link[1], rows[ident]["approved_by"])
-            except (ValueError, OSError):
+            except ValueError as error:
+                return self._fail(409 if str(error) == "message_link_conflict" else 503)
+            except OSError:
                 return self._fail(503)
         if hook and self.server.mail_drafts_config and rows[ident].get("kind") not in draft_templates.NON_MAIL_KINDS:
             _place_after_approve(project, self.server.mail_drafts_config, ident)

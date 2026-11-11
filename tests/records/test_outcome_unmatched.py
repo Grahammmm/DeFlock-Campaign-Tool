@@ -113,10 +113,32 @@ class UnmatchedTests(unittest.TestCase):
                          (self.sha, "req-b", "caltrans", self.signer.principal))
         self.assertEqual(self.post(http, server, "approve", ident, signature=sig, choice="req-b"), 303)  # replay
         self.assertEqual(len(links.read_text().splitlines()), 1)
+        before = self.tree()
+        self.assertEqual(self.post(http, server, "approve", ident, signature=sig, choice="req-a"), 409)
+        self.assertEqual(self.tree(), before)
+        self.assertEqual(links.read_text().splitlines(), [line])
+        self.assertEqual(self.row()["status"], "approved")
+        self.assertEqual(unmatched.read_links(self.project), ({self.sha: ("caltrans", "req-b")}, 0))
         self.assertEqual(self.run_outputs("next-run")[0], 0)
         item = json.loads((self.outcomes("next-run") / "received-items.json").read_text())["items"][0]
         self.assertEqual((item["original_sha256"], item["agency_id"], item["request_id"]), (self.sha, "caltrans", "req-b"))
         self.assertEqual(json.loads((self.outcomes("next-run") / "unmatched-messages.json").read_text())["messages"], [])
+
+    def test_approval_retry_writes_a_link_only_when_missing(self):
+        self.run_outputs()
+        server, http = self.server()
+        ident = self.row()["id"]
+        sig = self.signer.sign(aq.approval_payload(self.project, ident))
+        with patch.object(unmatched, "append_link", side_effect=OSError("synthetic write failure")):
+            self.assertEqual(self.post(http, server, "approve", ident, signature=sig, choice="req-b"), 503)
+        self.assertEqual(self.row()["status"], "approved")
+        links = self.project / "message-links.jsonl"
+        self.assertFalse(links.exists())
+        self.assertEqual(self.post(http, server, "approve", ident, signature=sig, choice="req-b"), 303)
+        (line,) = links.read_text().splitlines()
+        self.assertEqual(json.loads(line)["request_id"], "req-b")
+        self.assertEqual(self.post(http, server, "approve", ident, signature=sig, choice="req-b"), 303)
+        self.assertEqual(links.read_text().splitlines(), [line])
 
     def test_choice_outside_the_candidates_is_400_and_changes_nothing(self):
         self.run_outputs()

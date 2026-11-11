@@ -65,11 +65,13 @@ def read_links(project):
 
 
 def append_link(project, message_sha256, agency_id, request_id, actor):
-    """Append one link line (0600, append-only). A repeat of the current link is a no-op."""
+    """Append one link line (0600). The same choice is a no-op; a different existing choice is refused."""
     _need(HEX64.fullmatch(message_sha256 or "") and ID.fullmatch(agency_id or "") and ID.fullmatch(request_id or ""),
           "message_link_invalid")
     path = Path(os.path.abspath(project)) / LINKS_NAME
-    if read_links(project)[0].get(message_sha256) == (agency_id, request_id):
+    current = read_links(project)[0].get(message_sha256)
+    _need(current is None or current == (agency_id, request_id), "message_link_conflict")
+    if current is not None:
         return False
     data = (_canon({"schema": LINK_SCHEMA, "message_sha256": message_sha256, "request_id": request_id,
                     "agency_id": agency_id, "actor": str(actor)[:80],
