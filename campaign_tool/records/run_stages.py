@@ -86,6 +86,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 STAGES = ("sync", "delta", "adoption", "portal", "extract", "digest_gates", "outputs")
 GATED = ("catalog", "detect", "review", "compare", "privacy")
@@ -109,10 +110,23 @@ def result(status, counts, error_code=None, **extra):
     out = {"stage_result_version": 1, "status": status,
            "counts": {key: int(counts.get(key, 0)) for key in ("input", "output", "failed", "skipped")},
            "error_code": error_code}
-    for key in ("new_data", "review_required", "needs_g", "outcomes", "arrival_summary"):
+    for key in ("new_data", "review_required", "needs_g", "outcomes", "arrival_summary", "internal"):
         if extra.get(key):
             out[key] = extra[key]
     return out
+
+
+def internal_error(error):
+    """Exception class and innermost campaign_tool function only: no message, argument, path or line."""
+    root, where = Path(__file__).resolve().parent.parent, None
+    for frame, _ in traceback.walk_tb(error.__traceback__):
+        try:
+            rel = Path(frame.f_code.co_filename).resolve().relative_to(root)
+        except ValueError:
+            continue
+        where = ".".join(("campaign_tool", *rel.with_suffix("").parts, frame.f_code.co_name))
+    return {"type": re.sub(r"\W", "_", type(error).__name__)[:64],
+            "where": re.sub(r"[^\w.<>]", "_", where or "unknown")[:160]}
 
 
 def needs(*items):
@@ -1233,8 +1247,8 @@ def main(argv=None):
             line = arrival_projection(args, line)
     except StageTimeout:
         line, code = result("fail", {"failed": 1}, "STAGE_CONTAINER_TIMEOUT"), 1
-    except Exception:  # noqa: BLE001 - never print exception text (may hold private values)
-        line, code = result("fail", {"failed": 1}, "STAGE_INTERNAL_ERROR"), 1
+    except Exception as error:  # noqa: BLE001 - class and function only, never exception text
+        line, code = result("fail", {"failed": 1}, "STAGE_INTERNAL_ERROR", internal=internal_error(error)), 1
     finally:
         signal.alarm(0)
     print(json.dumps(line, sort_keys=True))
