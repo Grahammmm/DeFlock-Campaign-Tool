@@ -5,11 +5,13 @@ import io
 import json
 import signal
 import sys
+import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from campaign_tool.records import native_extract, ocr_stage, run, run_orchestrator, run_stages
+from campaign_tool.records import native_extract, ocr_stage, run, run_orchestrator, run_report, run_stages
 
 SCHEMA = run_orchestrator.load_stage_result_schema()
 PRIVATE = "PRIVATE-VALUE-1"
@@ -48,7 +50,7 @@ class InternalErrorNamesClassAndFunction(unittest.TestCase):
             code, raw = run_main(ocr_stage.main, ["--queue", "/q", "--source-root", "/s", "--out", "/o"])
         self.assertNamed(code, raw, "campaign_tool.records.ocr_stage.run")
 
-    def test_orchestrator_keeps_internal_on_the_stage_entry(self):
+    def test_stage_result_schema_keeps_internal(self):
         line = run_stages.result("fail", {"failed": 1}, "STAGE_INTERNAL_ERROR",
                                  internal={"type": "KeyError", "where": "campaign_tool.records.x.f"})
         parsed = run_orchestrator.parse_stage_result(json.dumps(line).encode(), SCHEMA)
@@ -58,6 +60,67 @@ class InternalErrorNamesClassAndFunction(unittest.TestCase):
         line = run_stages.result("fail", {"failed": 1}, "STAGE_INTERNAL_ERROR",
                                  internal={"type": "KeyError", "where": f"/p/{PRIVATE} x"})
         self.assertIsNone(run_orchestrator.parse_stage_result(json.dumps(line).encode(), SCHEMA))
+
+
+class RunReportCarriesInternal(unittest.TestCase):
+    """The orchestrated run report (built by execute/build_report) keeps {type, where} for STAGE_INTERNAL_ERROR."""
+
+    INTERNAL = {"type": "KeyError", "where": "campaign_tool.records.run_stages.stage_extract"}
+
+    def report_for(self, code):
+        stages = [{"name": name, "argv": [sys.executable, "-B", "-m", "campaign_tool.records.run_orchestrator",
+                                          "stub-stage", "--stage", name, "--fixture", "/unused"],
+                   "timeout_seconds": 60, "on_fail": "stop"} for name in run_orchestrator.WORK_STAGES]
+        config = run_orchestrator.validate_target_config(
+            {"target_config_version": 1, "target": "TEST", "mode": "test", "stages": stages})
+        counts = {"input": 0, "output": 0, "failed": 1, "skipped": 0}
+
+        def fake_run_stage(argv, timeout, schema, work_dir, env):
+            if "extract" in argv:
+                line = run_stages.result("fail", counts, code, internal=dict(self.INTERNAL))
+                parsed = run_orchestrator.parse_stage_result(json.dumps(line).encode(), schema)
+                self.assertIsNotNone(parsed, "schema-valid stage line")
+                return "fail", counts, code, parsed, 1.0
+            ok = run_stages.result("ok", {})
+            return "ok", dict(ok["counts"]), None, ok, 1.0
+
+        with tempfile.TemporaryDirectory() as work, \
+                mock.patch.object(run_orchestrator, "run_stage", side_effect=fake_run_stage):
+            report_path = Path(work) / "report.json"
+            exit_code = run_orchestrator.execute(config, "run_20261019T120000Z_0123abcd", "test",
+                                                 run_orchestrator.utc_now(), time.time() + 600,
+                                                 report_path, work)
+            raw = report_path.read_text(encoding="utf-8")
+        report = json.loads(raw)
+        run_report.validate_run_report(report)
+        self.assertNotEqual(exit_code, 0)
+        return raw, report
+
+    @staticmethod
+    def extract_of(report):
+        return next(stage for stage in report["stages"] if stage["name"] == "extract")
+
+    def test_internal_error_names_class_and_function_in_the_run_report(self):
+        raw, report = self.report_for("STAGE_INTERNAL_ERROR")
+        extract = self.extract_of(report)
+        self.assertEqual(extract["error_code"], "STAGE_INTERNAL_ERROR")
+        self.assertEqual(extract["internal"], self.INTERNAL)
+        self.assertNotIn(PRIVATE, raw)
+
+    def test_other_codes_do_not_copy_internal_to_the_run_report(self):
+        _, report = self.report_for("EXTRACT_IMPORT_FAILED")
+        extract = self.extract_of(report)
+        self.assertEqual(extract["error_code"], "EXTRACT_IMPORT_FAILED")
+        self.assertNotIn("internal", extract)
+
+    def test_run_report_schema_rejects_free_text_in_internal(self):
+        _, report = self.report_for("STAGE_INTERNAL_ERROR")
+        for bad in ({"type": "KeyError", "where": f"/p/{PRIVATE} x"},
+                    {"type": "KeyError", "where": "f", "message": PRIVATE},
+                    {"type": "Key Error: x", "where": "f"}):
+            self.extract_of(report)["internal"] = bad
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                run_report.validate_run_report(report)
 
 
 class ExtractFailingConditionsAreCoded(unittest.TestCase):
