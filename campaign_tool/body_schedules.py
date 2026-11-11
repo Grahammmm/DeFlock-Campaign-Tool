@@ -121,6 +121,8 @@ def _read_document(path):
         return json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ContentError(f"{FILE}: not valid UTF-8 JSON ({exc})") from None
+    except RecursionError:  # RF1255-2: byte-admitted but decoder-recursion-exhausting nesting is a refusal, not a crash
+        raise ContentError(f"{FILE}: JSON nesting is too deep") from None
 
 
 def read_body_schedules(root, *, today=None):
