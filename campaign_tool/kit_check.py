@@ -93,6 +93,12 @@ def _unique(items):
     return list(dict.fromkeys(items))
 
 
+def _absent_from(items, other):
+    """``items`` in order that are not in ``other``; one membership index of ``other`` per call."""
+    members = set(other)
+    return [x for x in items if x not in members]
+
+
 def _status(lines):
     """Law-status line groups of one draft, visiting each physical line at most once.
 
@@ -150,13 +156,13 @@ def _suggested_differs(root, agency_id, primary):
         return None
     mine, fresh = _summary(primary), _summary(suggested)
     return {"path": path,
-            "scopes_added": [x for x in fresh["scopes"] if x not in mine["scopes"]],
-            "scopes_removed": [x for x in mine["scopes"] if x not in fresh["scopes"]],
+            "scopes_added": _absent_from(fresh["scopes"], mine["scopes"]),
+            "scopes_removed": _absent_from(mine["scopes"], fresh["scopes"]),
             "date_range_differs": mine["date"] != fresh["date"],
             "fee_cap_differs": mine["fee"] != fresh["fee"],
             "law_package_status_differs": mine["status"] != fresh["status"],
-            "rule_citations_added": [x for x in fresh["citations"] if x not in mine["citations"]],
-            "rule_citations_removed": [x for x in mine["citations"] if x not in fresh["citations"]],
+            "rule_citations_added": _absent_from(fresh["citations"], mine["citations"]),
+            "rule_citations_removed": _absent_from(mine["citations"], fresh["citations"]),
             "compare_command": "diff -u -- " + shlex.quote(f"kit/requests/{agency_id}.md") + " " + shlex.quote(path)}
 
 
