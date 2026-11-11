@@ -18,7 +18,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urldefrag, urljoin, urlsplit
 
-from . import agency_actions, markdown_lite
+from . import agency_actions, body_schedules, markdown_lite
 from .content import MAX_JSON_BYTES, ContentError, _read_json, load_content, load_glossary
 
 USER_AGENT = "DeFlock-Campaign-Tool/link-check"
@@ -135,13 +135,22 @@ def _file_names(content_dir, folder, expected, *, stem_ids=False):
         raise refusal from None
 
 
-def _stored_schedule_positions(path):
-    """``{body: stored index}`` of body-schedules.json (the loader returns rows sorted by body)."""
-    try:
-        rows = json.loads(Path(path).read_text(encoding="utf-8")).get("schedules") or []
-        return {row["body"]: number for number, row in enumerate(rows) if isinstance(row, dict) and "body" in row}
-    except (OSError, ValueError, AttributeError, TypeError, KeyError):
+def _stored_schedule_positions(content_dir, schedules, today):
+    """``{body: stored index}`` of body-schedules.json (the loader returns rows sorted by body).
+
+    Nothing is read for an empty ``schedules``. Otherwise the file is re-read through the bounded ``_read_metadata``
+    and must validate to exactly the loaded rows; anything else is refused with one content-free message."""
+    if not schedules:
         return {}
+    try:
+        if content_dir.is_symlink() or not content_dir.is_dir():
+            raise ValueError("unsafe folder")
+        document = _read_metadata(content_dir, "body-schedules.json")
+        if body_schedules.load_body_schedules(document, today=today) != schedules:
+            raise ValueError("differs from the loaded schedules")
+        return {row["body"]: number for number, row in enumerate(document["schedules"])}
+    except (OSError, ValueError, RecursionError, TypeError, KeyError):
+        raise LinkCheckError("content/body-schedules.json: cannot resolve stored citation locations") from None
 
 
 def _read_json_quiet(path):
@@ -308,11 +317,9 @@ def collect_links(root, *, today=None):
 
     for index, row in enumerate(model.get("statements") or []):  # stored order; the reader refuses rather than skips
         cite(row.get("source_url"), f"content/statements.json[{index}].source_url")
-    stored = _stored_schedule_positions(content_dir / "body-schedules.json")
+    stored = _stored_schedule_positions(content_dir, model.get("body_schedules") or [], today)
     for schedule in model.get("body_schedules") or []:  # the loader sorts by body; the locator is the stored index
-        position = stored.get(schedule.get("body"))
-        where = f"schedules[{position}]" if position is not None else f"schedules[body {schedule.get('body')}]"
-        cite(schedule.get("source_url"), f"content/body-schedules.json:{where}.source_url")
+        cite(schedule.get("source_url"), f"content/body-schedules.json:schedules[{stored[schedule['body']]}].source_url")
     for index, event in enumerate(model.get("events") or []):  # file order; the loader refuses rather than skips
         prose(event.get("description_md"), f"content/events.json[{index}].description_md")
         cite(event.get("url"), f"content/events.json[{index}].url")
