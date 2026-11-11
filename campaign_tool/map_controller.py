@@ -1,6 +1,8 @@
 """Build the shared map controller from trusted campaign settings and a UI hook."""
 import json
+import os
 import re
+import stat
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -133,10 +135,27 @@ def _refuse(name):
     raise ValueError("non-finite number")
 
 
+def _open_regular(path):
+    """Open one nonblocking descriptor, require it be a regular file, and hand it to a stream.
+
+    A FIFO without a writer must not block; the admitted descriptor is the only one ever read."""
+    flag = getattr(os, "O_NONBLOCK", None)
+    if flag is None:
+        raise ValueError("nonblocking open unavailable")
+    fd = os.open(path, os.O_RDONLY | flag)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def check(path):
     """Print each config problem (never a value) then problems=N; exit 0 none, 1 problems, 2 unreadable."""
     try:
-        with open(path, "rb") as handle:
+        with _open_regular(path) as handle:
             raw = handle.read(MAX_BYTES + 1)
         config = json.loads(raw.decode("utf-8"), parse_constant=_refuse) if len(raw) <= MAX_BYTES else None
         if not isinstance(config, dict):
