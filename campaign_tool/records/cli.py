@@ -50,6 +50,8 @@ COMMANDS = {
     "calendar": ("console_calendar", "main"),
     "documents": ("console_documents", "main"),
     "schedule": ("schedule", "schedule_main"),
+    "backup": ("records_backup", "backup_main"),
+    "backup-verify": ("records_backup", "verify_main"),
 }
 
 

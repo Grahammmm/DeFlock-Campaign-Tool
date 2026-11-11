@@ -47,6 +47,7 @@ class Store:
 class Profile:
     roots: tuple
     stores: tuple
+    directories: tuple = ()  # declared structural (possibly empty) directories; any other directory is unknown
 
 
 @dataclass(frozen=True)
@@ -205,6 +206,10 @@ def _profile(profile):
     for p in sources:
         r = next(r for r in roots if _inside(p, r))
         expected_dirs.update(str(q) for q in p.parents if _inside(q, r))
+    require(type(profile.directories) is tuple and len(profile.directories) <= MAX_ENTRIES * 4, "declared_directories_invalid")
+    for d in map(_absolute, profile.directories):
+        require(sum(_inside(d, r) for r in roots) == 1 and d not in roots, "store_outside_scope")
+        expected_dirs.update(str(q) for q in (d, *d.parents) if any(_inside(q, r) for r in roots))
     require(set(inventories) == expected | expected_dirs, "unknown_or_missing_scope_store")
     require(all(inventories[str(p)][0] == "file" for p in sources), "store_must_be_regular_file")
     return roots, inventories
