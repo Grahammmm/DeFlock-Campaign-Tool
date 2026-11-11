@@ -108,15 +108,22 @@ def read_atlas_csv(path):
         raise AtlasError("Atlas CSV: file is empty or has no header row")
     header = rows[0][1]
     known = REQUIRED_HEADERS + VENDOR_HEADERS
-    for name in dict.fromkeys(header):
-        if header.count(name) > 1:
-            raise AtlasError("Atlas CSV: duplicate column: " + (name if name in known else "(an extra column)"))
-    if missing := [name for name in REQUIRED_HEADERS if name not in header]:
+    position, repeated = {}, []
+    for place, name in enumerate(header):  # one pass: first position per exact name, in first-occurrence order
+        if name in position:
+            repeated.append(name)
+        else:
+            position[name] = place
+    if repeated:
+        repeats = set(repeated)
+        name = next(name for name in position if name in repeats)  # earliest first occurrence among duplicates
+        raise AtlasError("Atlas CSV: duplicate column: " + (name if name in known else "(an extra column)"))
+    if missing := [name for name in REQUIRED_HEADERS if name not in position]:
         raise AtlasError("Atlas CSV: missing required column: " + ", ".join(missing))
-    vendor_columns = [name for name in VENDOR_HEADERS if name in header]
+    vendor_columns = [name for name in VENDOR_HEADERS if name in position]
     if len(vendor_columns) > 1:
         raise AtlasError("Atlas CSV: use one vendor column: Company or Vendor")
-    index = {name: header.index(name) for name in REQUIRED_HEADERS + tuple(vendor_columns)}
+    index = {name: position[name] for name in REQUIRED_HEADERS + tuple(vendor_columns)}
     result = []
     for line, cells in rows[1:]:
         if len(cells) != len(header):
