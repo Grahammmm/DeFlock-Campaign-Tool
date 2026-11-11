@@ -28,7 +28,7 @@ URL = "https://transparency.flocksafety.com/cedar-police"
 CHECKED = "2026-10-31"
 FIRST = "name,state,kind\nCedar Hills PD,CA,local\nReno Test PD,NV,local\nFictional Federal Office,US,federal\n"
 SECOND = "\ufeffname,state,kind\nZürich Test PD,NV,local\nAlpha Test PD,CA,state\n"
-SECRET = "sk-synthetic-canary-0123"
+SECRET = "sk-synthetic-canary-0123"  # pragma: allowlist secret
 MESSAGE = ("content/agencies.json: the new sharing data was written, but content/ could not be flushed to disk; "
            "crash durability is unconfirmed. Inspect the file before retrying.")
 
