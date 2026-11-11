@@ -321,6 +321,9 @@ def _ago(days):
 
 def render_board(model, today, which="all"):
     out = _head("Board: every request, every agency", model)
+    missing = console_layout.plain(k for k, s in sources(model).items() if s["state"] != "ok")
+    if missing:
+        out.insert(1, console_layout.sources_banner(missing))
     if model["timeline"]["state"] != "ok":
         return "\n".join(out + ["<p>No timeline for this run, so no requests can be listed.</p></main></body></html>"]) + "\n"
     rows = board_rows(model, today)

@@ -19,6 +19,25 @@ textarea,input[type=text]{width:100%;font:inherit}button{min-height:44px;padding
 .draft{border:1px solid #aaa;padding:.75rem;margin:.75rem 0}:focus-visible{outline:3px solid #804000}
 """
 END = "</main></body></html>"
+PLAIN = {"timeline": "the request timeline", "queue": "the approval queue", "public": "public updates",
+         "packets": "update packets", "sends": "sent-mail results", "calendar": "the calendar",
+         "waiting": "waiting on agencies", "received": "received documents", "links": "release links",
+         "followup": "the follow-up register", "tiers": "the response reading"}
+
+
+def plain(keys):
+    """Plain-English names for source keys, first seen first, without repeats."""
+    return list(dict.fromkeys(PLAIN.get(key, key) for key in keys))
+
+
+def sources_banner(unavailable, notes=()):
+    """Top-of-page notice naming each source that could not be loaded; "" when nothing is missing."""
+    text = []
+    if unavailable:
+        text.append("Some information could not be loaded: %s. Counts that depend on it show as unknown."
+                    % ", ".join(unavailable))
+    text += list(notes)
+    return '<div role="status" class="diag">%s</div>' % esc(" ".join(text)) if text else ""
 
 
 def nav(active=None):
