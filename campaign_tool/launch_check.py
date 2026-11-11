@@ -126,7 +126,13 @@ def launch_checks(root, contact_max_age_days=365, today=None):
             add("links", "fail", "Temporary build could not be checked", "Fix the temporary build and recheck links")
         finally:
             if scratch is not None:
-                shutil.rmtree(scratch)
+                # Finalization seam: the handlers above cannot see this OSError, so it needs its own fixed,
+                # value-free refusal (no path, name or errno text); leftover temporary files are possible.
+                try:
+                    shutil.rmtree(scratch)
+                except OSError:
+                    raise ValueError("Temporary launch rehearsal could not be removed (filesystem error); "
+                                     "temporary files may remain") from None
     try:
         stale = stale_contacts(root, contact_max_age_days, today)
         path = root / "kit" / "agencies.json"
