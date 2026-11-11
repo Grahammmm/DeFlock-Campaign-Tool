@@ -3600,9 +3600,9 @@ def _privacy_gate(model, cfg=None):
                 raise ContentError(note)
 
 
-def _plan_site(root, today=None, notes=None):
+def _plan_site(root, today=None, notes=None, *, require_linked_assets=False, private_counts=True):
     """Render every page and check every copy without writing: ``(files, copies)``, or None without content/."""
-    planned = _plan(root, today, notes)
+    planned = _plan(root, today, notes, require_linked_assets=require_linked_assets, private_counts=private_counts)
     return None if planned is None else planned[:2]
 
 
@@ -3620,7 +3620,7 @@ def _render_catalogue(site, payloads):
     return site.data_html(records)["html"], datapackage_json(records, site.cfg["name"])
 
 
-def _plan(root, today=None, notes=None):
+def _plan(root, today=None, notes=None, *, require_linked_assets=False, private_counts=True):
     """``(files, copies, site)`` as ``_plan_site`` plus the Site that rendered them, or None without content/."""
     from .cli import read_config
     root = Path(root)
@@ -3633,7 +3633,7 @@ def _plan(root, today=None, notes=None):
     _privacy_gate(model, cfg)
     day = today or date.today()
     counts = None
-    if model["site"].get("corrections", {}).get("show_request_counts"):  # DF1103-14: the only place the private log is opened
+    if private_counts and model["site"].get("corrections", {}).get("show_request_counts"):  # DF1103-14: the only place the private log is opened
         from .correction_requests import quarterly_counts
         counts = quarterly_counts(root, day)
     site = Site(root, cfg, model, today=day, correction_counts=counts)
@@ -3766,18 +3766,32 @@ def _plan(root, today=None, notes=None):
         if not files["_redirects"]:  # an empty list writes no file
             del files["_redirects"]
     site.check_privacy([*files, *(Path(relative).as_posix() for _, relative, _ in plan)], files)  # before anything is written
+    if require_linked_assets or isinstance(notes, list):  # DF0237-08: from the final planned pages and copies, before any write
+        from .public_asset_links import unlinked_asset_paths, unlinked_lines
+        site_cfg = model["site"]
+        declared = [site_cfg.get("brand", {}).get(key) for key in ("logo", "favicon")] + [(site_cfg.get("share_image") or {}).get("path")]
+        targets = [line.split()[1] for line in files.get("_redirects", "").splitlines() if len(line.split()) >= 2]
+        lines = unlinked_lines(unlinked_asset_paths(
+            files, [relative for _, relative in assets], base_url=site.base or None,
+            public_urls=[row["public_url"] for row in model["sources"] if row.get("public_url")],
+            declared_assets=[path for path in declared if path], redirect_targets=targets), site_cfg.get("unlinked_assets_ok", ()))
+        if lines and require_linked_assets:
+            raise ContentError("\n".join(lines))
+        if isinstance(notes, list):
+            notes.extend(lines)
     if isinstance(notes, list):
         notes.extend(site.camera_notes())
     return files, plan, site
 
 
-def build_site(root, today=None, notes=None, bundle_notes=None):
+def build_site(root, today=None, notes=None, bundle_notes=None, *, require_linked_assets=False):
     """Build ``<root>/public`` from ``<root>/content``; returns the list of written paths.
 
     ``today`` (a ``datetime.date``, default the build date) splits meetings into
     upcoming (on or after it) and past. ``notes``, when a list, receives
     boundary names that match no city agency and boundary feature problems.
     ``bundle_notes``, when a list, receives the DF0022-11 ``sources.zip skipped: ...`` line.
+    ``require_linked_assets`` (DF0237-08): refuse, before any write, while an unacknowledged public asset is unlinked.
 
     Falls back to the neutral starter when ``content/`` does not exist.
     Raises ``ContentError``/``ValueError`` and writes nothing when content is
@@ -3786,7 +3800,7 @@ def build_site(root, today=None, notes=None, bundle_notes=None):
     from .cli import read_config
     root = Path(root)
     public = root / "public"
-    planned = _plan(root, today, notes)
+    planned = _plan(root, today, notes, require_linked_assets=require_linked_assets)
     if planned is None:
         return build_starter(read_config(root), public)
     files, plan, site = planned

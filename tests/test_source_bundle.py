@@ -276,6 +276,9 @@ class CheckTests(Fixture):
         self.assertEqual(run_build(self.root, check=True), "")
         self.add_sources(entry(9, "https://example.invalid/x.pdf"), replace=True)  # old archive now expected absent
         refused()
+        site = self.content / "site.json"  # DF0237-08: the two PDFs lost their source link; acknowledge them so --check isolates the bundle
+        site.write_text(json.dumps({**json.loads(site.read_text(encoding="utf-8")), "unlinked_assets_ok": ["docs/a.pdf", "docs/b.pdf"]}),
+                        encoding="utf-8")
         self.assertTrue(archive.exists())
         self.assertEqual(run_build(self.root).count(NOTE_EMPTY), 1)  # the ordinary build drops the stale archive
         self.assertFalse(archive.exists())

@@ -554,7 +554,7 @@ def build(root, check=False, budget=None, weights_out=None, weights_baseline=Non
         _, expected = planned_source_bundle(root)
         check_source_bundle(public, expected)
     notes, bundle_notes = [], []
-    written = build_site(root, notes=notes, bundle_notes=bundle_notes)
+    written = build_site(root, notes=notes, bundle_notes=bundle_notes, require_linked_assets=check)
     for note in notes:  # informational: the exit code is unchanged
         print(f"note: {note}", file=sys.stderr)
     for note in bundle_notes:  # DF0022-11: the sources.zip skip line, on stderr

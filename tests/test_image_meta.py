@@ -215,7 +215,14 @@ class ContentCheckTests(Campaign):
         self.assertEqual(self.tree(), before)
 
     def test_clean_campaign_has_no_problem(self):
+        # DF0237-08: a clean but unlinked image is named; an acknowledgement in site.json clears the line
         self.photo.write_bytes(jpeg())
+        self.assertEqual(content_problems(self.root),
+                         ["public-assets/photos/council.jpg: published but not linked from any page"])
+        site = self.root / "content" / "site.json"
+        document = json.loads(site.read_text(encoding="utf-8"))
+        document["unlinked_assets_ok"] = ["photos/council.jpg"]
+        site.write_text(json.dumps(document), encoding="utf-8")
         self.assertEqual(content_problems(self.root), [])
 
 
