@@ -134,6 +134,10 @@ def _quote_file(path):
             problem = "--quote-file: changed while it was being read"
         elif opened.st_size > MAX_QUOTE_FILE:
             problem = "--quote-file: file too large for a quote of at most 400 characters"
+        elif (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (info.st_size, info.st_mtime_ns, info.st_ctime_ns):
+            # A filesystem may hand a recreated file the old inode number: device and inode alone cannot tell a
+            # substituted file from the one inspected, so the size and the change times must also be unchanged.
+            problem = "--quote-file: changed while it was being read"
         else:
             stream = os.fdopen(fd, "rb")
             fd = None  # the stream now owns the descriptor
