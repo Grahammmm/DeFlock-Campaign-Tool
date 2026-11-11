@@ -3,6 +3,7 @@ import json
 import os
 import re
 import secrets
+import stat
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -102,6 +103,19 @@ def _write_receipt(root, stamp, label, receipt):
     return f"private/imports/{name}"
 
 
+def _admit_private_root(root):
+    """Refuse an existing private/ that is not a real directory (links included).
+
+    Pre-existing type admission only; not a race-proof confinement guarantee.
+    """
+    try:
+        mode = os.lstat(root / "private").st_mode
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(mode):
+        raise ValueError("private/ must be a real directory, not a symlink or file; nothing was imported")
+
+
 def run(root, folder, label, now=None) -> dict:
     """Preserve local bytes; skip unsafe inputs and continue past per-file errors."""
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", label):
@@ -112,6 +126,7 @@ def run(root, folder, label, now=None) -> dict:
     # Path-component ancestry, both directions (equal roots included), before any write.
     if resolved.is_relative_to(root) or root.is_relative_to(resolved):
         raise ValueError("Import source and campaign directories must be disjoint; choose a sibling records folder")
+    _admit_private_root(root)
     try:
         top_fd = cli._open_root(folder)
     except OSError:
