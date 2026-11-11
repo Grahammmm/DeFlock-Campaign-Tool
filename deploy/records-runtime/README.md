@@ -473,6 +473,17 @@ calendar skips is not a late or missed run. A change takes effect only after the
 operator re-renders, re-installs the timer and runs `systemctl --user
 daemon-reload` and `restart records-run.timer` on the host.
 
+## Backup check (DFGL-12)
+
+Setting `BACKUP_DIR` (an absolute path, the backup directory as mounted in the container) in VALUES.json also renders
+`records-backup-check.service` and a daily `records-backup-check.timer` (`OnCalendar=*-*-* 06:10`, `Persistent=true`). Without
+it neither is rendered and the other units are unchanged. The unit runs `records backup-check --into BACKUP_DIR`: it verifies
+the newest set listed in `backup-digests.jsonl` against its trusted manifest digest and prints one code (`BACKUP_OK`,
+`BACKUP_NONE`, `BACKUP_STALE` when no verified set is under 8 days old, `BACKUP_VERIFY_FAILED`, `DIGESTS_INVALID`); anything
+but `BACKUP_OK` exits 1 and writes a codes-only alert in `BACKUP_DIR-alerts` beside the backup directory. The check never
+takes the records run lock, never backs up and never writes into the project or the backup directory. Making a backup is the
+operator's attended procedure in `docs/RECORDS-BACKUP-OPERATIONS.md`. Installing the timer is a separate approved step.
+
 ## Arrival runs (REC-AUTO-1)
 
 A new message or a completed file at the records drop folder starts one

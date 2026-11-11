@@ -47,9 +47,12 @@ TEMPLATES = (("run-records.sh.in", "run-records.sh", 0o700),
              ("records-run.timer.in", "records-run.timer", 0o600),
              ("records-arrival.path.in", "records-arrival.path", 0o600),
              ("records-arrival.service.in", "records-arrival.service", 0o600))
+# Rendered only when BACKUP_DIR (the backup directory as mounted in the container) is given.
+BACKUP_CHECK_TEMPLATES = (("records-backup-check.service.in", "records-backup-check.service", 0o600),
+                          ("records-backup-check.timer.in", "records-backup-check.timer", 0o600))
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
-ABSOLUTE = {"ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
+ABSOLUTE = {"BACKUP_DIR", "ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
             "NOTIFY_PY", "NOTIFY_ENV_FILE", "RUN_RECORDS_SH", "STUB_FIXTURE", "RECORDS_DROP_DIR",
             # Container stage plans (targets/test-container.json.in,
             # targets/live-container.json.in and the Phase 2 OCR plans
@@ -271,6 +274,10 @@ def render(values, targets, out):
         used.update(found)
         extra = {"TIMER_ONCALENDAR": "\n".join("OnCalendar=" + line for line in timer.on_calendar())}
         files.append((output, substitute(text, {**values, **extra}, template), mode))
+    for template, output, mode in BACKUP_CHECK_TEMPLATES if "BACKUP_DIR" in values else ():
+        text = (HERE / template).read_text(encoding="utf-8")
+        used.update(PLACEHOLDER.findall(text))
+        files.append((output, substitute(text, values, template), mode))
     for name, template in targets:
         if not run_orchestrator.TARGET_RE.match(name):
             raise RenderError(f"target {name!r}: expected an upper-case target name")
