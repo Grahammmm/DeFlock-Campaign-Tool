@@ -157,3 +157,21 @@ read-only token in `DEFLOCK_GITHUB_READ_TOKEN`, or an owner-only (0600) regular 
 rendered, and a failed call shows only "GitHub unavailable". Tests inject a fake fetcher and never use the network.
 
 Home, Agencies (Board) and Calendar name any source they could not load in a banner at the top and show "unknown" instead of a count that depends on it; an unknown count is never printed as 0.
+
+## Console export (DFGL-16)
+
+`records console-export --project P (--run-id R | --latest) (--out DIR | --stdout)` runs in the container and copies only the
+console's plain input files for one run: `run-outputs/<R>/**`, `processing-v1/ledger.sqlite` (SQLite backup into a standalone
+file, no `-wal`/`-shm`), `agency-retention.csv`, `agency-aliases.tsv` and `agency-roster.tsv`, plus `EXPORT.json`
+(`records-console-export-v1`: run id, `source_project_id`, per-file sha256). The approval, mail-draft and send journals and locks,
+`public-packets.*`, `public-updates.*`, `mail/`, blobs and credentials are never copied, and a symlink in the source is refused.
+
+`records console-import --out DIR --from-tar FILE|-` runs on the host. `DIR` must be absolute, owner-only 0700 and symlink-free
+(else `EXPORT_DIR_INVALID`). The stream is verified against `EXPORT.json`, unpacked to `DIR/exports/<UTC>-<run_id>/` (directories
+0500, files 0400) and `DIR/current` is repointed with a relative link `exports/<name>`. Earlier exports are kept; a failed import leaves
+`current` unchanged. `current` is only a pointer: the panel is to be pointed at the resolved `exports/<name>` path (`--export-root DIR`,
+DFGL-16A), never at `DIR/current` with `--project`. The existing journal writers fail closed on a copy.
+
+`run-records.sh` gets an optional post-step when `CONSOLE_EXPORT_DIR` is in the render values (it also needs `CONTAINER_USER`,
+`CONTAINER_ENGINE_DIR`, `CONTAINER_PYTHON` and `CONTAINER_PROJECT_DIR`). It pipes `console-export --latest --stdout` from the container
+into `console-import` after the run's report and notice, inside the run lock; a failure is logged and never changes the exit status.

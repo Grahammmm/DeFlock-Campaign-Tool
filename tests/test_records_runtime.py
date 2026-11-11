@@ -278,6 +278,38 @@ class RuntimeHarness(unittest.TestCase):
         self.assertIn(f"notify: FAILED reason={reason}", self.log())
 
 
+class ConsoleExportStepTests(RuntimeHarness):
+    CE = {"CONTAINER_USER": "records", "CONTAINER_ENGINE_DIR": "/srv/engine",
+          "CONTAINER_PYTHON": "/usr/bin/python3", "CONTAINER_PROJECT_DIR": "/srv/project"}
+
+    def test_unset_renders_script_without_the_post_step(self):
+        text = self.script.read_text()
+        template = (RUNTIME / "run-records.sh.in").read_text()
+        self.assertNotIn("console", text.lower())
+        self.assertNotIn("CONSOLE-EXPORT", text)
+        self.assertEqual(len(text.splitlines()), len(template.splitlines()) - len(list(self._block(template))))
+
+    @staticmethod
+    def _block(template):
+        inside = False
+        for line in template.splitlines():
+            inside = inside or line.startswith("# CONSOLE-EXPORT-BEGIN")
+            if inside:
+                yield line
+            inside = inside and not line.startswith("# CONSOLE-EXPORT-END")
+
+    def test_failing_post_step_is_logged_and_never_changes_the_exit_status(self):
+        base = self.run_script("--target", "TEST")
+        self.render(CONSOLE_EXPORT_DIR=str(self.tmp / "missing-export-dir"), **self.CE)
+        self.assertIn("console_export_step", self.script.read_text())
+        result = self.run_script("--target", "TEST")
+        self.assertEqual(result.returncode, base.returncode, result.stderr)
+        log = (self.target_dir / "run-records.log").read_text()
+        self.assertIn("console export FAILED", log)
+        self.assertIn("previous export kept", log)
+        self.assertTrue(any(call.startswith("exec ") and "console-export" in call for call in self.calls()))
+
+
 class OrchestratedRunTests(RuntimeHarness):
     # --- acceptance: dry-run lists every stage -----------------------------
     def test_dry_run_lists_all_stages_and_touches_nothing(self):

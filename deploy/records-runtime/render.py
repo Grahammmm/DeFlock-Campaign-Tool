@@ -47,10 +47,12 @@ TEMPLATES = (("run-records.sh.in", "run-records.sh", 0o700),
              ("records-run.timer.in", "records-run.timer", 0o600),
              ("records-arrival.path.in", "records-arrival.path", 0o600),
              ("records-arrival.service.in", "records-arrival.service", 0o600))
+# Marker lines that bracket the optional console-export post-step in run-records.sh.in.
+CONSOLE_BLOCK = re.compile(r"^# CONSOLE-EXPORT-BEGIN.*?^# CONSOLE-EXPORT-END\n", re.MULTILINE | re.DOTALL)
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
 ABSOLUTE = {"ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
-            "NOTIFY_PY", "NOTIFY_ENV_FILE", "RUN_RECORDS_SH", "STUB_FIXTURE", "RECORDS_DROP_DIR",
+            "NOTIFY_PY", "NOTIFY_ENV_FILE", "CONSOLE_EXPORT_DIR", "RUN_RECORDS_SH", "STUB_FIXTURE", "RECORDS_DROP_DIR",
             # Container stage plans (targets/test-container.json.in,
             # targets/live-container.json.in and the Phase 2 OCR plans
             # targets/live-ocr-container.json.in and
@@ -270,6 +272,8 @@ def render(values, targets, out):
                               f"{missing_required}")
         used.update(found)
         extra = {"TIMER_ONCALENDAR": "\n".join("OnCalendar=" + line for line in timer.on_calendar())}
+        if "CONSOLE_EXPORT_DIR" not in values:  # the post-step exists only when its target is given
+            text = CONSOLE_BLOCK.sub("", text)
         files.append((output, substitute(text, {**values, **extra}, template), mode))
     for name, template in targets:
         if not run_orchestrator.TARGET_RE.match(name):
