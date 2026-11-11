@@ -14,7 +14,7 @@ from email.policy import SMTP
 from pathlib import Path
 from unittest import mock
 
-from campaign_tool.records import approval_queue, e2e_proof, native_extract, notify_text
+from campaign_tool.records import approval_queue, e2e_proof, native_extract, notify_text, run_stages
 from tests.records.test_run_slice import synthetic_email
 
 
@@ -122,6 +122,44 @@ class E2EProofTests(unittest.TestCase):
                                    "--out", str(self.tmp / "out"), "--label", "scan-cli"])
         self.assertEqual(code, 1)
         self.assertEqual(json.loads(out.getvalue())["result"], "FAIL")
+
+    def _extract_argv(self, ocr):
+        seen = []
+
+        def stage(argv):
+            seen.append(argv)
+            return 0, {"status": "ok", "counts": {}, "outcomes": []}
+        with mock.patch.object(e2e_proof, "_stage", stage):
+            report = e2e_proof.replay(self.message, self.tmp / "out", self.campaign, label="o%d" % ocr, ocr=ocr)
+        return next(a for a in seen if a[0] == "extract"), report
+
+    def test_ocr_extract_budget_fits_one_scanned_page(self):
+        argv, report = self._extract_argv(True)
+        args = run_stages.parser().parse_args(argv)
+        self.assertTrue(args.ocr)
+        self.assertFalse(run_stages.config_invalid(args))
+        # the budget native_extract.run gives a document: min(document_timeout, stage time left - 5)
+        budget = min(args.document_timeout, args.timeout - native_extract.DEADLINE_MARGIN - 5)
+        self.assertGreaterEqual(budget, 2 * args.ocr_page_timeout)  # pdftoppm child + tesseract child
+        self.assertTrue(report["ocr"])
+        # the old plan (120 s stage, default document timeout) cut such a page
+        self.assertLess(min(native_extract.DEFAULT_DOCUMENT_TIMEOUT, 120 - native_extract.DEADLINE_MARGIN - 5),
+                        2 * args.ocr_page_timeout)
+
+    def test_default_extract_has_no_ocr(self):
+        argv, report = self._extract_argv(False)
+        self.assertNotIn("--ocr", argv)
+        self.assertFalse(report["ocr"])
+
+    def test_ocr_flag_reaches_replay(self):
+        scan = self.tmp / "scan.eml"
+        scan.write_bytes(synthetic_email(attachment=png_scan(), filename="scan.png"))
+        with mock.patch.object(e2e_proof, "replay", return_value={"result": "PASS"}) as replay:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = e2e_proof.main(["--message", str(scan), "--campaign-root", str(self.campaign),
+                                       "--out", str(self.tmp / "o"), "--ocr"])
+        self.assertEqual(code, 0)
+        self.assertTrue(replay.call_args.kwargs["ocr"])
 
     def test_outputs_unavailable_warning_is_a_manual_step(self):
         for code in ("OUTPUTS_NEXT_STEPS_UNAVAILABLE", "OUTPUTS_DIGEST_UNRESOLVED"):

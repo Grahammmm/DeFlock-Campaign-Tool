@@ -9,6 +9,9 @@ campaign_tool records e2e-proof --message <file.eml> --campaign-root <campaign> 
 campaign_tool records e2e-proof --mail-store <dir of .eml> --nth 1 ...      # newest message; --nth 2 = next
 ```
 
+`--ocr` runs extract with local OCR (needs tesseract and poppler): stage timeout 600 s, page timeout 120 s, document
+budget 300 s, so one scanned page is not cut by the stage or document timeout. The report records `ocr: true`.
+
 Exit 0 only when every stage passed and `manual_steps` is empty. `--out/<label>` must not exist yet.
 
 A stage that reports ok or warn but left work undone is still a manual step, so the result is FAIL: `extract` with any
