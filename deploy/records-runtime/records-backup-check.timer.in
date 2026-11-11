@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily records backup check
+
+[Timer]
+OnCalendar=*-*-* 06:10
+Persistent=true
+Unit=records-backup-check.service
+
+[Install]
+WantedBy=timers.target

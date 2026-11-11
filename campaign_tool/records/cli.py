@@ -55,6 +55,7 @@ COMMANDS = {
     "analysis-sync": ("analysis_bridge", "sync_main"),
     "backup": ("records_backup", "backup_main"),
     "backup-verify": ("records_backup", "verify_main"),
+    "backup-check": ("records_backup", "check_main"),
     "quiescence-audit": ("quiescence_audit", "main"),
 }
 

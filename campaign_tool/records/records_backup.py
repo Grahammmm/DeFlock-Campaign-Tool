@@ -10,9 +10,10 @@ import json
 import os
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from . import pipeline_health
 from .recovery import backup_v2 as v2
 from .recovery.backup import RecoveryError
 from .recovery.records_profile import ProfileIncomplete, build_profile
@@ -135,3 +136,57 @@ def verify_main(argv=None):
     except (OSError, ValueError, sqlite3.Error):
         return _emit("VERIFY_FAILED")
     return _emit("OK", files=report["files"], sqlite_snapshots=report["sqlite_snapshots"])
+
+
+def _check(into, max_age_days, now):
+    """(code, fields) for the newest digest line; read-only on ``into``."""
+    try:
+        raw = _read(into / DIGESTS, MAX_LIST)
+    except FileNotFoundError:
+        return "BACKUP_NONE", {}
+    except (OSError, ValueError):
+        return "DIGESTS_INVALID", {}
+    try:
+        entries = [json.loads(line) for line in raw.decode().splitlines() if line.strip()]
+        if not entries:
+            return "BACKUP_NONE", {}
+        newest = max(entries, key=lambda e: datetime.fromisoformat(e["at"]))
+        taken = datetime.fromisoformat(newest["at"])
+        name, digest = os.path.basename(newest["set"]), newest["manifest_sha256"]
+        if (not name.startswith("set-") or taken.tzinfo is None or type(digest) is not str
+                or not all(type(e) is dict for e in entries)):
+            raise ValueError("entry")
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        return "DIGESTS_INVALID", {}
+    try:
+        report = v2.verify_v2(str(into / name), manifest_sha256=digest)
+    except (RecoveryError, OSError, ValueError, sqlite3.Error):
+        return "BACKUP_VERIFY_FAILED", {}
+    fields = {"files": report["files"], "sqlite_snapshots": report["sqlite_snapshots"]}
+    if now - taken > timedelta(days=max_age_days):
+        return "BACKUP_STALE", fields
+    return "BACKUP_OK", fields
+
+
+def check_main(argv=None):
+    parser = argparse.ArgumentParser(prog="records backup-check", description="Verify the newest backup set; alert if stale or bad.")
+    parser.add_argument("--into", required=True)
+    parser.add_argument("--max-age-days", type=int, default=8)
+    parser.add_argument("--alerts-dir", help="default: <into>-alerts beside the backup dir (never inside it)")
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    into = Path(os.path.abspath(args.into))
+    now = datetime.now(timezone.utc)
+    code, fields = _check(into, args.max_age_days, now)
+    alerts = Path(os.path.abspath(args.alerts_dir)) if args.alerts_dir else into.with_name(into.name + "-alerts")
+    real_into, real_alerts = os.path.realpath(into), os.path.realpath(alerts)
+    if real_alerts == real_into or real_alerts.startswith(real_into.rstrip(os.sep) + os.sep):
+        fields["alert"] = "unwritten"  # never write into the read-only backup tree
+    elif code != "BACKUP_OK" or alerts.is_dir():  # an OK run only clears an earlier alert, it creates nothing
+        state = "ok" if code == "BACKUP_OK" else "stop"
+        report = {"now": now.isoformat(), "checks": [{"check": "backup", "state": state, "reason_code": code.lower()}]}
+        try:
+            pipeline_health.write_alerts(report, alerts)
+        except (pipeline_health.HealthError, OSError):
+            fields["alert"] = "unwritten"
+    _emit(code, **fields)
+    return 0 if code == "BACKUP_OK" else 1
