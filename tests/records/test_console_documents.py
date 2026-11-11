@@ -9,7 +9,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-from campaign_tool.records import admin_panel as ap
+from campaign_tool.records import admin_panel as ap, console_layout
 from campaign_tool.records import console_documents as cd
 
 RUN = "run_1"
@@ -104,7 +104,7 @@ class ScreenC(unittest.TestCase):
         self.assertEqual(src["links"]["state"], "unavailable")
         self.assertEqual(src["received"]["state"], "ok")
         page = cd.render(m, NOW)
-        self.assertIn("proposals: unavailable (missing)", page)
+        self.assertIn("proposals: unavailable", page)
         self.assertEqual(len(cd.view(m, "alpha-pd", NOW)["items"]), 1)
 
     def test_stale_or_wrong_schema_source_is_refused(self):
@@ -148,7 +148,7 @@ class ScreenC(unittest.TestCase):
         self.assertEqual(src["proposals"]["code"], "shape_invalid")
         self.assertEqual(src["received"]["state"], "ok")
         self.assertIn("alpha-pd", cd.agencies(m))
-        self.assertIn("links: unavailable (shape_invalid)", cd.render(m, NOW))
+        self.assertIn("release links: unavailable", cd.render(m, NOW))
 
     def test_each_remaining_malformed_shape_isolates_one_source(self):
         cases = [("received-items.json", "items", None, "received"), ("release-links.json", "links", 1, "links"),
@@ -167,7 +167,7 @@ class ScreenC(unittest.TestCase):
                 m = cd.load(project, RUN, pages=False)
                 self.assertEqual(cd.sources(m)[source]["code"], "shape_invalid")
                 page = cd.render(m, NOW)
-                self.assertIn(source + ": unavailable (shape_invalid)", page)
+                self.assertIn(console_layout.plain([source])[0] + ": unavailable", page)
                 self.assertIn("alpha-pd", page)
         # nested null list and text-state record missing its state
         build(self.project)
@@ -205,7 +205,7 @@ class ScreenC(unittest.TestCase):
                 m = cd.load(project, RUN, pages=False)
                 self.assertEqual(cd.sources(m)[source]["code"], "shape_invalid")
                 page = cd.render(m, NOW)
-                self.assertIn(source + ": unavailable (shape_invalid)", page)
+                self.assertIn(console_layout.plain([source])[0] + ": unavailable", page)
                 self.assertIn("alpha-pd", page)
 
     def test_symlinked_source_is_refused(self):

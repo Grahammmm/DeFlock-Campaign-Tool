@@ -92,7 +92,7 @@ class Aliases(unittest.TestCase):
         self.assertEqual(model["aliases"], {"state": "unavailable", "code": "aliases_invalid"})
         self.assertEqual(cd.view(model, "alpha-pd", NOW)["items"], [])
         self.assertIn("alphaca", cd.agencies(model))
-        self.assertIn("aliases: unavailable (aliases_invalid)", cd.render(model, NOW))
+        self.assertIn("aliases: unavailable", cd.render(model, NOW))
 
     def test_helper_identity_and_valid_limits(self):
         for aliases in (None, {}, {"state": "absent"}, {"state": "unavailable", "map": {"alphaca": "wrong"}},

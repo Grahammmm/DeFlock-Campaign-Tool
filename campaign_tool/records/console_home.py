@@ -151,6 +151,7 @@ def decision_rows(model, today):
         when = _epoch(line.get("proposed_at"))
         add(line["id"], "status-line", line["state"], line["agency_key"], line.get("request_id"), why,
             _age(now, when), "/public-updates", "public", hours, when)
+        rows[-1]["what"] = "Public status line (%s, %s)" % (line.get("template") or "no template", event.get("date") or "no date")
     for packet in model["packets"].get("rows", []):
         if packet["status"] != "proposed":
             continue
@@ -325,7 +326,7 @@ def render_home(model, token):
     for source in ("timeline", "queue", "public", "packets", "sends"):
         state = model[source]
         if state["state"] != "ok":
-            out.append('<p role="status">%s: unavailable (%s).</p>' % (esc(source), esc(state.get("code"))))
+            out.append('<p role="status">%s</p>' % esc(console_layout.unavailable_note(*console_layout.plain([source]), state.get("code"))))
     if model["packets"]["state"] == "ok" and not model["packets"]["rows"]:
         out.append("<p>No packets pending.</p>")
     out.append('<table><thead><tr>' + "".join('<th scope="col">%s</th>' % title for title in
