@@ -166,6 +166,15 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(report["unmatched"]["outbox"], 1)
         self.assertEqual(report["unmatched"]["manual"], 0)
 
+    def test_agency_wide_draft_attaches_to_the_agency_requests_not_to_unmatched(self):
+        wide = {"id": "d9", "kind": "next-site-update", "status": "pending", "agency_id": "ag1",
+                "request_id": "agency-wide", "created_at": "2026-11-01T00:00:00Z"}
+        other = {**wide, "id": "d10", "agency_id": "ag2"}
+        report = build(reg(row()), drafts=[wide, other])
+        self.assertEqual(report["unmatched"]["draft"], 1)
+        self.assertEqual(only(report)["next_action"]["owner"], "G")
+        self.assertEqual([e["type"] for e in only(report)["events"]], ["draft"])
+
     def test_bad_as_of_is_refused(self):
         with self.assertRaises(ValueError):
             tl.build_timeline({"as_of": "soon", "requests": []}, None, [], [], [], run_id="r")

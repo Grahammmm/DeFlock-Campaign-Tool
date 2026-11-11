@@ -84,6 +84,9 @@ def _event(day, kind, summary, source, **extra):
     return {"date": _iso(day), "type": kind, "summary": summary, "source": source, **extra}
 
 
+AGENCY_WIDE = "agency-wide"  # next_steps.AGENCY_WIDE: the queue label for a draft tied to no single request
+
+
 def _matches(row, agency, request):
     return agency == row.get("agency_key") and request in (row.get("ledger_request_id"), row.get("request_id"))
 
@@ -194,7 +197,9 @@ def build_timeline(register, received, drafts, outbox, manual, *, run_id):
                     events.append(_event(_day(d), "promised date", "date stated by the agency in a received item",
                                          {"kind": "received_item", "item_id": it.get("item_id")}, new_dates=[d]))
         for d in drafts:
-            if not _matches(row, d.get("agency_id"), d.get("request_id")):
+            # An agency-wide next-step draft (queue label for "no request") belongs to every request of that agency.
+            if not (_matches(row, d.get("agency_id"), d.get("request_id"))
+                    or (d.get("agency_id") == agency and d.get("request_id") == AGENCY_WIDE)):
                 continue
             matched.add(("draft", d.get("id")))
             draft_rows.append({"draft_id": d.get("id"), "draft_kind": d.get("kind"), "status": d.get("status")})
