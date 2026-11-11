@@ -8,6 +8,7 @@ import io
 import json
 import os
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,17 @@ from campaign_tool.plain_language import check_plain  # noqa: E402
 ROW_KEYS = ["file", "entry", "rule", "field", "paragraph", "sentence", "word", "start", "end", "word_count", "limit",
             "abbreviation"]
 FIRST, LAST = plain_language.HEADING, "suggestion(s). Nothing was changed."
+
+
+def file_open_fails(error):
+    """An ``os.open`` replacement that forwards directory acquisitions and fails only regular-file opens."""
+    real = os.open
+
+    def opener(path, flags, *args, **kwargs):
+        if flags & os.O_DIRECTORY:
+            return real(path, flags, *args, **kwargs)
+        raise error
+    return opener
 
 
 def sentence(count, word="alpha"):
@@ -253,7 +265,7 @@ class ReadTests(Case):
         (self.root / "content").unlink()
         moved.rename(self.root / "content")
         self.page("ok")
-        with mock.patch.object(content_plain.os, "open", side_effect=PermissionError("denied /secret")):
+        with mock.patch.object(content_plain.os, "open", side_effect=file_open_fails(PermissionError("denied /secret"))):
             with self.assertRaises(content_plain.ContentError) as caught:
                 content_plain.check_content(self.root)
         self.assertEqual(str(caught.exception), "content/pages/ok.json: could not be read")
@@ -281,13 +293,13 @@ class EnumerationTests(Case):
 
     @contextlib.contextmanager
     def admitted_race(self, pages, replacement=False):
-        real_lstat = os.lstat
+        real_stat = os.stat
         held = pages.with_name("held-pages")
         actor_state = []
 
-        def lstat(path, *args, **kwargs):
-            info = real_lstat(path, *args, **kwargs)
-            if Path(path) == pages and not actor_state:
+        def stat(path, *args, **kwargs):
+            info = real_stat(path, *args, **kwargs)
+            if path == "pages" and kwargs.get("dir_fd") is not None and not actor_state:
                 # Return genuine pre-mutation directory metadata; listdir is not mocked.
                 actor_state.append(None)
                 pages.rename(held)
@@ -297,7 +309,7 @@ class EnumerationTests(Case):
             return info
 
         try:
-            with mock.patch.object(content_plain.os, "lstat", side_effect=lstat):
+            with mock.patch.object(content_plain.os, "stat", side_effect=stat):
                 yield
             self.assertEqual(len(actor_state), 1)
             self.assertEqual(self.snapshot(), actor_state[0], "scanner must not undo or add to the actor's mutation")
@@ -307,7 +319,7 @@ class EnumerationTests(Case):
                     pages.unlink()
                 held.rename(pages)
 
-    def test_pages_renamed_after_real_lstat_refuses_with_relative_label(self):
+    def test_pages_renamed_after_real_stat_refuses_with_relative_label(self):
         pages = self.sources()
         with self.admitted_race(pages):
             with self.assertRaises(content_plain.ContentError) as caught:
@@ -324,11 +336,18 @@ class EnumerationTests(Case):
     def test_enumeration_errno_variants_never_expose_private_values(self):
         pages = self.sources()
         before = self.snapshot()
+        identity = os.stat(pages)
         for number in (errno.EACCES, errno.ENOENT, errno.ENOTDIR, errno.EIO):
             error = OSError(number, "PRIVATE-MESSAGE\nPRIVATE-LINE", str(self.base / "PRIVATE-FILENAME"),
                             None, str(self.base / "PRIVATE-FILENAME2"))
+            seen = []
+
+            def failing_listdir(fd, error=error, seen=seen):
+                seen.append((fd, os.fstat(fd)))
+                raise error
+
             with self.subTest(number=number), \
-                    mock.patch.object(content_plain.os, "listdir", side_effect=error) as listing, \
+                    mock.patch.object(content_plain.os, "listdir", side_effect=failing_listdir) as listing, \
                     mock.patch.object(content_plain, "_read") as reading, \
                     mock.patch.object(content_plain.json, "loads") as parsing, \
                     mock.patch.object(plain_language, "check_fields") as checking, \
@@ -336,7 +355,10 @@ class EnumerationTests(Case):
                 with self.assertRaises(content_plain.ContentError) as caught:
                     content_plain.run_cli(self.root)
                 self.assert_private_refusal(caught)
-                listing.assert_called_once_with(pages)
+                listing.assert_called_once()
+                (fd, info), = seen
+                self.assertIsInstance(fd, int, "enumeration uses the admitted descriptor, not a pathname")
+                self.assertEqual((info.st_dev, info.st_ino), (identity.st_dev, identity.st_ino))
                 for operation in (reading, parsing, checking, rendering):
                     operation.assert_not_called()
             self.assertEqual(self.snapshot(), before)
@@ -411,7 +433,7 @@ class EnumerationTests(Case):
             with self.assertRaises(OSError) as caught:
                 content_plain.check_content(self.root)
             self.assertIs(caught.exception, error)
-        with mock.patch.object(content_plain.os, "open", side_effect=PermissionError("file failure")):
+        with mock.patch.object(content_plain.os, "open", side_effect=file_open_fails(PermissionError("file failure"))):
             with self.assertRaises(content_plain.ContentError) as caught:
                 content_plain.check_content(self.root)
         self.assertEqual(str(caught.exception), "content/pages/warning.json: could not be read")
@@ -523,7 +545,7 @@ class BoundedReadTests(Case):
 
                 def fstat(fd):
                     info = real_fstat(fd)
-                    if not grown:
+                    if not grown and stat.S_ISREG(info.st_mode):
                         grown.append(True)
                         with open(path, "ab") as handle:
                             handle.write(b" " * (CAP + 4096))
@@ -547,11 +569,13 @@ class BoundedReadTests(Case):
         self.put("page")
         self.faq(("Q", "Short."))
         real_open, real_close, real_read = os.open, os.close, os.read
-        opened, closed = [], []
+        opened, closed, dirs = [], [], []
 
-        def spy_open(*args, **kwargs):
-            fd = real_open(*args, **kwargs)
+        def spy_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
             opened.append(fd)
+            if flags & os.O_DIRECTORY:
+                dirs.append(fd)
             return fd
 
         def spy_close(fd):
@@ -565,11 +589,12 @@ class BoundedReadTests(Case):
                 mock.patch.object(content_plain.os, "close", side_effect=spy_close), \
                 mock.patch.object(content_plain.os, "read", side_effect=short):
             self.assertEqual(len(content_plain.check_content(self.root)["warnings"]), 1)
-        self.assertEqual(len(opened), 2)
+        self.assertEqual(len(opened) - len(dirs), 2, "one regular-file open per checked file")
         self.assertEqual(sorted(opened), sorted(closed))
 
         opened.clear()
         closed.clear()
+        dirs.clear()
         reads = []
 
         def failing(fd, count):
@@ -584,8 +609,8 @@ class BoundedReadTests(Case):
             with self.assertRaises(content_plain.ContentError) as caught:
                 content_plain.check_content(self.root)
         self.assertEqual(str(caught.exception), "content/pages/probe.json: could not be read")
-        self.assertEqual(len(opened), 1, "no second open or fallback full read")
-        self.assertEqual(opened, closed)
+        self.assertEqual(len(opened) - len(dirs), 1, "no second open or fallback full read")
+        self.assertEqual(sorted(opened), sorted(closed))
         self.assertEqual(len(reads), 2)
 
     def test_leaf_swap_to_link_or_fifo_is_prompt_refusal(self):
@@ -595,7 +620,10 @@ class BoundedReadTests(Case):
                 path = self.put("page")
                 real_open, calls = os.open, []
 
-                def swap(target, *args, **kwargs):
+                def swap(target, flags, *args, **kwargs):
+                    if flags & os.O_DIRECTORY:
+                        return real_open(target, flags, *args, **kwargs)
+                    target = path
                     os.unlink(target)
                     if how == "symlink":
                         os.symlink(outside, target)
@@ -603,7 +631,7 @@ class BoundedReadTests(Case):
                         os.mkfifo(target)
                     else:
                         os.mkdir(target)
-                    return real_open(target, *args, **kwargs)
+                    return real_open(path.name, flags, *args, **kwargs)
 
                 reads, spy = self.recording_read()
                 with mock.patch.object(content_plain.os, "open", side_effect=swap), \
@@ -703,10 +731,13 @@ class IsolationTests(Case):
 
         with mock.patch.object(content_plain.os, "open", side_effect=spy):
             self.assertEqual(len(content_plain.check_content(self.root)["warnings"]), 1)
-        self.assertEqual(len(flags_seen), 3)
+        files = [flags for flags in flags_seen if not flags & os.O_DIRECTORY]
+        self.assertEqual(len(files), 3)
+        self.assertEqual(len(flags_seen) - len(files), 3, "root, content and pages directories")
         forbidden = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND | os.O_EXCL
         for flags in flags_seen:
             self.assertEqual(flags & forbidden, 0, "production opens are read-only")
+        for flags in files:
             self.assertEqual(flags & (os.O_NOFOLLOW | os.O_NONBLOCK), os.O_NOFOLLOW | os.O_NONBLOCK)
 
 
@@ -771,10 +802,12 @@ class NestingTests(Case):
     def test_parser_failure_closes_descriptor_once_and_does_not_reopen(self):
         self.write(self.target("page"), self.deep_bytes("page"))
         real_open, real_close = os.open, os.close
-        opened, closed = [], []
+        opened, closed, dirs = [], [], []
 
-        def spy_open(*args, **kwargs):
-            opened.append(real_open(*args, **kwargs))
+        def spy_open(path, flags, *args, **kwargs):
+            opened.append(real_open(path, flags, *args, **kwargs))
+            if flags & os.O_DIRECTORY:
+                dirs.append(opened[-1])
             return opened[-1]
 
         def spy_close(fd):
@@ -785,8 +818,8 @@ class NestingTests(Case):
                 mock.patch.object(content_plain.os, "close", side_effect=spy_close):
             with self.assertRaises(content_plain.ContentError):
                 content_plain.check_content(self.root)
-        self.assertEqual(len(opened), 1)
-        self.assertEqual(opened, closed)
+        self.assertEqual(len(opened) - len(dirs), 1)
+        self.assertEqual(sorted(opened), sorted(closed))
 
     def test_oversize_still_refused_before_the_parser(self):
         self.put("page", CAP + 1)
