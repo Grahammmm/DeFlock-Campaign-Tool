@@ -84,6 +84,11 @@ def _read(folder_fd, name, label):
         fd = None  # The stream owns the descriptor only after construction succeeds.
         with handle:
             opened = os.fstat(handle.fileno())
+            # Admit the opened descriptor (type, identity, size) before consuming any payload byte.
+            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                raise OfficialsError(f"{label}: changed while it was being read")
+            if opened.st_size > MAX_JSON_BYTES:
+                raise OfficialsError(f"{label}: file too large")
             data = handle.read(MAX_JSON_BYTES + 1)
     except OSError:
         raise OfficialsError(f"{label}: cannot be read") from None
