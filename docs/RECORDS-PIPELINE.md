@@ -143,3 +143,11 @@ row changes because of a model answer, and nothing is sent, spent or published.
   The agreement file is the input for the shadow measurement; no override rule is evaluated or enabled here.
 - `records model-advice run --project DIR --run-id ID` records advice for one run; `records model-advice health
   --project DIR` checks the service through the same loopback rule. Neither installs or restarts anything.
+
+## Analysis-ready manifest
+
+After each run the outputs stage writes `run-outputs/<run>/outcomes/analysis-ready.json` (`records-analysis-ready-v1`,
+private, 0600): per agency and request with newly received records, only the record sha256s, text state, comparison
+finding ids and ratings, gap-proposal ids and the law package id and status; no text, quotes or names. A failure
+there gives the warn code `OUTPUTS_ANALYSIS_READY_UNAVAILABLE` and never suppresses an earlier output. Nothing reads
+it unattended until DFGL-06/07 and G-03; it starts nothing.

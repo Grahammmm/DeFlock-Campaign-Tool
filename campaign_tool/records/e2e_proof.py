@@ -37,6 +37,8 @@ PAGES = (("inbox", "/dashboard", "Inbox: mail received"), ("documents", "/docume
          ("deadlines", "/dashboard", "Deadlines"), ("drafts", "/dashboard", "Drafts"), ("next_steps", "/next-steps", "Next steps"))
 NEXT_KINDS = ("next-social-post", "next-site-update", "next-followup-probe")
 ARRIVAL_DONE = ("sync", "delta", "adoption", "portal")  # the live mailbox-side stages; a replay starts after them
+EXTRACT_UNFINISHED = ("AWAITING_OCR", "EXTRACT_ERROR", "EXTRACT_TIMEOUT", "EXTRACT_NOT_ACCEPTED")
+OUTPUTS_UNFINISHED = re.compile(r"^(OUTPUTS_[A-Z_]+_UNAVAILABLE|OUTPUTS_DIGEST_UNRESOLVED)$")
 
 
 class ProofError(Exception):
@@ -265,6 +267,7 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None)
     for stage in line.stages:
         if stage["status"] in ("fail", "not_run"):
             manual.append({"stage": stage["stage"], "why": stage["code"]})
+        manual.extend({"stage": stage["stage"], "why": why} for why in _unfinished_work(stage))
     report = {"schema": SCHEMA, "run_id": run_id, "sandbox": str(base), "message_sha256": hashlib.sha256(raw).hexdigest(),
               "sent": False, "published": False, "stages": line.stages, "manual_steps": manual,
               "total_seconds": round(sum(s["seconds"] for s in line.stages), 3),
@@ -272,6 +275,18 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None)
     (base / "proof-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (base / "proof-report.md").write_text(render_markdown(report), encoding="utf-8")
     return report
+
+
+def _unfinished_work(stage):
+    """Manual-step reasons for a stage that reported ok/warn but left work undone (counts and codes only)."""
+    if stage["status"] not in ("ok", "warn"):
+        return []
+    if stage["stage"] == "extract":
+        held = {o.get("code"): o.get("count") or 0 for o in (stage.get("detail") or {}).get("outcomes") or []}
+        return ["extract:" + code for code in EXTRACT_UNFINISHED if held.get(code, 0) > 0]
+    if stage["stage"] == "outputs" and stage["status"] == "warn" and OUTPUTS_UNFINISHED.match(stage["code"] or ""):
+        return ["outputs:" + stage["code"]]
+    return []
 
 
 def _counts(stage):

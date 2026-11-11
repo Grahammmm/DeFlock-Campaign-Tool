@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "records-analysis-ready-v1",
+  "description": "Private per-run analysis-ready manifest (run-outputs/<run_id>/outcomes/analysis-ready.json, mode 0600). Ids, hashes and fixed words only: no text, quotes or names. Review-required; never published; nothing reads it unattended yet.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "review_required", "agencies", "inputs"],
+  "properties": {
+    "schema": {"const": "records-analysis-ready-v1"},
+    "run_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$"},
+    "review_required": {"const": true},
+    "agencies": {"type": "array", "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agency_id", "request_id", "records", "comparison_rows", "gap_proposal_ids", "law_package"],
+      "properties": {
+        "agency_id": {"type": "string"},
+        "request_id": {"type": ["string", "null"]},
+        "records": {"type": "array", "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sha256", "text_state"],
+          "properties": {
+            "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "text_state": {"type": "string"}
+          }}},
+        "comparison_rows": {"type": "array", "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["finding_id", "rating"],
+          "properties": {
+            "finding_id": {"type": ["string", "null"]},
+            "rating": {"type": ["string", "null"]}
+          }}},
+        "gap_proposal_ids": {"type": "array", "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+        "law_package": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "status", "revision"],
+          "properties": {
+            "id": {"type": "string"},
+            "status": {"type": "string"},
+            "revision": {}
+          }}
+      }}},
+    "inputs": {
+      "type": "object",
+      "description": "sha256 of each outcome input read for this run; only files present are listed.",
+      "additionalProperties": false,
+      "properties": {
+        "received-items.json": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "gap-proposals.json": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "text-state.json": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }}
+  }
+}

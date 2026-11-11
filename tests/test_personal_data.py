@@ -954,10 +954,10 @@ _MODULES = {
         records.ledger.reconcile records.ledger.store records.ledger_catalog records.ledger_catalog_acceptance
         records.legacy_adoption records.mail_adoption records.mail_drafts records.mail_poll records.mail_send records.mail_resolution_census records.model_advice
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
-        records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register records.outcomes.timeline
+        records.outcomes.analysis_ready records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register records.outcomes.timeline
         records.outcomes.textstate records.pipeline_health records.portal.download records.portal.engine records.portal.ledger_adapter
         records.portal.store records.console_manual_events records.public_packets records.public_updates records.publish records.queue_runtime records.recovery.backup
-        records.recovery.backup_v2 records.recovery.publication records.review_bundle records.review_retirement
+        records.recovery.backup_v2 records.recovery.publication records.records_backup records.review_bundle records.review_retirement
         records.run records.run_orchestrator records.run_stages records.runner.canonical_mail records.runner.core
         records.runner.export_proof records.runtime records.schedule records.systemd_control records.unattended
         records.understanding.cli records.understanding.digest records.worker_lifecycle""",
@@ -1099,6 +1099,7 @@ MODULE_FUNCTIONS = {
     'records.mail_drafts': ('_Journal.append',),  # approvals/mail-drafts.jsonl placement journal, 0600 append-only; sends nothing
     'records.mail_send': ('_Dir.append', 'init',),  # approvals/mail-send.jsonl attempt log + send.json/SEND-STOP at setup; 0600, owner-only
     'records.mail_poll': ('_poll_receipt', '_write_once', 'poll',),
+    'records.records_backup': ('backup_main',),  # appends DIR/backup-digests.jsonl (0600) after a verified local backup set; never off-box
     'records.mail_resolution_census': ('inventory',),
     'records.native_extract': ('_write_private', 'run', 'write_awaiting_ocr', 'write_failure_manifest', 'write_private_list',),
     'records.ocr_closure': ('load_cas_page', 'load_cas_vision',),
@@ -1110,6 +1111,7 @@ MODULE_FUNCTIONS = {
     'records.outcomes.comparison': ('_publish_pair', '_stage_file',),
     'records.outcomes.received_items': ('write_run_received_items',),
     'records.outcomes.release_links': ('write_run_release_links',),
+    'records.outcomes.analysis_ready': ('write_run_analysis_ready',),
     'records.outcomes.timeline': ('write_run_timeline',),
     'records.outcomes.response_items': ('write_run_response_items',),
     'records.outcomes.factsheets': ('write_run_factsheets',),

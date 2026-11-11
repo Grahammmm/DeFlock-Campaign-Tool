@@ -1102,6 +1102,13 @@ def stage_outputs(args):
         raise
     except Exception:  # noqa: BLE001 - isolate timeline errors; never expose private exception text
         warning = warning or "OUTPUTS_TIMELINE_UNAVAILABLE"
+    try:  # Analysis-ready manifest (DFGL-05): last, own code; reads the files written above; starts nothing.
+        from .outcomes.analysis_ready import write_run_analysis_ready
+        write_run_analysis_ready(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - isolate manifest errors; never expose private exception text
+        warning = warning or "OUTPUTS_ANALYSIS_READY_UNAVAILABLE"
     produced = 1
     if prepared_digest is not None:
         try:
