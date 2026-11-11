@@ -395,7 +395,7 @@ def _row(root, store, ident):
 
 
 def _check_draft(item_id, kind, agency_id, request_id, body, evidence, source_run_id):
-    _need(kind in draft_templates.KINDS, "invalid_draft")
+    _need(kind in draft_templates.KINDS or kind == draft_templates.MESSAGE_LINK, "invalid_draft")
     _need(all(isinstance(v, str) and v for v in (item_id, agency_id, request_id, source_run_id)), "invalid_draft")
     _need(isinstance(body, str) and body.strip() and len(body.encode("utf-8")) <= MAX_BODY, "invalid_draft")
     _need(isinstance(evidence, dict), "invalid_draft")
@@ -523,6 +523,24 @@ def _read_input(path, cap):
 
 def _read_source(path):
     return _read_input(path, MAX_SOURCE)
+
+
+def queue_message_links(root, run_id, drafts):
+    """One pending ``message_link`` decision per untied message (DFGL-04). Metadata only; an existing row
+    (pending, approved or rejected) is left alone so a decision is never reopened. -> {created, existing}."""
+    wanted = {}
+    for d in drafts:
+        draft = {"item_id": d["item_id"], "kind": draft_templates.MESSAGE_LINK, "agency_id": d["agency_id"],
+                 "request_id": d["request_id"], "body": d["body"], "evidence": d["evidence"], "source_run_id": run_id}
+        _check_draft(**draft)
+        wanted[draft_id(draft["item_id"], draft["kind"])] = draft
+    with _Store(root, True) as store:
+        rows = _fold(root, store.raw(), verify=False)
+        new = [_event("draft", ident, 0, PIPELINE_ACTOR, snapshot=draft)
+               for ident, draft in wanted.items() if ident not in rows]
+        if new:
+            store.append(new)
+    return {"created": len(new), "existing": len(wanted) - len(new)}
 
 
 def queue_received_items(root, run_id, received_path):

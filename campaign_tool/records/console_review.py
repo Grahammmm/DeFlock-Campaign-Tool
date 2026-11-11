@@ -87,6 +87,32 @@ def refusal_panel(project, row, run_id):
     return "\n".join(out + ['</ul></section>'])
 
 
+def render_link(row, token, payload):
+    """A message_link row: the plain question, one choice per candidate, then the usual signed approve / reject."""
+    from . import admin_panel as ap
+
+    pending = row["status"] == "pending"
+    out = ["<h1>Tie this message to a request</h1>", "<p role=\"status\">%s</p>" % esc(
+        "Pending" if pending else row["status"].capitalize() + (": " + str(row.get("reason") or "") if row.get("reason") else "")),
+           "<pre>%s</pre>" % esc(row["body"])]
+    if pending:
+        options = "".join('<label><input type="radio" name="choice" value="%s" required> %s (agency %s)</label><br>' % (
+            esc(c["request_id"]), esc(c["request_id"]), esc(c["agency_id"])) for c in row["evidence"].get("candidates", []))
+        out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre>' % esc(payload.decode("utf-8")))
+        out.append("<p>Choose the request, sign the text above with your approval key and paste the signature. "
+                   "Approval ties this message to that request from the next run on. Nothing is sent or published.</p>")
+        if options:
+            out.append(ap._form("/approvals/approve", token, row["id"], "", options +
+                                '<label for="signature">Detached SSH signature</label>'
+                                '<textarea id="signature" name="signature" required></textarea>',
+                                "Approve: tie to the chosen request", back="review"))
+        out.append(ap._form("/approvals/reject", token, row["id"], "",
+                            '<label for="reason">Why is it not a response?</label>'
+                            '<input id="reason" name="reason" required maxlength="2000">', "Not a response", back="review"))
+    out.append('<p><a href="/">Back</a></p>')
+    return console_layout.shell("Tie this message to a request", "\n".join(out), active="Approvals")
+
+
 def render(project, row, history, preview, token, payload, send_config=None, *, run_id=None):
     from . import admin_panel as ap
 
@@ -174,6 +200,10 @@ def serve(handler):
             handler._fail(404)
             return True
         row = rows[ids[0]]
+        if row["kind"] == draft_templates.MESSAGE_LINK:
+            payload = approval_queue.approval_payload(project, ids[0]) if row["status"] == "pending" else None
+            handler._send(200, render_link(row, handler.server.csrf_token, payload))
+            return True
         history = approval_queue.history(project, ids[0])
         preview = mail_preview.preview(project, row, handler.server.mail_drafts_config)
         payload = approval_queue.approval_payload(project, ids[0]) if row["status"] == "pending" else None

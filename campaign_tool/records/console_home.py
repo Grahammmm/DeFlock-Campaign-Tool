@@ -16,6 +16,7 @@ PLAIN_KINDS = {
     "reply-extension": "Reply to an extension", "fee-reply": "Reply about fees",
     "followup-missing-records": "Ask for missing records", "next-social-post": "Suggested post",
     "next-site-update": "Suggested site update", "next-followup-probe": "Suggested follow-up",
+    "message_link": "Tie this message to a request",
 }
 DISCONNECTED = (("agency-page", "CON-SITEPR-1"), ("redaction", "CON-REDACT-1"), ("finding", "CON-FIND-1"))
 NEXT = {"next-site-update": ("site-update", "site"), "next-social-post": ("social-post", "social"),
@@ -128,10 +129,10 @@ def decision_rows(model, today):
                     label, _, _ = cb.computed_clock(model, req, "determination_due", day)
             why = "No reply since %s (%s due date; on our records, not a legal finding)" % (day, label)
         if row["status"] == "pending":
-            group, _ = NEXT.get(kind, ("request" if kind == "first-request" else "follow-up", None))
+            group, _ = NEXT.get(kind, ("request" if kind in ("first-request", "message_link") else "follow-up", None))
             link = "/review?id=" + urllib.parse.quote(ident, safe="")
             add(ident, group, kind, row["agency_id"], row["request_id"], why or "Draft awaiting decision", age, link, "queue", when=when)
-        elif row["status"] == "approved" and kind not in NEXT and sends.get("configured") and sends["state"] == "ok":
+        elif row["status"] == "approved" and kind not in NEXT and kind != "message_link" and sends.get("configured") and sends["state"] == "ok":
             result = latest.get((ident, row["revision"]))
             if result and result.get("state") == "sent":
                 continue

@@ -56,6 +56,20 @@ input (`agency-fact-sheets.json`) every row is `unknown` without evidence, so it
 `comparison_status: "unresolved"` and no findings; that is absence of input, not "nothing wrong".
 `agency-factsheets.json` is a different file and is not used as comparison input.
 
+## Untied messages and message links (DFGL-04)
+
+An item whose `request_id` is null is listed in `outcomes/unmatched-messages.json`
+(`records-unmatched-v1`, 0600): message sha256, received date, sender domain only, attachment count and up to
+3 candidate requests from the ledger register (the agency's requests, open first, or requests of an agency whose
+portal host matches the sender domain). No subject, body or address is written. Each message also queues one
+`message_link` decision ("Tie this message to a request") in the approval queue. Approving it with one of the
+listed candidates (the `choice` form field; any other value is a 400 and changes nothing) appends one line to
+`<project>/message-links.jsonl` (0600, append-only: sha256, request id, agency id, actor, time); rejecting records
+"not a response". `received_items` reads that file before its join: a linked sha256 takes the linked ids from the
+next run on; a link whose request no longer exists is ignored and counted as `message_link_request_missing`.
+If the writer fails the stage warns `OUTPUTS_UNMATCHED_UNAVAILABLE` and every earlier output stays. Nothing is
+sent and no model matches messages.
+
 ## Failure behaviour
 
 A stale `comparison.json` (other run id), corrupt hashes, an unsafe path, or a conflicting existing
