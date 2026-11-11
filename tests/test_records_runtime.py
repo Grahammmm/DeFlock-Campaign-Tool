@@ -1258,10 +1258,10 @@ class RendererTests(unittest.TestCase):
     def test_existing_units_render_byte_identical_to_before_health_units(self):
         self.do_render()
         out = self.tmp / "out"
-        pins = {"records-run.service": "d66c4f624528a4d3a4932a88f66f0e666b1383012204e5d7a40c9aad940ffa4d",
-                "records-run.timer": "acef242a6eadb3dc9ab23e80bc97b545b8acce40a3e909cfa00c1ed5056f9997",
-                "records-arrival.path": "444a5ba6e1ae389f69a6e7bd13f20d056376a761a45ee127e85c9e04daad2421",
-                "records-arrival.service": "69c0addd29e02ce3dd42b9aa6ab46caefa5b691e7ccd5366d3771035ebab1ad7"}
+        pins = {"records-run.service": "d66c4f624528a4d3a4932a88f66f0e666b1383012204e5d7a40c9aad940ffa4d",  # pragma: allowlist secret -- SHA-256 of a rendered unit, not a credential
+                "records-run.timer": "acef242a6eadb3dc9ab23e80bc97b545b8acce40a3e909cfa00c1ed5056f9997",  # pragma: allowlist secret -- SHA-256 of a rendered unit, not a credential
+                "records-arrival.path": "444a5ba6e1ae389f69a6e7bd13f20d056376a761a45ee127e85c9e04daad2421",  # pragma: allowlist secret -- SHA-256 of a rendered unit, not a credential
+                "records-arrival.service": "69c0addd29e02ce3dd42b9aa6ab46caefa5b691e7ccd5366d3771035ebab1ad7"}  # pragma: allowlist secret -- SHA-256 of a rendered unit, not a credential
         for name, digest in pins.items():
             self.assertEqual(hashlib.sha256((out / name).read_bytes()).hexdigest(), digest, name)
 
