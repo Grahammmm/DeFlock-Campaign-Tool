@@ -1,6 +1,7 @@
 """Private, offline one-page campaign flyer (kit/flyer/flyer.html + flyer.txt); prints, sends and publishes nothing."""
 import html
 import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -106,6 +107,13 @@ def build(root, max_findings=3, *, replace=False):
     existing = [name for name in names if (folder / name).exists()]
     if existing and not replace:
         raise ValueError(f"flyer exists ({', '.join('kit/flyer/' + n for n in existing)}); use --replace to overwrite")
+    for name in names:  # every planned target must be a regular file (or absent) before any output is changed
+        try:
+            mode = os.lstat(folder / name).st_mode
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(mode):
+            raise ValueError(f"kit/flyer/{name} is not a regular file; move it aside first")
     for directory in (root / 'kit', folder):
         _kit_folder(directory, 0o700)
         os.chmod(directory, 0o700)
