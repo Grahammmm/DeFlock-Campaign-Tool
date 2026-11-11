@@ -803,6 +803,8 @@ def stage_extract(args):
         try:
             from .run import local_ocr_tools
             tools, signature = local_ocr_tools()
+        except StageTimeout:
+            raise  # the container alarm is not an unusable probe; main emits STAGE_CONTAINER_TIMEOUT
         except Exception as error:  # noqa: BLE001 - a probe that raises means the tools are unusable
             return result("fail", {"failed": 1}, "EXTRACT_OCR_UNAVAILABLE", internal=internal_error(error)), 1
         if tools is None:

@@ -3,7 +3,9 @@ import builtins
 import contextlib
 import io
 import json
+import signal
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -102,6 +104,21 @@ class ExtractFailingConditionsAreCoded(unittest.TestCase):
     def test_h2_ocr_probe_raising_is_coded_not_internal(self):
         with mock.patch.object(run, "local_ocr_tools", side_effect=OSError(PRIVATE)):
             self.assertCoded([*self.ARGV, "--ocr"], "EXTRACT_OCR_UNAVAILABLE")
+
+    def test_alarm_during_the_ocr_probe_is_a_container_timeout(self):
+        def slow_probe():
+            time.sleep(5)
+            return {"tesseract": {}}, "sig"
+
+        argv = ["extract", "--project", "/p", "--timeout", "1", "--run-id", "r", "--ocr"]
+        with mock.patch.object(run, "local_ocr_tools", side_effect=slow_probe):
+            started = time.monotonic()
+            code, raw = run_main(run_stages.main, argv)
+        self.assertLess(time.monotonic() - started, 4)
+        line = json.loads(raw)
+        self.assertEqual((code, line["error_code"]), (1, "STAGE_CONTAINER_TIMEOUT"))
+        self.assertNotIn("internal", line)
+        self.assertEqual(signal.getitimer(signal.ITIMER_REAL)[0], 0.0, "alarm cleared")
 
     def test_other_exceptions_still_report_the_internal_error_code(self):
         with mock.patch.object(run, "local_ocr_tools", return_value=({"tesseract": {}}, "sig")), \
