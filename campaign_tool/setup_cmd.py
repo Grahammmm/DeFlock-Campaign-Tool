@@ -1,5 +1,6 @@
 """Guided, offline composition of the existing campaign commands."""
 import re
+import stat
 from contextlib import redirect_stdout
 from types import SimpleNamespace
 
@@ -68,8 +69,19 @@ def run_setup(root, answers, out=print):
             if number == 1:
                 refuse_engine_directory(root)
                 path = root / "campaign.json"
-                if path.exists():
+                inspect_failed = False
+                try:
+                    path.lstat()
+                    present = True
+                except FileNotFoundError:
+                    present = False
+                except OSError:
+                    present = inspect_failed = True
+                if present:
                     try:
+                        # Static type admission: never open a FIFO/socket/directory/dangling entry.
+                        if inspect_failed or not stat.S_ISREG(path.stat().st_mode):
+                            raise ValueError("not a regular file")
                         cfg = read_config(root)
                     except (OSError, ValueError, RecursionError):
                         raise ValueError("campaign.json could not be read as a supported campaign "
