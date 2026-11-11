@@ -19,6 +19,15 @@ item left `AWAITING_OCR`, `EXTRACT_ERROR`, `EXTRACT_TIMEOUT` or `EXTRACT_NOT_ACC
 `outputs` ending `warn` with `OUTPUTS_*_UNAVAILABLE` or `OUTPUTS_DIGEST_UNRESOLVED` (listed as `outputs:<CODE>`).
 `NO_NEXT_STEPS_FOR_THIS_MESSAGE` stays a plain warning.
 
+## Synthetic seed (`--seed FILE`)
+
+`--seed FILE` (`records-e2e-seed-v1`, at most 64 KiB) is synthetic sandbox only; it refuses any other project. A new
+`seed` stage runs after `save_mail`: in the replay sandbox ledger it inserts the listed agencies and requests and one
+typed join (`join_type e2e_proof_seed`) per replayed original, and writes the optional `fact_sheets` object to
+`<sandbox project>/agency-fact-sheets.json` where the comparison reads it. A bad seed (`SEED_INVALID`), a non-sandbox
+project (`SEED_NOT_SANDBOX`) or a ledger without exactly one message fails the stage before anything is written.
+In production canonical identity still comes only from the pipeline. Without `--seed` there is no `seed` stage.
+
 ## Stages (each timed)
 
 | Stage | What it proves | Output |

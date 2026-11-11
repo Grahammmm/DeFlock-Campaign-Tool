@@ -353,7 +353,7 @@ def render_agency(v):
 def render(model, now, agency=...):
     """agency=... means all agencies (plus unlinked material); a string or None selects one."""
     chosen = (agencies(model) + [None]) if agency is ... else [agency]
-    notes = ["<p class=\"diag\" role=\"status\">%s: unavailable (%s).</p>" % (esc(k), esc(s.get("code")))
+    notes = ["<p class=\"diag\" role=\"status\">%s</p>" % esc(console_layout.unavailable_note(*console_layout.plain([k]), s.get("code")))
              for k, s in sources(model).items() if s["state"] != "ok"]
     body = [render_agency(view(model, a, now)) for a in chosen]
     head = [console_layout.start("Documents and findings", "Library"),
@@ -379,6 +379,9 @@ def serve(handler):
         model = load(options["project"], options["run_id"])
     except ValueError:
         handler._fail(503)
+        return True
+    if agency is not ... and _key(model, agency) not in agencies(model):
+        handler._fail(404, "Unknown agency")
         return True
     handler._send(200, render(model, datetime.now(timezone.utc), agency))
     return True

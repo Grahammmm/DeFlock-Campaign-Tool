@@ -115,7 +115,10 @@ deterministic output.
 ## Errors
 
 Unknown draft 404, invalid transition 409, missing/invalid signature 403, malformed source 503; failed requests append
-nothing and reflect no input.
+nothing. A review-page form refused for an empty reason, empty edit text or
+empty signature (400) shows the review page again with the reason beside the form and the typed text kept (HTML-escaped);
+a missing CSRF token gets a plain "form expired" message with nothing echoed. Other error pages use the shared layout
+(banner in the header, `main`, skip link). `/documents?agency=` for an agency not in the run is a 404.
 
 ## Next steps
 

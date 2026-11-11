@@ -1,0 +1,16 @@
+{
+  "schema": "records-e2e-seed-v1",
+  "agencies": [{"id": "ca-fictional-valley-pd", "name": "Fictional Valley Police Department", "jurisdiction": "us-ca"}],
+  "requests": [{"id": "fv-req-1", "agency_id": "ca-fictional-valley-pd", "external_ref": "FV-2026-0001", "submitted_at": "2026-09-01", "status": "open"}],
+  "join": {"agency_id": "ca-fictional-valley-pd", "request_id": "fv-req-1"},
+  "fact_sheets": {
+    "schema": "records-agency-fact-sheets-v1",
+    "agencies": [{
+      "agency_id": "ca-fictional-valley-pd", "name": "Fictional Valley Police Department", "jurisdiction": "us-ca",
+      "regulated_roles": ["end_user"], "requests": [{"request_id": "fv-req-1"}],
+      "facts": {"audit_process": {"state": "observed", "applicability_confirmed": true,
+                                  "value": {"monitoring_documented": true, "periodic_audit_process_documented": false},
+                                  "citations": [{"source_id": "sha256:@POLICY_PDF_SHA256@", "locator": "page 1"}]}}
+    }]
+  }
+}

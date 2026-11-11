@@ -159,9 +159,9 @@ class Boards(unittest.TestCase):
                 m = cb.load(project, RUN)
                 self.assertEqual(m["timeline"]["code"], code)
                 page = cb.render_board(m, TODAY)
-                self.assertIn("timeline: unavailable (%s)" % code, page)
+                self.assertIn("the request timeline: unavailable", page)
                 self.assertIn("No timeline", page)
-                self.assertIn("timeline: unavailable", cb.render_agency(m, "alpha-pd"))
+                self.assertIn("the request timeline: unavailable", cb.render_agency(m, "alpha-pd"))
 
     def test_other_source_missing_degrades_alone(self):
         build(self.project, drop=("outcomes/release-links.json", "outcomes/response-items.json"))
@@ -172,7 +172,7 @@ class Boards(unittest.TestCase):
         self.assertEqual(len(rows), 4)
         self.assertEqual(rows[0]["tier1"], "not available")
         self.assertIsNone(cb.counters(m, rows, TODAY)["links_expiring_14d"])
-        self.assertIn("links: unavailable (missing)", cb.render_board(m, TODAY))
+        self.assertIn("release links: unavailable", cb.render_board(m, TODAY))
 
     def test_unknown_clock_is_not_called_overdue(self):
         path = self.project / "run-outputs" / RUN / "outcomes" / "timeline.json"
@@ -225,7 +225,7 @@ class Boards(unittest.TestCase):
                 m = self.model()
                 self.assertEqual(m["timeline"], {"state": "unavailable", "code": "shape_invalid"})
                 self.assertIn("No timeline", cb.render_board(m, TODAY))
-                self.assertIn("timeline: unavailable", cb.render_agency(m, "alpha-pd"))
+                self.assertIn("the request timeline: unavailable", cb.render_agency(m, "alpha-pd"))
 
     def test_panel_routes(self):
         server = ap.build_server(self.project, RUN, actor="op", system=False)
