@@ -1,5 +1,5 @@
 """Per-agency fact store (schema v2): import v1 FACTS.csv, check, and coverage per posted INVENTORY document. Prints counts only."""
-import argparse, contextlib, csv, datetime, hashlib, importlib.util, io, json, os, re, sys, tempfile, unicodedata
+import argparse, contextlib, csv, datetime, fcntl, hashlib, importlib.util, io, json, time, os, re, sys, tempfile, unicodedata
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -9,6 +9,31 @@ V3 = V2 + ["source_path"]  # original's absolute location recorded with the cita
 KINDS = {"record", "policy", "law", "public"}
 STATUSES = {"unreviewed", "checked", "disputed"}
 REVIEW_HEAD = ["fact_id", "from_status", "to_status", "reviewer", "reviewed_at", "note"]  # FACT-REVIEWS.csv v1
+EVIDENCE_FIELDS = ["agency", "request", "fact_type", "value", "source_sha256", "page", "verbatim_quote", "fact_id", "kind",
+                   "effective_from", "effective_to", "added_by", "added_at", "source_path"]  # every reviewed column but status
+LOCK_WAIT = 30.0
+
+
+class Locked(Exception):
+    pass
+
+
+@contextlib.contextmanager
+def store_lock(store, exclusive=True):
+    """DFGL-07a: flock on the store folder itself (read-only descriptor), so no lock file exists to list, back up or record."""
+    fd, mode, end = os.open(store, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH, time.monotonic() + LOCK_WAIT
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, mode | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= end:
+                    raise Locked() from None
+                time.sleep(0.1)
+        yield
+    finally:
+        os.close(fd)
 
 
 def slugify(agency):
@@ -157,15 +182,38 @@ def check_reviews(log, facts):
                      for i, s in last.items() if i in by_id and by_id[i]["status"] != s]
 
 
+def evidence_fp(row):
+    return "E-" + hashlib.sha256("\x1f".join(row.get(k, "") for k in EVIDENCE_FIELDS).encode()).hexdigest()[:16]
+
+
+def serialize(rows, header=None, status=None):
+    """The exact bytes write_atomic writes; `status` forces every row's status (projection)."""
+    header, out = header or (V3 if any("source_path" in r for r in rows) else V2), io.StringIO()
+    csv.writer(out, lineterminator="\n", quoting=csv.QUOTE_MINIMAL).writerows(
+        [header] + [[status if status and k == "status" else r.get(k, "") for k in header] for r in rows])
+    return out.getvalue().encode()
+
+
+def projection_sha256(path):
+    """sha256 of the file's rows serialized with every status unreviewed (status-blind); "missing" or "invalid", never raises."""
+    try:
+        _, rows, errors = load(path)
+        with open(path, encoding="utf-8-sig", newline="") as handle:
+            header = next(csv.reader(handle), [])
+    except FileNotFoundError:
+        return "missing"
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return "invalid"
+    return "invalid" if errors or header not in (V2, V3) else hashlib.sha256(serialize([r for _, r in rows], header, "unreviewed")).hexdigest()
+
+
 def write_atomic(path, rows):
     for sub in reversed(path.parents[:3]):
         sub.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix="." + path.name + ".", suffix=".tmp", dir=path.parent)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
-            header = V3 if any("source_path" in r for r in rows) else V2
-            csv.writer(out, lineterminator="\n", quoting=csv.QUOTE_MINIMAL).writerows(
-                [header] + [[r.get(k, "") for k in header] for r in rows])
+        with os.fdopen(fd, "wb") as out:
+            out.write(serialize(rows))
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError): os.unlink(tmp)
@@ -195,16 +243,25 @@ def plan_import(args):
     return errors, by_slug, old
 
 
-def do_import(args):
+def do_import(args, store_lock_held=False):
     store = Path(args.store).resolve()
     if store == REPO or REPO in store.parents:
         print("store inside repository")
         return 1
     errors, by_slug, old = plan_import(args)
+    if not errors and not args.dry_run and not store_lock_held:  # plan found nothing wrong: create the store, then plan again under its lock
+        store.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with store_lock(store):
+            return do_import(args, store_lock_held=True)
+    return import_planned(args, errors, by_slug, old)
+
+
+def import_planned(args, errors, by_slug, old):
     if errors:
         print("\n".join(errors))
         print("imported=0 duplicates=0 errors=%d" % len(errors))
         return 1
+    store = Path(args.store).resolve()
     fresh = {}  # per slug: source rows not in the store and not repeated earlier in the source
     for slug, new_rows in by_slug.items():
         seen, fresh[slug] = {dedupe_key(r) for r in old[slug]}, []
@@ -493,6 +550,14 @@ def stale(args):
 
 
 def review(args):
+    store = Path(args.store).resolve()
+    if store.is_dir() and store != REPO and REPO not in store.parents:  # a missing store keeps the unlocked error path
+        with store_lock(store):
+            return review_locked(args)
+    return review_locked(args)
+
+
+def review_locked(args):
     """DF1537-01: set checked or disputed on listed fact ids by a reviewer other than added_by, each change logged to
     FACT-REVIEWS.csv. All or nothing; ids and counts only, never a value, quote, page or note."""
     store, slug, date, who = Path(args.store).resolve(), slugify(args.agency), args.date, args.reviewer.strip()
@@ -570,6 +635,9 @@ def reviews(args):
 def main(argv=None):
     try:
         return _main(argv)
+    except Locked:
+        print("locked: fact store busy")
+        return 1
     except (OSError, UnicodeDecodeError, csv.Error) as exc:
         print("io: %s" % type(exc).__name__)
         return 1
