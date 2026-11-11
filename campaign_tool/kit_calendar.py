@@ -7,6 +7,7 @@ content/. Events carry ids, dates, agency or body names and the official source 
 request text, download links, record hashes, notes or reviewer names.
 """
 import contextlib
+import errno
 import os
 import secrets
 from datetime import date, datetime, timezone
@@ -166,7 +167,47 @@ def _target(root, out):
         raise ValueError(f"{out.parent}: the parent must be an existing directory, not a symbolic link")
     if os.path.lexists(out):
         raise ValueError(f"{out} exists; nothing was overwritten")
-    return out
+    info = os.lstat(out.parent)  # the admitted directory's identity: the parent is not a symbolic link here
+    return out, (info.st_dev, info.st_ino)
+
+
+CHANGED = "kit-calendar output parent changed; inspect the original export directory"
+# Directory-relative operations are required; captured at import so a test double of one function cannot fake support.
+_DIRFD = (hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW") and os.open in os.supports_dir_fd
+          and os.link in os.supports_dir_fd and os.unlink in os.supports_dir_fd
+          and os.link in os.supports_follow_symlinks)
+
+
+def _admit(parent, identity):
+    """Open the admitted export directory read-only (no-follow) and return its descriptor, which the caller owns.
+    The descriptor must be the very directory admitted by ``_target``; anything else is refused before any write."""
+    if not _DIRFD:
+        raise ValueError("kit-calendar needs directory-relative file operations, which this platform lacks; "
+                         "nothing was written")
+    try:
+        fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+            raise ValueError(CHANGED) from None
+        raise
+    try:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) != identity:
+            raise ValueError(CHANGED)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _unchanged(parent, identity):
+    """Raise the fixed refusal when the requested parent no longer names the admitted directory."""
+    try:
+        info = os.lstat(parent)
+    except OSError:
+        raise ValueError(CHANGED) from None
+    if (info.st_dev, info.st_ino) != identity:
+        raise ValueError(CHANGED)
 
 
 def calendar(root, out, as_of=None, *, now=None, law_base=None, today=None):
@@ -174,11 +215,14 @@ def calendar(root, out, as_of=None, *, now=None, law_base=None, today=None):
 
     The bytes are rendered first, written, flushed and fsynced into a private ``.kit-calendar.<random>.tmp`` beside
     the target, then published by an exclusive hard link, so the requested name never holds a partial calendar and a
-    target that appeared meanwhile is refused untouched. A failure before the link leaves no output and the staging
-    name is removed; the retry succeeds. A process that dies while staging leaves only its private ``.tmp`` (never
-    swept; the retry uses a new random name). A process that dies after the link leaves a complete calendar, possibly
-    still beside its staging name; the complete file is never overwritten or rolled back. A staging-name removal that
-    fails after publication is raised, not hidden.
+    target that appeared meanwhile is refused untouched. The export directory is admitted once (device/inode) and
+    held open: staging, the link and every staging-name removal are relative to that descriptor, so replacing the
+    directory name afterwards cannot redirect them; an observed replacement is refused with a fixed error (after the
+    commit the complete calendar stays in the admitted directory). A failure before the link leaves no output and the
+    staging name is removed; the retry succeeds. A process that dies while staging leaves only its private ``.tmp``
+    (never swept; the retry uses a new random name). A process that dies after the link leaves a complete calendar,
+    possibly still beside its staging name; the complete file is never overwritten or rolled back. A staging-name
+    removal that fails after publication is raised, not hidden.
     """
     from .cli import read_config  # local import: cli imports this module lazily
     root = Path(root)
@@ -186,33 +230,42 @@ def calendar(root, out, as_of=None, *, now=None, law_base=None, today=None):
     day = kit_track._day(as_of) if as_of is not None else (today or date.today())
     if day is None:
         raise ValueError("--as-of must be a real YYYY-MM-DD date")
-    target = _target(root, out)
-    requests, package_status = _request_events(root, law_base)
-    events = requests + _meeting_events(root, day)
-    data = render(events, now or datetime.now(timezone.utc)).encode("utf-8")
-    # Stage the complete bytes under a private random name beside the target, then publish by an exclusive hard link.
-    stage = os.path.join(target.parent, ".kit-calendar." + secrets.token_hex(8) + ".tmp")
-    fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    target, identity = _target(root, out)
+    parent = target.parent
+    parent_fd = _admit(parent, identity)  # every later mutation is relative to this descriptor, never to a pathname
     try:
+        requests, package_status = _request_events(root, law_base)
+        events = requests + _meeting_events(root, day)
+        data = render(events, now or datetime.now(timezone.utc)).encode("utf-8")
+        # Stage the complete bytes under a private random name in the admitted directory, then publish by an
+        # exclusive hard link; every operation uses basenames relative to parent_fd.
+        _unchanged(parent, identity)
+        stage = ".kit-calendar." + secrets.token_hex(8) + ".tmp"
+        fd = os.open(stage, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
         try:
-            handle = os.fdopen(fd, "wb")
+            try:
+                handle = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)
+                raise
+            with handle:
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            _unchanged(parent, identity)
+            try:  # the commit point: creates the name only if absent, never replaces
+                os.link(stage, target.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd, follow_symlinks=False)
+            except FileExistsError:
+                raise ValueError(f"{target} exists; nothing was overwritten") from None
         except BaseException:
-            os.close(fd)
+            with contextlib.suppress(OSError):
+                os.unlink(stage, dir_fd=parent_fd)  # only this call's staging name; the target is never touched
             raise
-        with handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(stage, target)  # the commit point: creates the name only if absent, never replaces
-        except FileExistsError:
-            raise ValueError(f"{target} exists; nothing was overwritten") from None
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(stage)  # only this call's staging name; the target is never touched
-        raise
-    with contextlib.suppress(FileNotFoundError):
-        os.unlink(stage)  # after the commit: a real failure here is raised, the complete target stays
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(stage, dir_fd=parent_fd)  # after the commit: a real failure here is raised, the target stays
+        _unchanged(parent, identity)  # the complete target stays in the admitted directory; never claim a clean export
+    finally:
+        os.close(parent_fd)
     report = {"written": str(target), "events": len(events)}
     return {**report, "note": NO_LAW} if package_status == "missing" else report
