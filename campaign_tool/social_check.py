@@ -357,17 +357,20 @@ def _folder(root, parts, kind, platform, suggested, ctx):
         return out
 
     # Required membership uses the same provenance binding as each draft row.
-    reads = {}  # per-folder-check only: a suggested draft is read once for window binding and row analysis
+    reads = {}  # per-folder-check only: a suggested draft is read once, for row analysis
 
     def draft(stem):
         if stem not in reads:
             reads[stem] = _read(path / (stem + ".md"))
         return reads[stem]
 
-    window = max((e["within_days"] for stem, e in meta.items()
-                  if _bound(e, kind, stem, suggested, record, draft(stem) if suggested else None)), default=14)
     required = set()
     if not suggested:
+        # Suggested folders have no required set, so no window is derived there.
+        # Metadata keys are descriptive only: they must never select a Markdown
+        # path, so suggested drafts are read solely for enumerated stems below.
+        window = max((e["within_days"] for stem, e in meta.items()
+                      if _bound(e, kind, stem, False, record, None)), default=14)
         if kind == "findings":
             required = set(ctx.published)
         elif kind == "meetings":
