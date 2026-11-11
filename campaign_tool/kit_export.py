@@ -3,6 +3,7 @@
 Reads ``kit_track.status`` only; nothing is sent or published from this module."""
 import csv
 import os
+import stat
 from pathlib import Path
 
 from . import kit_track
@@ -59,7 +60,10 @@ def write_rows(target, out, header, rows):
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
         raise ValueError(f"--csv {out}: exists; choose a new file name") from None
+    identity = None  # (st_dev, st_ino) of the file this call created, taken from its descriptor
     try:
+        created = os.fstat(fd)
+        identity = (created.st_dev, created.st_ino)
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             fd = None
@@ -69,9 +73,21 @@ def write_rows(target, out, header, rows):
             handle.flush()
             os.fsync(handle.fileno())
     except BaseException:
-        if fd is not None:
-            os.close(fd)
-        os.unlink(target)  # the file this call created with O_EXCL
+        # Best-effort cleanup, subordinate to the original failure. Remove the name only while it still is the
+        # regular file this call created (lstat, no follow); a replacement, symlink, directory or absent name is
+        # left alone. Not an atomic compare-and-unlink: it covers substitutions made before this check.
+        try:
+            if fd is not None:
+                os.close(fd)
+        except OSError:
+            pass
+        try:
+            if identity is not None:
+                current = os.lstat(target)
+                if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == identity:
+                    os.unlink(target)
+        except OSError:
+            pass
         raise
 
 
