@@ -9,6 +9,7 @@ import csv
 import io
 import os
 import stat
+import threading
 import unicodedata
 from pathlib import Path
 
@@ -25,6 +26,9 @@ SECTIONS = (("listed_seed", "Seed agencies listed in Atlas"),
             ("selected_not_listed", "Selected agencies not listed in Atlas"))
 TRAILER = "Private, read-only: nothing was fetched, written, selected or published."
 _CONTROL_CATEGORIES = ("Cc", "Cf", "Zl", "Zp")
+# csv.field_size_limit is process-global: overlapping Atlas parses must not interleave save/set/restore.
+# Only cooperating Atlas calls are serialized; other modules changing the limit are not protected.
+_CSV_FIELD_LIMIT_LOCK = threading.Lock()
 
 
 class AtlasError(ValueError):
@@ -77,17 +81,19 @@ def _read_bytes(csv_path):
 
 def _records(text):
     """[(starting physical line, cells)] for every non-blank record; malformed CSV refuses the whole file."""
-    reader, rows, start = csv.reader(io.StringIO(text, newline=""), strict=True), [], 1
-    previous = csv.field_size_limit(ATLAS_MAX_BYTES)
-    try:
-        for cells in reader:
-            if any(cell.strip() for cell in cells):
-                rows.append((start, cells))
-            start = reader.line_num + 1
-    except csv.Error:
-        raise AtlasError(f"Atlas CSV: line {start}: malformed quoting or field too large") from None
-    finally:
-        csv.field_size_limit(previous)
+    rows, start = [], 1
+    with _CSV_FIELD_LIMIT_LOCK:
+        previous = csv.field_size_limit(ATLAS_MAX_BYTES)  # captured after acquire, restored before release
+        try:
+            reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+            for cells in reader:
+                if any(cell.strip() for cell in cells):
+                    rows.append((start, cells))
+                start = reader.line_num + 1
+        except csv.Error:
+            raise AtlasError(f"Atlas CSV: line {start}: malformed quoting or field too large") from None
+        finally:
+            csv.field_size_limit(previous)
     return rows
 
 
