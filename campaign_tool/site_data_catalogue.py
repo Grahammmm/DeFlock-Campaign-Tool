@@ -277,6 +277,9 @@ def _check_resource(public, resource, seen, problems, city_names):
     except UnicodeDecodeError:
         problems.append((full, "CSV is not UTF-8"))
         expected = None
+    except csv.Error:  # RF0211-4: only the header parse; a fixed reason, never the parser's text or the cell
+        problems.append((full, "CSV header cannot be parsed"))
+        expected = None
     if expected is not None and resource.get("schema") != expected:
         problems.append((full, "schema does not match the file"))
     if meta[3] == ZIP and (resource.get("schema") is not None or resource.get("licenses") != []):
