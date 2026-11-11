@@ -164,6 +164,18 @@ def _retention_text(found):
             "This reported value does not establish the schedule for the requested logs or settings.")
 
 
+def _rollback_owned(fd, target):
+    """Best effort: unlink target only if it is still the regular inode this call created; never raise."""
+    try:
+        owned = os.fstat(fd)
+        seen = os.stat(target, follow_symlinks=False)
+        if (stat.S_ISREG(owned.st_mode) and stat.S_ISREG(seen.st_mode)
+                and (owned.st_dev, owned.st_ino) == (seen.st_dev, seen.st_ino)):
+            os.unlink(target)
+    except OSError:
+        pass
+
+
 def preserve_request(root, agency_id, *, request="main", today=None):
     """Write the private preservation draft for one sent, still-open request; return its relative path and a note."""
     root, today = Path(root), today or date.today()
@@ -197,21 +209,20 @@ def preserve_request(root, agency_id, *, request="main", today=None):
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
         raise ValueError(f"{relative} already exists (or is a link); nothing was overwritten") from None
-    # Ownership: this call owns the raw fd from the open above until os.fdopen returns; the stream owns it after.
-    raw = fd
+    # Ownership: this call owns the raw fd from the open above until the outer finally; the text wrapper never closes it.
+    # Rollback removes the leaf only while the pinned inode still matches a no-follow look at the path. stat then
+    # unlink is not an atomic compare-and-unlink: a second swap between them, or an ancestor swap, is not prevented.
     try:
-        handle = os.fdopen(fd, "w", encoding="utf-8")
-        raw = None
-        with handle:
+        with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as handle:
             handle.write(text)
     except BaseException:
         try:
-            if raw is not None:
-                try:
-                    os.close(raw)  # one attempt, only while still raw-owned; the primary failure is kept
-                except OSError:
-                    pass
+            _rollback_owned(fd, target)
         finally:
-            os.unlink(target)  # only the file this call just created
+            try:
+                os.close(fd)  # one attempt after rollback; the primary failure is kept
+            except OSError:
+                pass
         raise
+    os.close(fd)  # success path: a real close error is a failure, and the completed output stays
     return {"written": relative, "agency_id": agency_id, "request": request, "note": NOTE}
