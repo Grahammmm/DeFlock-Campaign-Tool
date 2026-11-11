@@ -91,6 +91,9 @@ def build_report(root, seed=None):
             "unmatched": unmatched, "ambiguous": ambiguous, "excluded": excluded}
 
 
+IDENTIFIER_MESSAGE = "a receiving agency identifier contains a control character"
+
+
 def _check_text(report):
     for item in report["suggestions"] + report["unmatched"] + report["ambiguous"]:
         for name in item["names"] + [item.get("name", "")]:
@@ -100,6 +103,10 @@ def _check_text(report):
         for candidate in item["candidates"]:
             if kit_agencies._has_control(candidate["name"]):
                 raise ValueError("a receiving agency name contains a control character")
+    ids = [s["agency_id"] for s in report["suggestions"]]
+    ids += [c["agency_id"] for item in report["ambiguous"] for c in item["candidates"]]
+    if any(kit_agencies._has_control(i) for i in ids):
+        raise ValueError(IDENTIFIER_MESSAGE)
 
 
 def render(report):
