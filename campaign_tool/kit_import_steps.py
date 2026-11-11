@@ -4,6 +4,7 @@ Every row goes through ``kit_track.record_step(..., dry_run=True)`` in file orde
 earlier accepted rows, so the step rules are never copied here. Nothing is fetched or sent; a refusal writes nothing.
 After each new row the whole sent store as it would be written is measured against ``kit_track.MAX_BYTES``, the
 ceiling ``read_sent`` enforces, so no import (preview or apply) may replace a readable store with an unreadable one.
+The selected request's existing history is replay-validated (``kit_track.validate_steps``) before import or replay.
 See docs/KIT-RESPONSE-IMPORT.md for the replay identity, including the extension dispatch date.
 """
 import csv
@@ -12,6 +13,7 @@ import json
 import os
 import stat
 import tempfile
+from datetime import date
 from pathlib import Path
 
 from . import kit, kit_track
@@ -139,6 +141,7 @@ def import_steps(root, agency_id, csv_path, *, request="main", apply=False, toda
     Returns a report dict; raises ``ImportRefused`` (exit 2, nothing written) naming each refused line."""
     root = Path(root)
     rows = _read_rows(csv_path)
+    today = today or date.today()  # one effective day for the history check and every row dry run
     try:
         request = kit_track._request(request)
         requests = kit_track.read_sent(root)
@@ -148,6 +151,10 @@ def import_steps(root, agency_id, csv_path, *, request="main", apply=False, toda
                                   dry_run=True)
     except ValueError as exc:
         raise ImportRefused(str(exc)) from None
+    try:
+        kit_track.validate_steps(requests[key], kit_track._label(agency_id, request), today=today)
+    except ValueError:
+        raise ImportRefused("kit/sent.json: selected request history is invalid; nothing was written") from None
     recorded = {_step_signature(s) for s in requests[key]["steps"]}
     first_line, errors, added, skipped = {}, [], [], []
     with tempfile.TemporaryDirectory(prefix="kit-import-") as scratch:  # the working copy record_step dry-runs against
