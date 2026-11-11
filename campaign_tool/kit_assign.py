@@ -82,7 +82,7 @@ def _open_kit(root):
         raise _bad("file changed or could not be read")
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
-        root_fd = os.open(root, flags)
+        root_fd = os.open(root, flags & ~os.O_NOFOLLOW)  # the root and its ancestors keep link semantics
     except FileNotFoundError:
         yield None
         return

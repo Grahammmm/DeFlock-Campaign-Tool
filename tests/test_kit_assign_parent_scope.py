@@ -273,6 +273,18 @@ class ParentScopeTests(unittest.TestCase):
         self.assertEqual((self.kit / names[0]).read_bytes(), b"not ours")
         self.assertEqual(json.loads(self.store.read_bytes())["assignments"], {self.a: "Replacement"})
 
+    def test_symlinked_campaign_root_keeps_link_semantics(self):
+        self.prepare()
+        linked = self.tmp / "linked-root"
+        linked.symlink_to(self.root, target_is_directory=True)
+        self.assertEqual(kit_assign.read_assignments(linked), {self.a: "Local Owner"})
+        kit_assign.assign(linked, self.b, to="Via Link")
+        self.assertEqual(kit_assign.read_assignments(self.root), {self.a: "Local Owner", self.b: "Via Link"})
+        self.assertEqual(self.snap(self.outside_dir), self.outside_snap)
+        dangling = self.tmp / "dangling-root"
+        dangling.symlink_to(self.tmp / "nowhere")
+        self.assertEqual(kit_assign.read_assignments(dangling), {})
+
     def test_overflow_is_refused_before_any_creation(self):
         self.prepare()
         creates = []
