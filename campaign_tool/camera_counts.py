@@ -3,8 +3,12 @@
 Coordinates are GeoJSON ``[lon, lat]``; problems name a feature index and reason, never coordinates or values.
 """
 import math
+import sys
+from fractions import Fraction
 
 from .agency_cards import text as plain_text
+
+_MIN_NORMAL = sys.float_info.min  # below this a crossing product may have lost precision
 
 
 def _number(n):
@@ -32,9 +36,21 @@ def _crosses(x, y, edges):
     """Even-odd ray cast, half-open on edges: a point on a shared edge is inside exactly one neighbour."""
     inside = False
     for x1, y1, x2, y2 in edges:
-        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
-            inside = not inside
+        if (y1 > y) != (y2 > y):
+            dy, dx = y - y1, x2 - x1
+            product = dy * dx
+            if dy and dx and abs(product) < _MIN_NORMAL:  # the product underflowed: compare exactly
+                if _exact_left_of_crossing(x, y, x1, y1, x2, y2):
+                    inside = not inside
+            elif x < x1 + product / (y2 - y1):
+                inside = not inside
     return inside
+
+
+def _exact_left_of_crossing(x, y, x1, y1, x2, y2):
+    """Exact ``x < x1 + (y - y1) * (x2 - x1) / (y2 - y1)`` from the original numbers (y2 != y1)."""
+    return Fraction(x) < Fraction(x1) + (Fraction(y) - Fraction(y1)) * (Fraction(x2) - Fraction(x1)) / (
+        Fraction(y2) - Fraction(y1))
 
 
 def point_in_ring(x, y, ring):
