@@ -622,6 +622,74 @@ class IngestZipTests(unittest.TestCase):
         for phrase in ("structural", "descriptor", "ZIP64", "original archive"):
             self.assertIn(phrase, text)
 
+    BAD_MESSAGE = "Stopped: Archive filename cannot be represented as UTF-8; nothing was imported\n"
+
+    def raw_archive(self, raw_name, entries=None, parent=None, content=None):
+        directory = os.fsencode(str(parent or self.inbox))
+        path = os.fsdecode(directory + b"/" + raw_name)
+        if parent is not None:
+            os.makedirs(os.fsdecode(directory), exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(content if content is not None else build_zip(entries if entries is not None else [("good.txt", b"synthetic\n", {})]))
+        return path
+
+    def test_raw_zip_basename_refuses_before_preview_and_store(self):
+        for raw in (b"synthetic-\xff.zip", b"synthetic-\xe4\xb8.zip"):
+            path = self.raw_archive(raw)
+            for dry in (True, False):
+                before = self.files()
+                result = self.cli("ingest", "--zip", path, "--source-id", "s", *(["--dry-run"] if dry else []),
+                                  returncode=1)
+                self.assertEqual((result.stdout, result.stderr), ("", self.BAD_MESSAGE))
+                self.assertEqual(self.files(), before)
+            os.unlink(path)
+
+    def test_zip_filename_refusal_precedence_and_empty_archives(self):
+        for content in (b"not a zip at all", build_zip([]), build_zip([("a", b"x", {"central_version": 99})]),
+                        build_zip([("../u", b"x", {})])):
+            path = self.raw_archive(b"bad-\xff.zip", content=content)
+            result = self.cli("ingest", "--zip", path, "--source-id", "s", returncode=1)
+            self.assertEqual((result.stdout, result.stderr), ("", self.BAD_MESSAGE))
+            os.unlink(path)
+        good = self.inbox / "good.zip"
+        good.write_bytes(b"not a zip at all")
+        result = self.cli("ingest", "--zip", good, "--source-id", "s", returncode=1)
+        self.assertIn("not a zip archive", result.stderr)
+
+    def test_bad_name_retry_preserves_existing_digest_and_manual_rename_works(self):
+        entries = [("good.txt", b"synthetic\n", {})]
+        ok = self.archive(entries, "ok.zip")
+        self.ingest(ok)
+        bad = self.raw_archive(b"bad-\xff.zip", entries)
+        before = self.files()
+        for _ in range(2):
+            self.cli("ingest", "--zip", bad, "--source-id", "synthetic-1", returncode=1)
+        self.assertEqual({k: v for k, v in self.files().items()}, before)
+        renamed = self.inbox / "ordinary.zip"
+        os.rename(bad, renamed)
+        report = self.ingest(renamed, source_id="synthetic-2")
+        self.assertEqual([m["path"] for m in report["members"]], ["good.txt"])
+        self.assertIn("ordinary.zip", [r[0] for r in self.rows("SELECT original_name FROM receipts")])
+
+    def test_zip_unicode_leaf_and_raw_ancestors_remain_supported(self):
+        for index, leaf in enumerate(("caf\u00e9.zip", "cafe\u0301.zip", "\u4e2d\u6587.zip", "\U0001f600.zip")):
+            path = self.raw_archive(leaf.encode("utf-8"), parent=self.inbox / f"d{index}",
+                                    entries=[("m.txt", f"synthetic {index}\n".encode(), {})])
+            report = self.ingest(path, source_id=f"u{index}")
+            self.assertEqual(report["archive"]["outcome"], "stored")
+            self.assertIn(leaf, [r[0] for r in self.rows("SELECT original_name FROM receipts")])
+        nested = os.fsdecode(os.fsencode(str(self.inbox)) + b"/raw-\xff")
+        path = self.raw_archive(b"ok.zip", parent=nested, entries=[("m.txt", b"synthetic anc\n", {})])
+        report = self.ingest(path, source_id="anc")
+        self.assertEqual(report["archive"]["outcome"], "stored")
+        self.assertIn("ok.zip", [r[0] for r in self.rows("SELECT original_name FROM receipts")])
+
+    def test_integrity_document_names_container_admission(self):
+        text = (REPO_ROOT / "docs" / "ZIP-INGEST-INTEGRITY.md").read_text()
+        for phrase in ("cannot be represented as UTF-8", "whole-container refusal", "rename the file yourself",
+                       "container-level admission"):
+            self.assertIn(phrase, text)
+
     def test_integrity_document_names_full_payload_consumption(self):
         text = (REPO_ROOT / "docs" / "ZIP-INGEST-INTEGRITY.md").read_text()
         for phrase in ("single stream", "unused", "declared compressed payload", "unreadable", "not a migration"):
