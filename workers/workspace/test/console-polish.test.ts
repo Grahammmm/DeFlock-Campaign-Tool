@@ -1,4 +1,5 @@
 import { env } from "cloudflare:test";
+import { APP_CSS, jsonBlock } from "@deflock/shared/html";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { dashboard, findings, meetings, publish, records, requestsList, settings, subscribers } from "../src/views/screens.ts";
 import { call, makeSigner, organizerRequest, seedCampaign, type TestSigner } from "./helpers.ts";
@@ -55,6 +56,12 @@ describe("console polish (S2-04/05/06/15/16)", () => {
     expect(text).toMatch(/\.app-nav a\{[^}]*min-height:24px/);
     expect(text).toMatch(/@media\(max-width:700px\)\{\.app-nav a\{min-height:44px\}\}/);
     expect(text).toContain(".table-wrap{overflow-x:auto");
+  });
+
+  it("leaves the shared stylesheet and jsonBlock (used by the wizard) unchanged", () => {
+    expect(APP_CSS).not.toContain(".table-wrap");
+    expect(APP_CSS).not.toContain("min-height:24px");
+    expect(String(jsonBlock({ a: 1 }))).toMatch(/^<pre class="json">/);
   });
 
   it("serves unknown paths as a 404 in the shared layout", async () => {

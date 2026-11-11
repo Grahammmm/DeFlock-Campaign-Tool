@@ -1,13 +1,13 @@
 import { MAIL_CLASSIFICATIONS, executionClaimId, requiresDeliveryReconciliation, requiresExecutionQuiescence } from "../db.ts";
 // Server-rendered workspace screens. Every value is escaped by the html tag.
-import { fmtDate, html, jsonBlock, raw, type Safe } from "@deflock/shared/html";
+import { fmtDate, html, raw, type Safe } from "@deflock/shared/html";
 import { reviewBlockers, type JsonObject } from "@deflock/shared/review";
 import type {
   AgencyRow, CampaignRow, CorrectionRow, CorrespondenceRow, ExternalActionRow, FindingRow, IncidentRow, JobRow, MeetingRow, OriginalRow,
   PublicationRow, ReceiptOccurrenceRow, RequestRow, ReviewReceiptRow, RunReceiptRow, SettingRow, SubscriberEventRow,
 } from "../db.ts";
 import type { BrevoSettings } from "../manifest.ts";
-import { statePill, tableWrap } from "./layout.ts";
+import { consoleJson, statePill, tableWrap } from "./layout.ts";
 export { home } from "./home.ts";
 
 /** Readiness of the inline Legistar poll, from the newest run receipt that recorded one (counts only). */
@@ -147,7 +147,7 @@ ${published ? html`<h2>Issue correction</h2>
 <h2>Withdraw</h2>
 <form method="post" action="/findings/${f.finding_id}/withdraw" class="stack"><label class="field">Reason<input type="text" name="reason" required></label><button class="danger" type="submit">Withdraw and rebuild site</button></form>` : ""}
 ${actions.length ? html`<h2>Approval cards</h2>${tableWrap("Approval cards", html`<table class="data"><tr><th>Card</th><th>Kind</th><th>State</th><th>Proposed</th><th>Result</th></tr>${actions.map((a) => html`<tr><td><a href="/approvals">${a.action_id}</a></td><td>${a.kind}</td><td>${statePill(a.state)}</td><td>${a.created_at}</td><td>${a.error ?? a.provider_receipt ?? ""}</td></tr>`)}</table>`)}` : ""}
-<h2>Finding JSON</h2>${jsonBlock(JSON.parse(f.finding_json))}`;
+<h2>Finding JSON</h2>${consoleJson("Finding JSON", JSON.parse(f.finding_json))}`;
 }
 
 /** DF-4: advisory "review-required" notes (place + rule, never the text) from the legal-claim wording guard. Never throws. */
@@ -164,7 +164,7 @@ export function approvals(rows: ExternalActionRow[], notice: string | null, buil
   const other = rows.filter((a) => a.state !== "proposed");
   const card = (a: ExternalActionRow) => html`<div class="card"><h3>${a.kind} ${statePill(a.state)}</h3><p class="meta">${a.action_id} - subject ${a.subject_id ?? "n/a"} - proposed by ${a.proposed_by} ${a.created_at}${a.approved_by ? html`<br>approved by ${a.approved_by} ${a.approved_at}` : ""}${a.executed_at ? html`<br>executed ${a.executed_at}` : ""}${a.error && !executionClaimId(a) ? html`<br><span class="pill bad">${a.error}</span>` : ""}</p>
 ${reviewFlagsNotice([...reviewFlagsOf((JSON.parse(a.proposal_json) as { review_flags?: unknown }).review_flags), ...(buildFlags[a.action_id] ?? [])])}
-${jsonBlock(JSON.parse(a.proposal_json))}
+${consoleJson("Proposal JSON", JSON.parse(a.proposal_json))}
 ${a.state === "proposed" ? html`<form method="post" action="/approvals/${a.action_id}/approve" style="display:inline"><button class="primary" type="submit">Approve</button></form>
 <form method="post" action="/approvals/${a.action_id}/edit" class="stack" style="margin-top:.6rem"><label class="field">Edit proposal (JSON merged over the current one)<textarea name="proposal" style="min-height:5rem">{}</textarea></label><button class="secondary" type="submit">Save edit</button></form>
 <form method="post" action="/approvals/${a.action_id}/reject" class="stack" style="margin-top:.6rem"><label class="field">Reason<input type="text" name="reason"></label><button class="danger" type="submit">Reject</button></form>` : ""}
@@ -172,7 +172,7 @@ ${a.kind === "send_newsletter" && a.state === "executing" && executionClaimId(a)
 <form method="post" action="/approvals/${a.action_id}/hold-execution" class="stack"><input type="hidden" name="execution_id" value="${executionClaimId(a)}"><label class="field">Interruption evidence reference<input name="reference" maxlength="500" required></label><button class="secondary" type="submit">Hold interrupted execution</button></form>` : ""}
 ${requiresDeliveryReconciliation(a) ? html`<p>Delivery is unresolved. Check this action and its provider receipt before retrying. Reconciliation does not send anything.</p>
 <p><a href="/approvals/${a.action_id}/execution-evidence">Inspect this action's recovery and late provider receipts</a></p>
-${a.provider_receipt ? jsonBlock(JSON.parse(a.provider_receipt)) : ""}
+${a.provider_receipt ? consoleJson("Provider receipt JSON", JSON.parse(a.provider_receipt)) : ""}
 <form method="post" action="/approvals/${a.action_id}/reconcile" class="stack"><label class="field">Provider-confirmed outcome<select name="outcome" required><option value="">Choose after checking provider</option><option value="delivered">Delivered — retain as executed</option><option value="not_delivered">Not delivered — require fresh approval</option></select></label><label class="field">Provider-check reference<input name="reference" maxlength="500" required></label><label class="field">Provider delivery time (UTC ISO, delivered only)<input name="delivered_at" placeholder="2026-01-01T12:00:00Z"></label>
 ${a.kind === "send_request" || a.kind === "send_followup" ? html`<label class="field">Provider message ID (delivered mail without a stored receipt)<input name="provider_message_id" maxlength="1000"></label>` : ""}
 ${requiresExecutionQuiescence(a) ? html`<p>First prove the old invocation has stopped, then check the provider for queued or delivered work. A timeout, an old timestamp, or placing this hold is not proof. Keep the card held if either outcome is uncertain.</p><label class="field">Invocation termination evidence reference<input name="quiescence_reference" maxlength="500" required></label><label><input type="checkbox" name="quiescence_confirmed" value="confirmed" required> I verified the old invocation cannot issue another request.</label>` : ""}
@@ -287,6 +287,6 @@ ${tableWrap("Secrets presence", html`<table class="data"><tr><th>Secret</th><th>
 <p>Request mail delivery: ${mailDelivery ? html`<span class="pill ok">configured</span>` : html`<span class="pill bad">not configured</span> - send_request and send_followup cards fail with <code>sender_not_configured</code> until both outbox secrets are set`}</p>
 <h2>Runner token</h2>
 <form method="post" action="/settings/rotate-runner-token" class="stack"><p>Rotating generates a new token, stores its SHA-256 fingerprint here and shows the value once. You must then set it as the Worker secret <code>RUNNER_TOKEN</code> and on the runner; the old token stops working when the secret is updated.</p><button class="danger" type="submit">Rotate runner token</button></form>
-<h2>Campaign</h2>${campaign ? jsonBlock(campaign) : html`<p>No campaign row.</p>`}
+<h2>Campaign</h2>${campaign ? consoleJson("Campaign JSON", campaign) : html`<p>No campaign row.</p>`}
 <h2>Settings rows</h2>${tableWrap("Settings rows", html`<table class="data"><tr><th>Key</th><th>Value</th><th>Updated</th></tr>${rows.map((s) => html`<tr><td>${s.key}</td><td>${s.value_json}</td><td>${s.updated_at}</td></tr>`)}</table>`)}`;
 }
