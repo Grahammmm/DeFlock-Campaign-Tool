@@ -227,15 +227,34 @@ def repeat_request(root, agency_id, request, new_request, *, through=None, date_
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except FileExistsError:
         raise ValueError(f"kit/requests/{stem}.md already exists; it is never replaced") from None
+    owned = fd  # raw descriptor owned here until fdopen hands it to a stream
     try:
-        with os.fdopen(fd, "wb") as handle:
+        handle = os.fdopen(fd, "wb")
+        owned = None  # the stream owns it now; never close it a second time
+        with handle:
             handle.write(body)
         _replace_store(store_path, store)
     except BaseException:
-        os.unlink(target)  # only the draft this call created; the store was replaced atomically or not at all
+        try:
+            if owned is not None:
+                _close_unowned(owned)  # closed before its pathname is removed
+        finally:
+            os.unlink(target)  # only the draft this call created; the store was replaced atomically or not at all
         raise
     return {"agency_id": agency_id, "request": new_request, "follows": request, "draft": f"requests/{stem}.md",
             "date_from": meta["date_from"], "date_to": meta["date_to"], "draft_sha256": meta["draft_sha256"]}
+
+
+def _close_unowned(fd):
+    """Close a raw descriptor whose fdopen did not hand it over, never replacing the exception being unwound.
+
+    fdopen may fail before it touched the descriptor (still open here) or after FileIO accepted it (CPython's
+    io.open already closed it); a second close then raises EBADF. Either way the original error must escape.
+    """
+    try:
+        os.close(fd)
+    except OSError:
+        pass  # already closed by io.open, or nothing more can be done; the caller re-raises the original error
 
 
 def _store_bytes(document):
@@ -246,11 +265,18 @@ def _store_bytes(document):
 def _replace_store(path, payload):
     """Atomically install ``payload``, the already size-checked bytes from _store_bytes, as a 0600 file."""
     fd, temp = tempfile.mkstemp(dir=path.parent, prefix=".repeat-drafts.", suffix=".tmp")
+    owned = fd  # raw descriptor owned here until fdopen hands it to a stream
     try:
         os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as handle:
+        handle = os.fdopen(fd, "wb")
+        owned = None  # the stream owns it now; never close it a second time
+        with handle:
             handle.write(payload)
         os.replace(temp, path)
     except BaseException:
-        os.unlink(temp)
+        try:
+            if owned is not None:
+                _close_unowned(owned)  # closed before its temporary pathname is removed
+        finally:
+            os.unlink(temp)
         raise
