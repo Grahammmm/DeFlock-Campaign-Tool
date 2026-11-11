@@ -8,10 +8,17 @@ import hashlib
 import os
 import re
 import sqlite3
+from contextlib import closing
+from functools import lru_cache
 from pathlib import Path
 
 from . import backup_v2 as v2
 from .backup import MAX_ENTRIES, MAX_FILE, MAX_TOTAL
+from .. import extraction_ledger
+from ..intake import folder, imap_intake
+from ..ledger.migrations import (occurrence_projection_v001, original_resolution_v001, stages_authority_v001,
+                                 stages_v001, unit_projection_guards_v001, unit_projection_v001, v001)
+from ..portal import collections as portal_collections, store as portal_store
 
 HEX = re.compile(r"[0-9a-f]{64}")
 LEDGER, INTAKE, PORTAL = ("processing-v1/ledger.sqlite", "processing-v1/intake/intake.sqlite",
@@ -24,12 +31,25 @@ TABLES = {LEDGER: ("originals", "receipts", "occurrences", "mail_messages", "sta
 DB_ROLES = {LEDGER: ("canonical_ledger",), INTAKE: ("intake_ledger",), PORTAL: ("queue_store",)}
 PROCESS = {".lock", "run.lock", "writer.lock", "public-packets.lock", "public-packets.KILL", ".t12-sandbox-v1"}
 SCAN_LIMIT = MAX_ENTRIES * 4
+# Reviewed schemas, rebuilt from the migration modules (never from the database being backed up): per store an ordered
+# (group, required, scripts) list. A group is every object its scripts add to a private in-memory reference; a database
+# is supported only when it holds each required group exactly, any optional group exactly or not at all, and nothing else.
+SCHEMAS = {LEDGER: (("base", True, (v001.SQL,)), ("stages", True, (stages_v001.SQL,)),
+                    ("authority", True, (stages_authority_v001.SQL,)),
+                    ("occurrence_projection", False, (occurrence_projection_v001.SQL,)),
+                    ("original_resolution", False, (original_resolution_v001.SQL,)),
+                    ("unit_projection", False, (unit_projection_v001.SQL, unit_projection_guards_v001.SQL)),
+                    ("extraction_adapter", True, (extraction_ledger.SCHEMA,)),
+                    ("mail_checkpoints", False, (imap_intake.CHECKPOINTS_SQL,))),
+           INTAKE: (("intake", True, (folder.SCHEMA,)),),
+           PORTAL: (("portal_queue", True, (portal_store.SCHEMA,)),
+                    ("export_inventory", False, (portal_collections.SCHEMA,)))}
 
 
 class ProfileIncomplete(Exception):
-    def __init__(self, code, counts=None):
+    def __init__(self, code, counts=None, reason=None):
         super().__init__(code)
-        self.code, self.counts = code, counts or {}
+        self.code, self.counts, self.reason = code, counts or {}, reason
 
 
 def _rule(rel):
@@ -92,19 +112,58 @@ def _lit(text):
     return "'" + text.replace("'", "''") + "'"
 
 
-def _database(path, tables, queries):
-    con = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True, timeout=1)
+def _objects(con):
+    return {(r[0], r[1]): (r[2], r[3]) for r in con.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")}
+
+
+@lru_cache(maxsize=None)
+def _reference(rel):
+    """{group: {(type, name): (table, sql)}} for one store, built only from the reviewed migration scripts."""
+    groups = {}
+    with closing(sqlite3.connect(":memory:")) as ref:
+        for group, _required, scripts in SCHEMAS[rel]:
+            before = _objects(ref)
+            for script in scripts:
+                ref.executescript(script)
+            groups[group] = {key: value for key, value in _objects(ref).items() if key not in before}
+    return groups
+
+
+def _pinned_schema(rel, actual):
+    """The reviewed schema rows of a supported database; drift (any missing, changed or extra object) is refused."""
+    reference, schema = _reference(rel), {}
+    if set(actual) - {key for objects in reference.values() for key in objects}:
+        raise ProfileIncomplete("PROFILE_INCOMPLETE", reason="schema_drift")
+    for group, required, _scripts in SCHEMAS[rel]:
+        expected = reference[group]
+        if any(key in actual for key in expected):
+            if any(actual.get(key) != value for key, value in expected.items()):
+                raise ProfileIncomplete("PROFILE_INCOMPLETE", reason="schema_drift")
+        elif required:
+            raise ProfileIncomplete("PROFILE_INCOMPLETE", reason="schema_drift")
+        else:
+            continue
+        schema.update(expected)
+    return [[kind, name, table, sql] for (kind, name), (table, sql) in sorted(schema.items())]
+
+
+def _database(path, rel, tables, queries):
+    con = None
     try:
+        con = sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True, timeout=1)
         con.execute("PRAGMA query_only=ON")
-        schema = [list(r) for r in con.execute(
-            "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name")]
-        have = {r[1] for r in schema if r[0] == "table"}
+        schema = _pinned_schema(rel, _objects(con))
+        have = {row[1] for row in schema if row[0] == "table"}
         if not set(tables) <= have:
-            raise ProfileIncomplete("PROFILE_INCOMPLETE")
+            raise ProfileIncomplete("PROFILE_INCOMPLETE", reason="schema_drift")
         refs = [tuple(r) for sql in queries for r in con.execute(sql)]
         return have, v2.sha(v2.canonical(schema)), refs
+    except sqlite3.Error:  # corrupt or unreadable store: a fixed code, never the driver's message or any path
+        raise ProfileIncomplete("PROFILE_INCOMPLETE", reason="database_unreadable") from None
     finally:
-        con.close()
+        if con is not None:
+            con.close()
 
 
 def counts(files, rules, extra=None):
@@ -156,7 +215,10 @@ def build_profile(project, report=None):
     meta = {}
     for rel in (LEDGER, INTAKE, PORTAL):
         if rel in roles:
-            have, schema, refs = _database(root / rel, TABLES[rel], queries[rel])
+            try:
+                have, schema, refs = _database(root / rel, rel, TABLES[rel], queries[rel])
+            except ProfileIncomplete as error:
+                raise ProfileIncomplete(error.code, found, error.reason) from None
             meta[rel] = (have, schema)
             for role, source, _digest in refs:
                 key = source[len(base) + 1:] if source.startswith(base + "/") else None

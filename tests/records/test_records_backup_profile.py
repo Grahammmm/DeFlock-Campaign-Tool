@@ -3,19 +3,21 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing, redirect_stdout
 from datetime import datetime, timedelta, timezone
-from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from campaign_tool.records import approval_queue, cli, e2e_proof, public_packets
+from campaign_tool.records import approval_queue, cli, e2e_proof, public_packets, records_backup
 from campaign_tool.records.intake import imap_intake
 from campaign_tool.records.recovery import backup_v2 as v2
+from campaign_tool.records.recovery.records_profile import INTAKE, LEDGER, PORTAL
 from tests.records.test_run_slice import synthetic_email
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -175,6 +177,66 @@ class RecordsBackupCli(unittest.TestCase):
         code, line = self.run_cli("backup", "--project", str(self.project), "--into", str(self.project / "sets"),
                                   "--quiescence", self.evidence())
         self.assertEqual((code, line["code"]), (1, "BACKUP_REFUSED"))
+
+    def damaged_copy(self, rel, statements=(), replace=None):
+        """A private copy of the project whose one SQLite store was altered; the shared source tree is never touched."""
+        copy = self.work / "project"
+        shutil.rmtree(copy, ignore_errors=True)
+        shutil.copytree(self.project, copy, symlinks=True)
+        target = copy / rel
+        if replace is not None:
+            target.write_bytes(replace)
+        else:
+            with closing(sqlite3.connect(target)) as con:
+                for statement in statements:
+                    con.execute(statement)
+                con.commit()
+        return copy
+
+    def assert_refused(self, copy, reason):
+        code, line = self.run_cli("backup", "--check-profile", "--project", str(copy))
+        self.assertEqual((code, line["code"], line.get("reason")), (1, "PROFILE_INCOMPLETE", reason))
+        evidence = self.work / "q.json"
+        evidence.write_text(json.dumps({"schema": "records-quiescence-v1", "basis": "independent_all_writer_audit",
+                                        "roots": [str(copy)], "observed_utc": datetime.now(timezone.utc).isoformat(),
+                                        "all_writers_stopped": True, "checks": {}, "auditor": "records quiescence-audit"}))
+        code, line = self.run_cli("backup", "--project", str(copy), "--into", str(self.work / "sets"),
+                                  "--quiescence", str(evidence))
+        self.assertEqual((code, line["code"], line.get("reason")), (1, "PROFILE_INCOMPLETE", reason))
+        self.assertFalse((self.work / "sets").exists())
+
+    def test_dropped_integrity_trigger_is_schema_drift(self):
+        copy = self.damaged_copy(LEDGER)
+        with closing(sqlite3.connect(copy / LEDGER)) as con:
+            (trigger,) = con.execute("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name LIMIT 1").fetchone()
+            con.execute('DROP TRIGGER "%s"' % trigger)
+            con.commit()
+        self.assert_refused(copy, "schema_drift")
+
+    def test_unreviewed_table_is_schema_drift(self):
+        for rel in (LEDGER, INTAKE, PORTAL):
+            with self.subTest(rel):
+                self.assert_refused(self.damaged_copy(rel, ["CREATE TABLE unreviewed_extra(x)"]), "schema_drift")
+
+    def test_missing_column_is_contained(self):
+        copy = self.damaged_copy(INTAKE, ["PRAGMA foreign_keys=OFF", "ALTER TABLE preservations RENAME COLUMN sha TO sha_old"])
+        self.assert_refused(copy, "schema_drift")
+
+    def test_corrupt_store_is_contained(self):
+        self.assert_refused(self.damaged_copy(LEDGER, replace=b"not a sqlite database" * 200), "database_unreadable")
+
+    def test_truncated_store_is_contained(self):
+        raw = (self.project / INTAKE).read_bytes()
+        self.assert_refused(self.damaged_copy(INTAKE, replace=raw[:len(raw) // 2 + 1] + b"\xff" * 64), "database_unreadable")
+
+    def test_query_error_after_pinned_schema_is_contained(self):
+        out = io.StringIO()
+        with mock.patch("campaign_tool.records.recovery.records_profile._database",
+                        side_effect=sqlite3.OperationalError("no such column")), redirect_stdout(out):
+            self.assertEqual(records_backup.backup_main(["--check-profile", "--project", str(self.project)]), 1)
+        line = json.loads(out.getvalue())
+        self.assertEqual((line["code"], line["reason"]), ("PROFILE_INCOMPLETE", "database_unreadable"))
+        self.assertNotIn("column", out.getvalue())
 
 
 if __name__ == "__main__":

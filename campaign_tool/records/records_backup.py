@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import os
+import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,12 +52,18 @@ def _evidence(path, trusted, roots):
     return v2.CallerQuiescence(roots, doc["observed_utc"], digest, all_writers_stopped=True)
 
 
+def _incomplete(error):
+    return _emit(error.code, **error.counts, **({"reason": error.reason} if error.reason else {}))
+
+
 def _check_profile(project):
     report = {}
     try:
         v2._profile(build_profile(project, report))
     except ProfileIncomplete as error:
-        return _emit(error.code, **error.counts)
+        return _incomplete(error)
+    except sqlite3.Error:
+        return _emit("PROFILE_INCOMPLETE", reason="database_unreadable", **report)
     except (RecoveryError, OSError, ValueError, KeyError) as error:
         code = "LIMIT_ENTRIES" if str(error) == "scope_entry_bound" else "PROFILE_INCOMPLETE"
         return _emit(code, reason=str(error) if isinstance(error, RecoveryError) else "scan_failed", **report)
@@ -99,11 +106,11 @@ def backup_main(argv=None):
         finally:
             os.close(fd)
     except ProfileIncomplete as error:
-        return _emit(error.code, **error.counts)
+        return _incomplete(error)
     except RecoveryError as error:
         refused = str(error).startswith(("quiescence", "independent_caller", "utc_boundary"))
         return _emit("QUIESCENCE_REFUSED" if refused else "BACKUP_REFUSED", reason=str(error))
-    except (OSError, ValueError):
+    except (OSError, ValueError, sqlite3.Error):
         return _emit("BACKUP_REFUSED")
     return _emit("OK", files=report["files"], sqlite_snapshots=report["sqlite_snapshots"])
 
@@ -125,4 +132,6 @@ def verify_main(argv=None):
         report = v2.verify_v2(source, manifest_sha256=trusted[-1])
     except RecoveryError as error:
         return _emit("VERIFY_FAILED", reason=str(error))
+    except (OSError, ValueError, sqlite3.Error):
+        return _emit("VERIFY_FAILED")
     return _emit("OK", files=report["files"], sqlite_snapshots=report["sqlite_snapshots"])
