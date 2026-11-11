@@ -44,7 +44,7 @@ class RecordsBackupCli(unittest.TestCase):
         content = base / "campaign" / "content"
         content.mkdir(parents=True)
         (content / "agencies.json").write_text(json.dumps(
-            [{"agency_id": "a-1", "name": "Agency", "profile": {"status": "Records requested", "summary": "s"}}]))
+            [{"agency_id": "ca-agency", "name": "Agency", "profile": {"status": "Records requested", "summary": "s"}}]))
         message = base / "m.eml"
         message.write_bytes(synthetic_email())
         report = e2e_proof.replay(message, base / "out", base / "campaign")
@@ -54,7 +54,7 @@ class RecordsBackupCli(unittest.TestCase):
             con.executescript(imap_intake.CHECKPOINTS_SQL)
             con.execute("INSERT INTO mail_checkpoints VALUES('local','inbox',1,7,NULL,'2026-11-01T00:00:00+00:00')")
         con.close()
-        approval_queue.add_draft(str(cls.project), item_id="1" * 64, kind="reply-extension", agency_id="a-1",
+        approval_queue.add_draft(str(cls.project), item_id="1" * 64, kind="reply-extension", agency_id="ca-agency",
                                  request_id="req-1", body="Please extend.", evidence={"findings": [], "deadlines": []},
                                  source_run_id="run_20260101T060000Z_0a1b2c3d")
         public_packets.init(str(cls.project))
