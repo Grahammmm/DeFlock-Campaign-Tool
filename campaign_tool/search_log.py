@@ -48,6 +48,14 @@ def _has_control(text):
     return any(ord(c) < 32 or 127 <= ord(c) < 160 or c in "\u2028\u2029" for c in text)
 
 
+def _guard_agency_metadata(agency_id, agency_name):
+    """Refuse control-bearing agency display metadata (fixed text, never the value) before any report is emitted."""
+    if isinstance(agency_id, str) and _has_control(agency_id):
+        raise ValueError("search-log agency_id contains a control character; repair kit/agencies.json")
+    if isinstance(agency_name, str) and _has_control(agency_name):
+        raise ValueError("search-log agency_name contains a control character; repair kit/agencies.json")
+
+
 def _collapse(text):
     return " ".join(text.casefold().split())
 
@@ -333,6 +341,7 @@ def _summarize_csv(csv_path, agency, *, columns=None, categories_path=None):
 
 def format_summary(summary):
     """Human text for a v1 summary; the same warning heads every section."""
+    _guard_agency_metadata(summary["agency_id"], summary["agency_name"])
     rows, columns = summary["rows"], summary["input"]["columns"]
     period = summary["period"]
     out = [f"Search log summary for {summary['agency_name']} ({summary['agency_id']})", "",
@@ -487,6 +496,7 @@ def run_cli(root, args):
     agencies = [a for a in kit_agencies.load_agencies(root) if a["agency_id"] == args.agency]
     if len(agencies) != 1:
         raise ValueError("--agency is not an agency_id in kit/agencies.json")
+    _guard_agency_metadata(agencies[0]["agency_id"], agencies[0].get("name"))  # before sharing/category/CSV reads
     against = getattr(args, "against_sharing", False)
     sharing = _recorded_sharing(root, args.agency) if against else None  # content/agencies.json is opened only on request
     summary = summarize_csv(args.csv, agencies[0], categories_path=args.categories, columns={
