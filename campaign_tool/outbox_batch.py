@@ -20,31 +20,36 @@ _ROLLBACK_ERROR = "export failed; partial local output remains"
 
 
 def _write(fd, name, data):
+    """Create one member; on success return its still-open raw descriptor (ownership moves to the caller).
+
+    The descriptor pins the original inode so a saved identity can never match a recycled inode number.
+    """
     raw = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                   0o600, dir_fd=fd)
-    identity = None
+    transferred = False
     try:
-        info = os.fstat(raw)
-        identity = (info.st_dev, info.st_ino)
-        stream = os.fdopen(raw, "wb")
-        raw = None  # The stream now owns the descriptor, including on close failure.
-        with stream:
-            os.fchmod(stream.fileno(), 0o600)
-            stream.write(data)
-        return identity
-    except Exception as exc:
         try:
-            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
-            if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != identity:
-                raise OutboxError(_ROLLBACK_ERROR)
-            os.unlink(name, dir_fd=fd)
-        except FileNotFoundError:
-            pass
-        except Exception:
-            raise OutboxError(_ROLLBACK_ERROR) from exc
-        raise
+            stream = os.fdopen(raw, "wb", closefd=False)  # The wrapper never closes the pinned descriptor.
+            with stream:
+                os.fchmod(raw, 0o600)
+                stream.write(data)
+        except Exception as exc:
+            try:
+                expected = os.fstat(raw)
+                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if (not stat.S_ISREG(expected.st_mode) or not stat.S_ISREG(info.st_mode)
+                        or (info.st_dev, info.st_ino) != (expected.st_dev, expected.st_ino)):
+                    raise OutboxError(_ROLLBACK_ERROR)
+                os.unlink(name, dir_fd=fd)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                raise OutboxError(_ROLLBACK_ERROR) from exc
+            raise
+        transferred = True
+        return raw
     finally:
-        if raw is not None:
+        if not transferred:
             os.close(raw)
 
 
@@ -113,7 +118,7 @@ def export(box, out_dir, agencies=None):
                 if len(key) != 64 or any(c not in "0123456789abcdef" for c in key):
                     raise OutboxError("invalid outbox key")
                 data = box.approval_payload(key)
-                owned[key + ".txt"] = _write(fd, key + ".txt", data)
+                owned[key + ".txt"] = _write(fd, key + ".txt", data)  # Pinned until the final boundary.
                 cells = [row["agency_id"], row["kind"], row["channel"], str(row["fee_cap_cents"]),
                          hashlib.sha256(data).hexdigest()[:12], key + ".txt"]
                 index.append("| " + " | ".join(c.replace("|", "\\|").replace("\n", " ").replace("\r", " ")
@@ -130,10 +135,12 @@ def export(box, out_dir, agencies=None):
             owned["INDEX.md"] = _write(fd, "INDEX.md", ("\n".join(index) + "\n").encode("utf-8"))
         except Exception as exc:
             incomplete = False
-            for name, identity in owned.items():
+            for name, member in owned.items():
                 try:
+                    expected = os.fstat(member)
                     info = os.stat(name, dir_fd=fd, follow_symlinks=False)
-                    if stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == identity:
+                    if (stat.S_ISREG(expected.st_mode) and stat.S_ISREG(info.st_mode)
+                            and (info.st_dev, info.st_ino) == (expected.st_dev, expected.st_ino)):
                         os.unlink(name, dir_fd=fd)
                     else:
                         incomplete = True
@@ -168,6 +175,11 @@ def export(box, out_dir, agencies=None):
             raise OutboxError(str(exc)) from exc
         raise
     finally:
+        for member in owned.values():
+            try:
+                os.close(member)
+            except OSError:
+                pass
         if fd is not None:
             os.close(fd)
     return {"written": len(rows), "dir": str(path)}
