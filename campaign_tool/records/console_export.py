@@ -81,17 +81,33 @@ def _open_chain(root_fd, parts):
     return current
 
 
-def _copy_file(dir_fd, name, dst):
-    """Copy one regular file opened relative to the pinned dir_fd; a symlink leaf is refused."""
+def _open_leaf(dir_fd, name):
+    """Open one regular file relative to the pinned dir_fd; a symlink leaf is refused. Caller closes."""
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
     except OSError as error:
         raise ExportError("SYMLINK_REFUSED" if error.errno == errno.ELOOP else "SOURCE_UNREADABLE")
-    with os.fdopen(fd, "rb") as handle:
-        _need(stat.S_ISREG(os.fstat(handle.fileno()).st_mode), "NOT_REGULAR")
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        raise ExportError("NOT_REGULAR")
+    return fd
+
+
+def _write_fd(fd, dst):
+    with os.fdopen(os.dup(fd), "rb") as handle:
+        handle.seek(0)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         with open(dst, "wb") as out:
             shutil.copyfileobj(handle, out)
+
+
+def _copy_file(dir_fd, name, dst):
+    """Copy one regular file opened relative to the pinned dir_fd; a symlink leaf is refused."""
+    fd = _open_leaf(dir_fd, name)
+    try:
+        _write_fd(fd, dst)
+    finally:
+        os.close(fd)
 
 
 def _copy_tree(dir_fd, rel, dest):
@@ -113,30 +129,92 @@ def _copy_tree(dir_fd, rel, dest):
             _copy_file(dir_fd, entry.name, os.path.join(dest, target))
 
 
-def _backup_ledger(dir_fd, name, dst):
-    """Back up the ledger from no-follow copies of it and its -wal/-shm taken through the pinned directory.
+def _open_reader(dir_fd, name):
+    """Read-only SQLite connection on the ledger below the pinned dir_fd, inside an open read transaction."""
+    reader = sqlite3.connect("file:/proc/self/fd/%d/%s?mode=ro" % (dir_fd, name), uri=True, timeout=30,
+                             isolation_level=None)
+    try:
+        reader.execute("BEGIN")
+        reader.execute("SELECT count(*) FROM sqlite_master").fetchall()
+    except sqlite3.Error:
+        reader.close()
+        raise ExportError("LEDGER_INVALID")
+    return reader
 
-    SQLite never opens the source by name, so a leaf swapped to a symlink is refused atomically (O_NOFOLLOW).
+
+def _fd_numbers():
+    """Open descriptor numbers of this process (the directory listing's own transient fd is left out)."""
+    found = set()
+    for entry in os.listdir("/proc/self/fd"):
+        try:
+            os.fstat(int(entry))
+        except OSError:
+            continue
+        found.add(entry)
+    return found
+
+
+def _opened_since(before, identity):
+    """True when a descriptor opened after the `before` set of fd numbers is the file with (st_dev, st_ino) identity."""
+    for entry in _fd_numbers() - before:
+        try:
+            info = os.fstat(int(entry))
+        except OSError:
+            continue
+        if (info.st_dev, info.st_ino) == identity:
+            return True
+    return False
+
+
+def _between_main_and_wal_copy():
+    """Test seam: runs after the main database file is copied and before its -wal/-shm are."""
+
+
+def _backup_ledger(dir_fd, name, dst):
+    """Back up the ledger as a SQLite-consistent snapshot without ever opening the source by a followable name.
+
+    The leaf is pinned with O_NOFOLLOW. A read transaction is then held on the live database (its WAL cannot
+    be reset by a checkpoint while it lives), and only inside that window are the main file and its -wal/-shm
+    copied through the pinned directory. The read connection must hold the very inode that was pinned, so a leaf
+    swapped to a symlink is refused. The backup API then runs on the copies.
     """
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=os.path.dirname(dst)) as scratch:
-        work = os.path.join(scratch, name)
-        _copy_file(dir_fd, name, work)
-        for suffix in ("-wal", "-shm"):
-            try:
-                os.stat(name + suffix, dir_fd=dir_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                continue
-            _copy_file(dir_fd, name + suffix, work + suffix)
-        source = sqlite3.connect(work, timeout=30)
-        target = sqlite3.connect(dst)
-        try:
-            source.backup(target)
-            target.execute("PRAGMA journal_mode=DELETE")
-            _need(target.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "LEDGER_INVALID")
-        finally:
-            target.close()
-            source.close()
+    pinned = _open_leaf(dir_fd, name)
+    reader = None
+    try:
+        info = os.fstat(pinned)
+        before = _fd_numbers()
+        reader = _open_reader(dir_fd, name)
+        _need(_opened_since(before, (info.st_dev, info.st_ino)), "SYMLINK_REFUSED")
+        with tempfile.TemporaryDirectory(dir=os.path.dirname(dst)) as scratch:
+            work = os.path.join(scratch, name)
+            _write_fd(pinned, work)
+            _between_main_and_wal_copy()
+            for suffix in ("-wal", "-shm"):
+                try:
+                    os.stat(name + suffix, dir_fd=dir_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                _copy_file(dir_fd, name + suffix, work + suffix)
+            reader.close()
+            reader = None
+            _snapshot(work, dst)
+    finally:
+        if reader is not None:
+            reader.close()
+        os.close(pinned)
+
+
+def _snapshot(work, dst):
+    source = sqlite3.connect(work, timeout=30)
+    target = sqlite3.connect(dst)
+    try:
+        source.backup(target)
+        target.execute("PRAGMA journal_mode=DELETE")
+        _need(target.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "LEDGER_INVALID")
+    finally:
+        target.close()
+        source.close()
 
 
 def latest_run(project):

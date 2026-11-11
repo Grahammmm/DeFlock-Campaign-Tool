@@ -272,21 +272,35 @@ class ConsoleExportTests(unittest.TestCase):
         other.execute("create table ext (a)")
         other.commit()
         other.close()
-        real_copy, swapped = console_export._copy_file, []
+        real_open, swapped = console_export._open_reader, []
 
-        def copy_after_swap(dir_fd, name, dst):
-            if name == "ledger.sqlite" and not swapped:
+        def open_after_swap(dir_fd, name):
+            if not swapped:
                 swapped.append(True)
                 leaf = self.project / "processing-v1" / "ledger.sqlite"
                 leaf.unlink()
                 leaf.symlink_to(outside)
-            return real_copy(dir_fd, name, dst)
+            return real_open(dir_fd, name)
 
-        with mock.patch.object(console_export, "_copy_file", copy_after_swap):
+        with mock.patch.object(console_export, "_open_reader", open_after_swap):
             with self.assertRaises(console_export.ExportError) as caught:
                 console_export.build(str(self.project), RUN, str(self.dest))
         self.assertTrue(swapped)
         self.assertIn("SYMLINK_REFUSED", str(caught.exception))
+
+    def test_checkpoint_between_main_and_wal_copy_keeps_committed_data(self):
+        ran = []
+
+        def checkpoint():
+            ran.append(self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone())
+
+        with mock.patch.object(console_export, "_between_main_and_wal_copy", checkpoint):
+            console_export.build(str(self.project), RUN, str(self.dest))
+        self.assertTrue(ran)
+        copy = sqlite3.connect(self.dest / "processing-v1" / "ledger.sqlite")
+        rows = copy.execute("select a from t").fetchall()
+        copy.close()
+        self.assertEqual(rows, [(1,)])
 
 
 if __name__ == "__main__":
