@@ -7,6 +7,7 @@ summary field is copied. The draft is written only by findings._write_draft, aft
 Every error is fixed text: never a value from the summary or the log.
 """
 import json
+import math
 import re
 from pathlib import Path
 
@@ -29,6 +30,15 @@ def _no_constant(_name):
     raise ValueError("summary is not valid JSON")
 
 
+def _finite_float(token):
+    """json.loads parse_float: ordinary float(token), but an exponent that overflows to infinity (1e999) is refused like
+    the literal Infinity/NaN constants. Applies to every number in the document; the message never echoes the token."""
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError("summary has a number out of range")
+    return value
+
+
 def _pairs(items):
     keys = [key for key, _ in items]
     if len(set(keys)) != len(keys):
@@ -48,7 +58,8 @@ def _load_summary(path):
     if len(data) > MAX_SUMMARY_BYTES:
         raise ValueError("--search-log file is larger than 4 MiB")
     try:
-        summary = json.loads(data.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_no_constant)
+        summary = json.loads(data.decode("utf-8"), object_pairs_hook=_pairs, parse_constant=_no_constant,
+                             parse_float=_finite_float)
     except (ValueError, RecursionError):
         raise ValueError("--search-log file is not valid UTF-8 JSON") from None
     if not isinstance(summary, dict):
