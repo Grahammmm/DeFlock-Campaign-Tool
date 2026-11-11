@@ -50,6 +50,7 @@ COMMANDS = {
     "calendar": ("console_calendar", "main"),
     "documents": ("console_documents", "main"),
     "schedule": ("schedule", "schedule_main"),
+    "analysis-config": ("analysis_config", "main"),
 }
 
 

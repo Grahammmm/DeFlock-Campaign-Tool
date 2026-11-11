@@ -1,0 +1,32 @@
+{
+  "schema": "records-review-profile-v1",
+  "records_agency_id": "agency-sample-001",
+  "slug": "sample-city-police-department",
+  "fact_agency": "Sample City Police Department",
+  "agency_name": "Sample City Police Department",
+  "portal": "records.example.invalid",
+  "review": {
+    "method_dir": "@METHOD@",
+    "method_python": "@PY@",
+    "added_by": "tester",
+    "roster_doc_id": "1",
+    "ocr_log_doc_ids": [],
+    "training_join": null,
+    "region_config": null,
+    "verify_sample": 30
+  },
+  "rules_intake": {
+    "law_specs": ["@ROOT@/inputs/law.spec.csv"],
+    "policy_specs": ["@ROOT@/inputs/policy.spec.csv"],
+    "extra_specs": [],
+    "f2_law_map": "@ROOT@/inputs/law.f2map.csv",
+    "sources": [{"id": "pol-2026", "kind": "policy", "family": "sample-alpr", "footer_version_date": "2026-01-01",
+                 "text": "@ROOT@/inputs/policy.txt"}]
+  },
+  "compare_f3": {
+    "applicability": "Sample city police; local ALPR policy applies",
+    "golden": "tests/fixtures/flock/morrobay-golden.csv"
+  },
+  "not_posted_analysis_only_ids": [],
+  "log_doc_ids": []
+}
