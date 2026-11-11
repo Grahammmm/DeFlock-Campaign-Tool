@@ -458,14 +458,14 @@ class NestedWorkTreeTests(Base):
         outer.mkdir()
         (outer / ".git").write_text("gitdir: elsewhere\n")
         camp = self.inner(outer / "camp")
-        real_open = Path.open
+        real_open = os.open
 
-        def deny(self_, *a, **kw):
-            if self_ == outer / ".git":
+        def deny(path, *a, **kw):
+            if Path(path) == outer / ".git":
                 raise PermissionError("synthetic denial")
-            return real_open(self_, *a, **kw)
+            return real_open(path, *a, **kw)
 
-        with mock.patch.object(Path, "open", deny), self.no_git_calls():
+        with mock.patch.object(git_exposure.os, "open", deny), self.no_git_calls():
             self.assertEqual(git_exposure_row(camp), GENERIC_ROW)
         stat = self.base / "stat"
         camp = self.inner(stat / "camp")
@@ -485,27 +485,13 @@ class NestedWorkTreeTests(Base):
         camp.mkdir()
         (camp / ".git").write_bytes(b"gitdir:" + b"x" * 100000)
         reads = []
-        real_open = Path.open
+        real_read = os.read
 
-        class Spy:
-            def __init__(self, handle):
-                self.handle = handle
+        def spy(fd, size):
+            reads.append(size)
+            return real_read(fd, size)
 
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return self.handle.__exit__(*exc)
-
-            def read(self, size=-1):
-                reads.append(size)
-                return self.handle.read(size)
-
-        def spy(self_, *a, **kw):
-            handle = real_open(self_, *a, **kw)
-            return Spy(handle) if self_.name == ".git" else handle
-
-        with mock.patch.object(Path, "open", spy):
+        with mock.patch.object(git_exposure.os, "read", spy):
             self.assertEqual(git_exposure_row(camp), NESTED_ROW)
         self.assertEqual(reads, [512])
         self.assertTrue(outer.is_dir())
