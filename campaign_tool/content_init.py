@@ -254,9 +254,10 @@ def add_starter(root, name):
                 raise exists
         temp_name = f".{parts[-1]}.new-{os.urandom(6).hex()}"
         fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent)
-        temp = (temp_name, parent, os.fstat(fd))
-        # The raw descriptor is ours only until stream construction succeeds.
+        # The raw descriptor is ours from exclusive creation until stream construction succeeds, so it stays under
+        # this guard through its first identity lookup. A failed lookup leaves temp unrecorded: that pathname is kept.
         try:
+            temp = (temp_name, parent, os.fstat(fd))
             out = os.fdopen(fd, "wb")
         except BaseException:
             try:
