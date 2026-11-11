@@ -467,8 +467,12 @@ characters without control characters, `state` a two-letter USPS code (50 states
 federal agency (`US` only with `federal`), `kind` one of `local`, `state`, `federal`, `private`, `unknown`; 1 to 2000 rows,
 and the same name (any letter case) and state twice is refused. `--source-url` is an `https://` page on
 `transparency.flocksafety.com`; `--checked-on` is a real date not after today. Every bad row is named by its line (at most 20,
-then "and N more"); on any error nothing is written. The file is read as a plain file, never fetched, and a symlink is refused.
+then "and N more"); on any error before the file is installed (validation, or a write or replace failure) nothing is written and
+the previous file is kept. The file is read as a plain file, never fetched, and a symlink is refused.
 The whole `content/agencies.json` is validated and then written once; an agency that already has a list needs `--replace`.
+After the replacement the `content/` directory is flushed to disk; if that flush fails the command stops with an error saying
+the new sharing data was written but crash durability is unconfirmed, the complete new file stays installed, and you must
+inspect the file before retrying. A directory flush is an attempt, not a promise that the data survives a power loss.
 Recipients are stored sorted by state, then name. The agency page and the agencies-list card show "Who the vendor portal lists
 as receiving data": "As listed on the vendor transparency portal, transcribed by the organizer (checked `{date}`): `{n}`
 agencies.", a count by state (the campaign's own state first) and by kind, then "Out of state and federal:" with the name,
