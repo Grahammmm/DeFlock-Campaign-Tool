@@ -944,7 +944,7 @@ FUNCTION_LEVEL_MODULES = {"findings", "kit", "kit_track", "kit_assign", "kit_und
                           "meeting_comments", "correction_requests", "supporters", "meeting_speakers"}
 _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
-        records.admin_panel records.agency_reconciliation records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links
+        records.admin_panel records.agency_reconciliation records.analysis_config records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links
         records.catalog_stage records.console_calendar records.console_documents records.contained_resume records.e2e_proof records.container_host records.export_clearance
         records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes records.first_request
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
@@ -1048,6 +1048,7 @@ MODULE_FUNCTIONS = {
     'press': ('build_letter', 'build_press',),
     'recent': ('_write_new', 'run_cli',),
     'records.agency_reconciliation': ('run',),
+    'records.analysis_config': ('main', 'write_config',),  # one 0600 review-config.json under the operator analysis root, only when flock_review --check passes; no store, sends nothing
     'records.arrival': ('consume', 'main', 'mark_pending', 'scan_drop_status', 'stamp',),
     'records.arrival_summary': ('capture_baseline',),
     'records.bounded_resume': ('_worker',),
