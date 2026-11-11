@@ -4,7 +4,7 @@ A packet is a proposed public item (kinds ``document``, ``summary``, ``finding``
 private journal ``<project>/public-packets.jsonl``. G approves each packet with an SSH signature over its exact text
 (``campaign_tool.approval``, the REC-AUTO-4 verifier, bound to the revision). Only then, and only while the switch file
 ``public-packets.json`` says ``enabled`` (it ships ``false``) and ``public-packets.KILL`` is absent, may ``write_change`` write
-``<project>/site-changes/<id>-r<rev>.json``: an input for a reviewed deflockslo-site PR. The production deploy stays the
+``<project>/site-changes/<id>-r<rev>.json``: an input for a reviewed campaign-site PR. The production deploy stays the
 existing manual workflow. Agencies, campaign and jurisdiction are data.
 
 Refused at proposal and again at write: privacy-pattern matches, legal-violation wording, unverified citations, documents
@@ -23,6 +23,7 @@ import time
 from datetime import datetime, timezone
 
 from .. import approval, legal_claims, privacy_patterns
+from . import campaign_config
 
 SCHEMA = "records-public-packets-v1"
 CHANGE_SCHEMA = "records-site-change-v1"
@@ -412,6 +413,10 @@ def write_change(project, ident, now=None):
         except approval.ApprovalError:
             raise PacketError("approval_required") from None
         _need(who == row["signed_by"], "approval_required")
+        try:
+            campaign = campaign_config.load(project)
+        except ValueError:
+            raise PacketError("campaign_config_invalid") from None
         name = f"{ident}-r{row['revision']}.json"
         day = _iso(row["approved_ts"])[:10]
         change = {"schema": CHANGE_SCHEMA, "packet": ident, "revision": row["revision"], "signed_by": who,
@@ -420,6 +425,10 @@ def write_change(project, ident, now=None):
                   "documents": packet["documents"], "citations": packet["citations"],
                   "target": f"content/updates/{packet['agency_key']}/{day}-{ident}.json",
                   "note": "input for a reviewed site PR; nothing is deployed by this file"}
+        if campaign.campaign_id is not None:  # a configured campaign names itself; unconfigured output is unchanged
+            change["campaign"] = {k: v for k, v in (
+                ("campaign_id", campaign.campaign_id), ("display_name", campaign.display_name),
+                ("law_package", campaign.law_package), ("public_base_url", campaign.public_base_url)) if v is not None}
         data = (json.dumps(change, sort_keys=True, indent=2, allow_nan=False) + "\n").encode()
         out = lock.path(OUT)
         os.makedirs(out, mode=0o700, exist_ok=True)
