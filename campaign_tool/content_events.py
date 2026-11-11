@@ -14,6 +14,7 @@ Classification is deterministic and start-based: with a UTC ``cutoff`` (the buil
 when ``starts_at >= cutoff`` and past otherwise (one already underway at the cutoff counts as past). ``partition`` sorts copies:
 upcoming by UTC start then id, past newest start first then id. Later newsletter or calendar units reuse these helpers.
 """
+import json
 import os
 import re
 import unicodedata
@@ -21,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .agency_cards import text as plain_text
-from .content import ContentError, SLUG, _https, _read_json
+from .content import ContentError, MAX_JSON_BYTES, SLUG, _https
 from .privacy_patterns import categories
 
 EVENT_KEYS = {"id", "title", "starts_at", "ends_at", "description_md", "venue", "online", "url", "accessibility_note"}
@@ -166,6 +167,18 @@ def load_events(document, problems=None):
     return finish(accepted)
 
 
+def _read_bounded_json(path):
+    """Parse ``path`` after consuming at most ``MAX_JSON_BYTES + 1`` bytes; the returned length is checked before decoding."""
+    with open(path, "rb") as stream:
+        data = stream.read(MAX_JSON_BYTES + 1)
+    if len(data) > MAX_JSON_BYTES:
+        raise ContentError(f"{path.name}: file too large")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ContentError(f"{path.name}: not valid UTF-8 JSON ({exc})") from None
+
+
 def read_events(root, problems=None):
     """``load_events`` of ``<root>/content/events.json``; None when the file is absent, ``[]`` when present and empty.
 
@@ -180,7 +193,7 @@ def read_events(root, problems=None):
         if not path.is_file():
             raise ContentError("events.json: must be a regular file, not a symlink or folder")
         try:
-            document = _read_json(path)
+            document = _read_bounded_json(path)
         except OSError:
             raise ContentError("events.json: could not be read") from None
         except RecursionError:
