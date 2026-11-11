@@ -1,6 +1,7 @@
 """RF2315-4: real-file byte limits and read-only consumer refusals, synthetic only."""
 import contextlib
 import json
+import os
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -11,6 +12,7 @@ from tests import test_kit_assign as existing
 LIMIT = kit_assign.MAX_BYTES
 SIZE_ERROR = "kit/assignments.json unreadable: larger than 1 MiB"
 REAL_OPEN = Path.open
+REAL_OS_OPEN, REAL_FSTAT, REAL_FDOPEN = os.open, os.fstat, os.fdopen
 
 
 class ReadProbe:
@@ -23,41 +25,58 @@ class ReadProbe:
         self.enforce = enforce
         self.handles = []
         self.reads = []
+        self.fds = []
         self.grown = False
 
+    def is_store(self, path):
+        return isinstance(path, (str, os.PathLike)) and os.fspath(path) == str(self.path)
+
     @contextlib.contextmanager
-    def opened(self, path, mode="r", *args, **kwargs):
-        if path != self.path or mode != "rb":
-            with REAL_OPEN(path, mode, *args, **kwargs) as handle:
-                yield handle
-            return
-        if self.grow_to is not None and not self.grown:
-            # The actual pathname checks have completed; grow the actual file,
-            # without substituting a stat result or any bytes returned by read.
-            with REAL_OPEN(path, "ab") as handle:
-                handle.write(b" " * (self.grow_to - path.stat().st_size))
-            self.grown = True
-            if self.after_growth:
-                self.after_growth()
-        with REAL_OPEN(path, mode, *args, **kwargs) as handle:
-            self.handles.append(handle)
-            probe = self
+    def active(self):
+        probe = self
+
+        def opened(path, flags, *args, **kwargs):
+            fd = REAL_OS_OPEN(path, flags, *args, **kwargs)
+            if probe.is_store(path):
+                probe.fds.append(fd)
+            return fd
+
+        def statted(fd, *args, **kwargs):
+            result = REAL_FSTAT(fd, *args, **kwargs)  # the genuine metadata snapshot
+            if fd in probe.fds and probe.grow_to is not None and not probe.grown:
+                # Grow the same admitted inode right after the snapshot, then return the stale snapshot, so only
+                # the finite read and actual-length guard can notice.
+                with REAL_OPEN(probe.path, "ab") as handle:
+                    handle.write(b" " * (probe.grow_to - result.st_size))
+                probe.grown = True
+                if probe.after_growth:
+                    probe.after_growth()
+            return result
+
+        def fdopened(fd, *args, **kwargs):
+            handle = REAL_FDOPEN(fd, *args, **kwargs)
+            if fd not in probe.fds:
+                return handle
+            probe.handles.append(handle)
 
             class Forward:
-                def read(self, size=-1):
+                def __enter__(inner):
+                    return inner
+
+                def __exit__(inner, *exc):
+                    return handle.__exit__(*exc)
+
+                def read(inner, size=-1):
                     if probe.enforce and size != LIMIT + 1:
                         raise AssertionError(f"unbounded/unexpected read: {size}")
                     raw = handle.read(size)
                     probe.reads.append((size, len(raw)))
                     return raw
 
-            yield Forward()
+            return Forward()
 
-    @contextlib.contextmanager
-    def active(self):
-        def opened(path, *args, **kwargs):
-            return self.opened(path, *args, **kwargs)
-        with mock.patch.object(Path, "open", opened):
+        with mock.patch.object(os, "open", opened), mock.patch.object(os, "fstat", statted), \
+                mock.patch.object(os, "fdopen", fdopened):
             yield self
 
 
