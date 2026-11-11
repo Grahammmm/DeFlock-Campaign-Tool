@@ -644,12 +644,12 @@ class KitCalendarTests(unittest.TestCase):
             out = folder / f"{kind}.ics"
             (folder / "elsewhere.txt").write_bytes(b"other")
 
-            def link(source, destination, *, out=out, kind=kind):
+            def link(source, destination, *, out=out, kind=kind, **dirfds):
                 if kind == "file":
                     out.write_bytes(b"sentinel")
                 else:
                     out.symlink_to(folder / ("elsewhere.txt" if kind == "symlink" else "missing.txt"))
-                return real_link(source, destination)
+                return real_link(source, destination, **dirfds)
             before = sorted(p.name for p in folder.iterdir())
             with self.subTest(kind=kind), mock.patch.object(os, "link", side_effect=link):
                 with self.assertRaisesRegex(ValueError, "exists; nothing was overwritten"):
