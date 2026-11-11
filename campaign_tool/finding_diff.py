@@ -91,7 +91,12 @@ def diff(old, new):
                 lines = list(difflib.unified_diff((a or "").splitlines(), (b or "").splitlines(), n=1, lineterm=""))
                 # Drop only the two generated '--- '/'+++ ' file headers; hunk lines such as '--- old detail'
                 # (a removed '-- old detail') are body changes and stay.
-                changes.append({"field": field, "lines": lines[2:]})
+                if lines[2:]:
+                    changes.append({"field": field, "lines": lines[2:]})
+                else:
+                    # Distinct strings whose terminator-free line arrays agree (final newline, CRLF vs LF): the
+                    # hunk is empty, so report the exact effective old/new strings instead.
+                    changes.append({"field": field, "old": a or "", "new": b or ""})
         elif field == "sources":
             entry = _sources(a, b)
             if entry["removed"] or entry["added"] or entry["changed"]:
@@ -115,7 +120,8 @@ def render(changes):
     for change in changes:
         field = change["field"]
         if "old" in change:
-            out.append(f"{field}: {quote(change['old'])} -> {quote(change['new'])}")
+            show = (lambda value: json.dumps(value, ensure_ascii=True)) if field == "body_md" else quote
+            out.append(f"{field}: {show(change['old'])} -> {show(change['new'])}")
             continue
         item_text = quote if field in LISTS else str  # list items quoted; source hashes bare
         out += [f"{field}:", *change.get("lines", []), *(f"- {item_text(item)}" for item in change.get("removed", [])),
