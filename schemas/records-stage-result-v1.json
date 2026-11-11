@@ -74,6 +74,7 @@
         "backup_bytes": {"$ref": "#/$defs/count"}
       }
     },
+    "internal": {"type": "object", "additionalProperties": false, "required": ["type", "where"], "description": "STAGE_INTERNAL_ERROR only: exception class name and innermost campaign_tool function. Never a message, value or path.", "properties": {"type": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"}, "where": {"type": "string", "pattern": "^[A-Za-z0-9_.<>]{1,160}$"}}},
     "review_required": {"$ref": "#/$defs/count"},
     "outcomes": {
       "type": "array",
