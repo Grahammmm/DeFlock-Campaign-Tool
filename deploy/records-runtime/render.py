@@ -50,9 +50,12 @@ TEMPLATES = (("run-records.sh.in", "run-records.sh", 0o700),
              ("records-arrival.service.in", "records-arrival.service", 0o600),
              ("records-health.service.in", "records-health.service", 0o600),
              ("records-health.timer.in", "records-health.timer", 0o600))
+# Rendered only when BACKUP_DIR (the backup directory as mounted in the container) is given.
+BACKUP_CHECK_TEMPLATES = (("records-backup-check.service.in", "records-backup-check.service", 0o600),
+                          ("records-backup-check.timer.in", "records-backup-check.timer", 0o600))
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
-ABSOLUTE = {"ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
+ABSOLUTE = {"BACKUP_DIR", "ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
             "NOTIFY_PY", "NOTIFY_ENV_FILE", "RUN_RECORDS_SH", "STUB_FIXTURE", "RECORDS_DROP_DIR",
             # Host path of the records root holding ledger.sqlite (health check only).
             "RECORDS_ROOT",
@@ -288,6 +291,10 @@ def render(values, targets, out):
                  "HEALTH_DAYS": timer.days_spec, "HEALTH_TIMES": timer.times_spec,
                  "HEALTH_TIMEZONE": timer.timezone}
         files.append((output, substitute(text, {**values, **extra}, template), mode))
+    for template, output, mode in BACKUP_CHECK_TEMPLATES if "BACKUP_DIR" in values else ():
+        text = (HERE / template).read_text(encoding="utf-8")
+        used.update(PLACEHOLDER.findall(text))
+        files.append((output, substitute(text, values, template), mode))
     for name, template in targets:
         if not run_orchestrator.TARGET_RE.match(name):
             raise RenderError(f"target {name!r}: expected an upper-case target name")

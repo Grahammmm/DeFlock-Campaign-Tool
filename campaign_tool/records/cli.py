@@ -28,6 +28,7 @@ COMMANDS = {
     "followups": "followup_clock",
     "next-steps": ("next_steps", "main"),
     "e2e-proof": ("e2e_proof", "main"),
+    "project-init": ("project_init", "main"),
     "mail-drafts": ("mail_drafts", "main"),
     "mail-send": ("mail_send", "main"),
     "publish": ("publish", "publish_main"),
@@ -55,6 +56,7 @@ COMMANDS = {
     "analysis-sync": ("analysis_bridge", "sync_main"),
     "backup": ("records_backup", "backup_main"),
     "backup-verify": ("records_backup", "verify_main"),
+    "backup-check": ("records_backup", "check_main"),
     "quiescence-audit": ("quiescence_audit", "main"),
 }
 

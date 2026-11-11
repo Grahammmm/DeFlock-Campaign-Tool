@@ -885,6 +885,28 @@ class RendererTests(unittest.TestCase):
             if path.is_file():
                 self.assertIsNone(re.search(r"@[A-Z_]+@", path.read_text()), path.name)
 
+    def test_backup_check_units_render_only_with_backup_dir(self):
+        self.do_render(out=self.tmp / "plain")
+        extra = {"BACKUP_DIR": "/srv/backups", "CONTAINER_USER": "records", "CONTAINER_ENGINE_DIR": "/srv/engine",
+                 "CONTAINER_PYTHON": "/usr/bin/python3"}
+        written = self.do_render(values={**self.values, **extra}, out=self.tmp / "with")
+        plain, with_dir = self.tmp / "plain", self.tmp / "with"
+        self.assertFalse(list(plain.glob("records-backup-check.*")))
+        self.assertEqual({"records-backup-check.service", "records-backup-check.timer"},
+                         set(written) - {p.relative_to(plain).as_posix() for p in plain.rglob("*") if p.is_file()})
+        for path in plain.rglob("*"):
+            if path.is_file():
+                self.assertEqual(path.read_bytes(), (with_dir / path.relative_to(plain)).read_bytes(), path.name)
+        timer = (with_dir / "records-backup-check.timer").read_text().splitlines()
+        self.assertIn("OnCalendar=*-*-* 06:10", timer)
+        self.assertIn("Persistent=true", timer)
+        exec_start = [line for line in (with_dir / "records-backup-check.service").read_text().splitlines()
+                      if line.startswith("ExecStart=")][0]
+        self.assertEqual(exec_start, "ExecStart=/usr/bin/docker exec -u records records env PYTHONPATH=/srv/engine "
+                         "/usr/bin/python3 -B -m campaign_tool.records backup-check --into /srv/backups")
+        for path in with_dir.glob("records-backup-check.*"):
+            self.assertIsNone(re.search(r"@[A-Z_]+@", path.read_text()), path.name)
+
     def test_render_test_and_live_container_targets(self):
         targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
                    ("LIVE", str(RUNTIME / "targets" / "live-container.json.in"))]

@@ -76,3 +76,7 @@ visually reviewed)`, `(text state: <words>)`, or `(text state not recorded)` whe
 linked, oversize or invalid file is a `config:` error and nothing is written. The label never changes which findings are
 included. Operators should point live report configs at the latest text-state file; without the key a report makes no
 claim about text state.
+
+## Store write lock
+
+`import` (not `--dry-run`) and `review` take an exclusive `fcntl.flock` on the store folder itself (a read-only descriptor, no lock file, so no listing, backup or DAG output snapshot ever sees one). They wait up to 30 s, then print `locked: fact store busy` and exit 1 with the store untouched; a refused import still creates no store. `--dry-run`, `--check`, `status`, `coverage`, `quote-check`, `stale`, `reviews` and `unreadable` take no lock. `evidence_fp(row)` (`E-` + 16 hex over every reviewed column but `status`) and `projection_sha256(path)` (hash of the file's rows with every status `unreviewed`; equals the bytes an unreviewed import wrote) are the shared helpers later units use.

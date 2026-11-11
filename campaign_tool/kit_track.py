@@ -320,8 +320,12 @@ def read_sent(root):
         raise bad("not a regular file")
     if path.stat().st_size > MAX_BYTES:
         raise bad("larger than 1 MiB")
+    with path.open("rb") as handle:  # read at most the ceiling plus one byte: the size check above can go stale
+        data = handle.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise bad("larger than 1 MiB")
     try:
-        document = json.loads(path.read_bytes().decode("utf-8"))
+        document = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise bad("not JSON") from None
     if not isinstance(document, dict) or document.get("schema_version") != 1 \
