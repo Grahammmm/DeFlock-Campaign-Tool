@@ -34,8 +34,17 @@ makes the same decisions without writing.
 If the central directory itself cannot be opened (for example an entry demands an extraction version the
 running `zipfile` does not support), the whole archive is refused with `Stopped: not a zip archive` before the
 ledger is opened or the container is written, in preview and apply alike; no earlier entry is partially stored.
-This differs from a parseable archive, which is always retained: there a member with an unsupported
+This differs from a parseable archive, which is retained once it passes container-level admission: there a member with an unsupported
 compression method or other unreadable content is skipped alone with the `unreadable` code.
+
+## Archive filenames that are not valid UTF-8
+Container-level admission also checks the archive's own file name (its last path component only). If that name
+cannot be represented as strict UTF-8 (for example a file name containing a raw byte such as 0xFF), the whole
+archive is refused with `Stopped: Archive filename cannot be represented as UTF-8; nothing was imported`, in
+preview and apply alike, before the ledger is opened and before the container or any member is preserved. This is
+a whole-container refusal, not a member skip. Ordinary Unicode names (accented, combining, CJK, emoji) are kept
+exactly, unnormalized, and a valid name under a parent directory whose own name is not valid UTF-8 is still
+accepted. To import a refused archive, rename the file yourself and run the intake again.
 
 ## Limits
 These are **structural** checks: they show the archive does not contradict itself, not that the contents are
