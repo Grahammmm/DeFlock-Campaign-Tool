@@ -35,6 +35,21 @@ The price is checked with the normal `--amount` rule before anything is compared
 `--amount must be from 0 to 100000`, and a wrong JSON type with `price must be a decimal string or number`. The
 command exits 1 (`Stopped: ...`) and writes nothing.
 
+## Selected dates are validated whole
+
+The date of the step comes from the first field the status uses: `datetime_done` for finished statuses (falling back
+to `datetime_updated` only when it is absent, null or empty), otherwise `datetime_updated`. The whole selected string
+must be `YYYY-MM-DD`, or that date followed by `T`, `t` or one space and `HH:MM`, optionally `:SS` and, with seconds,
+`.` and digits, optionally `Z` or a `+HH:MM`/`-HH:MM` offset (hours 00-23, minutes and seconds 00-59, ASCII only, no
+surrounding whitespace). Anything else, such as `2026-03-10garbage` or `2026-03-10T25:99:99Z`, stops with
+`<field> must be an ISO 8601 date or datetime` (no value echoed), exits 1 and writes nothing. A malformed `datetime_done`
+never falls back to `datetime_updated`.
+
+The step is dated with the written calendar date; no time or offset is stored and nothing is converted to UTC. The check
+runs before the `already recorded` comparison, so a malformed timestamp is never reported as a replay. Statuses that
+produce no step (`started`, `submitted`, `ack`, `appealing`, `lawsuit`) and fields the status does not select are not
+checked.
+
 ## A revised estimate on the same day
 
 A different price on the same date is a new proposal, not a replay. The dry run previews it and writes nothing;
