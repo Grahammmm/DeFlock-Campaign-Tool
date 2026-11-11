@@ -68,14 +68,18 @@ def local_path(url, page, base_url=None):
     except ValueError:
         return None
     if split.scheme:
-        if split.scheme.lower() != "https" or not base_url or split.username or split.password or not split.hostname:
+        # Authority identity uses presence, not truthiness: empty userinfo is still userinfo,
+        # and explicit port 0 is distinct from the default 443.
+        if split.scheme.lower() != "https" or not base_url or split.username is not None or split.password is not None or not split.hostname:
             return None
         try:
             base = urlsplit(base_url.rstrip("/"))
             base_port = base.port
         except ValueError:
             return None
-        if base.scheme.lower() != "https" or (split.hostname, port or 443) != (base.hostname, base_port or 443):
+        if base.username is not None or base.password is not None or not base.hostname:
+            return None
+        if base.scheme.lower() != "https" or (split.hostname, 443 if port is None else port) != (base.hostname, 443 if base_port is None else base_port):
             return None
         prefix = base.path.rstrip("/") + "/"
         if not split.path.startswith(prefix):
