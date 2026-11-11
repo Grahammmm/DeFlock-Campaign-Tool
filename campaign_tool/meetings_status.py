@@ -435,7 +435,10 @@ def run_cli(args, root):
         print("Stopped: " + str(exc), file=sys.stderr)
         return 1
     if args.as_json:
-        print(json.dumps(report, indent=2, ensure_ascii=False))
+        # Admitted lone surrogates (e.g. a decoded \ud800 datetime separator) cannot be encoded as UTF-8; escape only
+        # those code points as JSON \uXXXX at this boundary. Every other scalar stays literal, the report is untouched.
+        text = json.dumps(report, indent=2, ensure_ascii=False)
+        print(text.encode("utf-8", errors="backslashreplace").decode("utf-8"))
     else:
         print(render_text(report), end="")
     return 1 if any(row["kind"] == "unreadable" for row in report["rows"]) else 0
