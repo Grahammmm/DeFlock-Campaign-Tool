@@ -44,7 +44,7 @@ class RecordsBackupCli(unittest.TestCase):
         content = base / "campaign" / "content"
         content.mkdir(parents=True)
         (content / "agencies.json").write_text(json.dumps(
-            [{"agency_id": "a-1", "name": "Agency", "profile": {"status": "Records requested", "summary": "s"}}]))
+            [{"agency_id": "ca-agency", "name": "Agency", "profile": {"status": "Records requested", "summary": "s"}}]))
         message = base / "m.eml"
         message.write_bytes(synthetic_email())
         report = e2e_proof.replay(message, base / "out", base / "campaign")
