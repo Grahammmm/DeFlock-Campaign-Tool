@@ -26,6 +26,8 @@ are newly authored regressions, not recovered historical tests. They caught a
 python3 -B -m unittest discover -v
 python3 -B tools/check_public_tree.py
 python3 -m campaign_tool.records --help
+# New county: records project for an existing campaign (private tree, campaign.json, .campaign-root, empty ledger and queue)
+python3 -m campaign_tool.records project-init --project "$PROJECT" --campaign-root "$CAMPAIGN" [--campaign-id ID]
 ```
 
 No dependency or system package installation is required for this M0a slice.
