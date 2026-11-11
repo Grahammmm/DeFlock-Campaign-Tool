@@ -223,6 +223,28 @@ class AnalysisBridgeTests(unittest.TestCase):
         self.assertEqual((rc, out.split()), (1, ["RECEIVE", R1, "EXPORT_CONFLICT"]))
         self.assertEqual(digest_tree(self.root / ".analysis" / "runs" / R1), retained)
 
+    def test_an_exported_row_without_its_text_file_is_refused_even_when_it_claims_the_empty_hash(self):
+        self.record(R1, AGY)
+        self.profile(AGY)
+        folders = self.tmp / "folders"
+        with tarfile.open(fileobj=io.BytesIO(self.export_tar())) as source:
+            source.extractall(folders, filter="data")
+        (text,) = (folders / R1 / "texts").glob("*.txt")
+        texts, export = folders / R1 / "TEXTS.csv", folders / R1 / "EXPORT.json"
+        texts.write_text(texts.read_text().replace(hashlib.sha256(text.read_bytes()).hexdigest(), hashlib.sha256(b"").hexdigest()))
+        text.unlink()
+        listing = json.loads(export.read_text())
+        listing["files"] = {n: d for n, d in listing["files"].items() if not n.startswith("texts/")}
+        listing["files"]["TEXTS.csv"] = hashlib.sha256(texts.read_bytes()).hexdigest()
+        export.write_text(json.dumps(listing))
+        rc, out, err = self.sync("--receive", str(folders))
+        self.assertEqual((rc, out.split()), (1, ["RECEIVE", R1, "EXPORT_INVALID"]), err)
+        self.assertFalse((self.root / ".analysis" / "runs" / R1).exists())
+        self.assertEqual(self.sync()[0], 0)
+        self.assertEqual(self.receive()[1].split(), ["RECEIVE", R1, "RECEIVED"])
+        self.sync()
+        self.assertEqual(self.outcomes(R1, AGY), ["SYNCED"])
+
     def test_the_same_original_in_two_runs_is_placed_once_with_a_source_row_per_run(self):
         digest = self.record(R1, AGY)
         self.record(R2, AGY, "rq2", "2026-11-05T09:00:00Z", digest=digest)

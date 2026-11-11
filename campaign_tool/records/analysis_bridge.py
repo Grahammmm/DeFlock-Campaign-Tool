@@ -77,7 +77,7 @@ def _verify(run, files):
         return (meta["schema"] == ae.SCHEMA and meta["run_id"] == run and state in ("present", "missing")
                 and set(listed) == set(files) - {"EXPORT.json"} and names <= set(listed)
                 and all(ae._sha(files[n]) == d for n, d in listed.items())
-                and all(r["state"] != "exported" or ae._sha(files.get("texts/%s.txt" % r["original_sha256"], b"")) == r["text_sha256"]
+                and all(r["state"] != "exported" or ae._sha(files["texts/%s.txt" % r["original_sha256"]]) == r["text_sha256"]
                         for r in rows))
     except (KeyError, ValueError, TypeError, AttributeError, csv.Error):
         return False
