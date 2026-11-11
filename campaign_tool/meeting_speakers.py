@@ -62,7 +62,17 @@ def _read_regular(path, limit, absent_ok, on_bad):
     """The bytes of a regular, unlinked-once file; None when absent and ``absent_ok``. Never follows a link.
 
     The byte limit is enforced twice: on the opened descriptor before reading, and on the bytes actually returned, so a
-    file that grew after the size check is refused. This is a bounded-input guard, not a snapshot guarantee."""
+    file that grew after the size check is refused. This is a bounded-input guard, not a snapshot guarantee.
+
+    Any OSError (including a file that vanished after the initial lstat) is the caller's own safe ``on_bad`` refusal;
+    the OS message, errno text and file names are never surfaced."""
+    try:
+        return _read_regular_raw(path, limit, absent_ok, on_bad)
+    except OSError:
+        raise on_bad from None
+
+
+def _read_regular_raw(path, limit, absent_ok, on_bad):
     try:
         info = os.lstat(path)
     except FileNotFoundError:
