@@ -197,29 +197,132 @@ def _build(args):
         return built
 
 
-def _write(base, run, files):
-    target = base / run
-    if os.path.lexists(target):
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+
+def _same_node(a, b):
+    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+
+
+def _overlaps(fd, project):
+    """True when the open directory is the project, lies inside it or holds it (checked on the fd itself)."""
+    target, node = os.fstat(fd), project
+    while True:  # the project and each of its ancestors
+        if _same_node(os.stat(node), target):
+            return True
+        if os.path.dirname(node) == node:
+            break
+        node = os.path.dirname(node)
+    root, held, current = os.stat(project), [], fd
+    try:
+        while True:  # the directory and each of its ancestors, by ".." from the held fd
+            info = os.fstat(current)
+            if _same_node(info, root):
+                return True
+            current = os.open("..", DIR_FLAGS, dir_fd=current)
+            held.append(current)
+            if _same_node(os.fstat(current), info):
+                return False
+    finally:
+        for descriptor in held:
+            os.close(descriptor)
+
+
+def _open_out(out, project):
+    """Hold --out as a directory fd verified outside the project; every missing part is made through that fd."""
+    path, missing = os.path.abspath(out), []
+    while not os.path.isdir(path):
+        path, tail = os.path.split(path)
+        missing.append(tail)
+    try:
+        fd = os.open(os.path.realpath(path) if missing else path, DIR_FLAGS)  # a given --out itself is never followed
+    except OSError:
+        raise Refusal("EXPORT_UNSAFE_PATH") from None
+    try:
+        if _overlaps(fd, project):
+            raise Refusal("EXPORT_OUT_IN_PROJECT")
+        for tail in reversed(missing):
+            try:
+                os.mkdir(tail, 0o700, dir_fd=fd)
+                child = os.open(tail, DIR_FLAGS, dir_fd=fd)
+            except OSError:
+                raise Refusal("EXPORT_UNSAFE_PATH") from None
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _identical(base, run, files):
+    """True only when base/run is exactly this export: no extra, missing, replaced, relinked or re-moded member."""
+    found, folders = {}, set()
+    with contextlib.ExitStack() as stack:
+        def listing(parent, name, prefix):
+            fd = os.open(name, DIR_FLAGS, dir_fd=parent)
+            stack.callback(os.close, fd)
+            if stat.S_IMODE(os.fstat(fd).st_mode) != 0o700:
+                return False
+            for entry in os.listdir(fd):
+                info = os.stat(entry, dir_fd=fd, follow_symlinks=False)
+                member = prefix + entry
+                if stat.S_ISDIR(info.st_mode):
+                    folders.add(member)
+                    if not listing(fd, entry, member + "/"):
+                        return False
+                elif stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and member in files \
+                        and info.st_size == len(files[member]):
+                    found[member] = _raw(fd, entry)
+                else:
+                    return False
+            return True
+
         try:
-            same = not target.is_symlink() and (target / "EXPORT.json").read_bytes() == files["EXPORT.json"]
+            ok = listing(base, run, "")
         except OSError:
-            same = False
-        if not same:
+            return False
+    return ok and found == files and folders == {n.rpartition("/")[0] for n in files if "/" in n}
+
+
+def _write(base, run, files):
+    """base is a held directory fd; everything is relative to it so a swapped path cannot redirect a write."""
+    try:
+        os.stat(run, dir_fd=base, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        if not _identical(base, run, files):
             raise Refusal("EXPORT_OUT_EXISTS")
-        return  # EXPORT.json hashes every other file, so an identical one is an identical export
-    temporary = base / (".%s.tmp" % run)
-    if os.path.lexists(temporary):
-        shutil.rmtree(temporary)
-    for name in sorted(files, key=lambda n: n == "EXPORT.json"):  # EXPORT.json last
-        path = temporary / name
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(files[name])
-            stream.flush()
-            os.fsync(stream.fileno())
-    os.chmod(temporary, 0o700)
-    os.rename(temporary, target)
+        return  # every member matched byte for byte and mode for mode
+    temporary = ".%s.tmp" % run
+    try:
+        os.stat(temporary, dir_fd=base, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        shutil.rmtree(temporary, dir_fd=base)
+    with contextlib.ExitStack() as stack:
+        def folder(parent, name):
+            os.mkdir(name, 0o700, dir_fd=parent)
+            fd = os.open(name, DIR_FLAGS, dir_fd=parent)
+            stack.callback(os.close, fd)
+            os.fchmod(fd, 0o700)
+            return fd
+
+        folders = {"": folder(base, temporary)}
+        for name in sorted(files, key=lambda n: n == "EXPORT.json"):  # EXPORT.json last
+            parent, _, leaf = name.rpartition("/")
+            if parent not in folders:
+                folders[parent] = folder(folders[""], parent)
+            fd = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600,
+                         dir_fd=folders[parent])
+            with os.fdopen(fd, "wb") as stream:
+                os.fchmod(fd, 0o600)
+                stream.write(files[name])
+                stream.flush()
+                os.fsync(fd)
+        os.rename(temporary, run, src_dir_fd=base, dst_dir_fd=base)
 
 
 def _tar(stream, built):
@@ -256,9 +359,11 @@ def main(argv=None):
                 raise Refusal("EXPORT_UNSAFE_PATH")
         built = _build(args)
         if args.out:
-            base.mkdir(mode=0o700, parents=True, exist_ok=True)
-            for run, files, *_ in built:
-                _write(base, run, files)
+            with contextlib.ExitStack() as stack:
+                held = _open_out(args.out, os.path.realpath(args.project))  # held from here to the last write
+                stack.callback(os.close, held)
+                for run, files, *_ in built:
+                    _write(held, run, files)
         else:
             _tar(sys.stdout.buffer, built)
             sys.stdout.buffer.flush()

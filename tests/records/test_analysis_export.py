@@ -245,6 +245,74 @@ class AnalysisExportTests(unittest.TestCase):
         code, out, err = self.export("--run", R1, "--stdout")
         self.assertEqual((code, out, err.strip()), (2, b"", "EXPORT_NO_LEDGER"))
 
+    def test_existing_folder_must_match_every_member_not_only_export_json(self):
+        digest, _ = self.document(PAGES, "ag1")
+        self.make_run(R1, [(digest, "text_reviewed", "rq1")])
+        out = self.dest / "again"
+        self.assertEqual(self.export("--run", R1, "--out", str(out))[0], 0)
+        self.assertEqual(self.export("--run", R1, "--out", str(out))[0], 0)  # identical: left alone
+        text, folder = out / R1 / "texts" / ("%s.txt" % digest), out / R1
+        original = text.read_bytes()
+
+        def refused():
+            code, _, err = self.export("--run", R1, "--out", str(out))
+            self.assertEqual((code, err.strip()), (2, "EXPORT_OUT_EXISTS"))
+
+        text.write_bytes(b"replaced text")
+        refused()
+        text.write_bytes(original)
+        os.chmod(text, 0o644)
+        refused()
+        os.chmod(text, 0o600)
+        (folder / "extra.txt").write_text("extra")
+        refused()
+        (folder / "extra.txt").unlink()
+        text.unlink()
+        text.symlink_to(self.dest / "elsewhere")
+        refused()
+        text.unlink()
+        text.write_bytes(original)
+        self.assertEqual(self.export("--run", R1, "--out", str(out))[0], 0)
+
+    def test_out_symlink_swapped_in_during_build_is_refused_and_writes_nothing_in_project(self):
+        digest, _ = self.document(PAGES, "ag1")
+        self.make_run(R1, [(digest, "text_reviewed", "rq1")])
+        out = self.dest / "later"
+        real_build = ae._build
+
+        def swapping(args):
+            built = real_build(args)
+            out.symlink_to(self.project)  # planted after the up-front check, before any write
+            return built
+
+        before = self.tree()
+        with mock.patch.object(ae, "_build", swapping):
+            code, _, err = self.export("--run", R1, "--out", str(out))
+        self.assertEqual((code, err.strip()), (2, "EXPORT_UNSAFE_PATH"))
+        self.assertEqual(self.tree(), before)
+        out.unlink()
+        out.symlink_to(self.dest)  # a swap to another directory outside the project is refused too
+        code, _, err = self.export("--run", R1, "--out", str(out))
+        self.assertEqual((code, err.strip()), (2, "EXPORT_UNSAFE_PATH"))
+        self.assertEqual(list(self.dest.glob("run_*")), [])
+
+    def test_out_that_resolves_into_the_project_after_the_check_is_refused(self):
+        digest, _ = self.document(PAGES, "ag1")
+        self.make_run(R1, [(digest, "text_reviewed", "rq1")])
+        link = self.dest / "parent-link"
+        real_build = ae._build
+
+        def swapping(args):
+            built = real_build(args)
+            link.symlink_to(self.project)  # an ancestor of --out now leads into the project
+            return built
+
+        before = self.tree()
+        with mock.patch.object(ae, "_build", swapping):
+            code, _, err = self.export("--run", R1, "--out", str(link / "sub"))
+        self.assertEqual((code, err.strip()), (2, "EXPORT_OUT_IN_PROJECT"))
+        self.assertEqual(self.tree(), before)  # not even an empty folder is made in the project
+
     def test_symlinked_run_folder_is_refused_not_followed(self):
         self.make_run(R1, [])
         outside = Path(self.temp.name) / "outside"

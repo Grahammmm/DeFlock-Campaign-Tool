@@ -31,7 +31,10 @@ records analysis-export --project P (--run RUN | --after RUN|- [--max-runs N]) (
   records it as `ANALYSIS_READY_MISSING` and never skips it silently.
 - **Output.** `--stdout` writes an uncompressed POSIX tar (regular files only, mtime 0, uid/gid 0, sorted names)
   so container-owned files reach the host through the container pipe; `--out DIR` (outside the project) writes
-  the same folders 0700/0600 by temporary folder and rename, and an identical existing folder is left alone.
+  the same folders 0700/0600 by temporary folder and rename, and an existing folder is left alone only when every member
+  (names, bytes, modes, no extras or links) matches the new export, otherwise `EXPORT_OUT_EXISTS`. `--out` is held
+  as an open directory (never followed through a symlink, checked outside the project, missing parts made through it)
+  from before the first write to the last.
   Two exports of the same runs are byte-identical.
 - **Safety.** The ledger is read with the same immutable read-only snapshot as the outputs stage. A project
   without `processing-v1/ledger.sqlite` is refused (`EXPORT_NO_LEDGER`); a busy ledger exits 75 with
