@@ -234,7 +234,11 @@ def _start(event, zone):
     except ValueError:
         return "bad_start"
     if m.group(2):
-        return local.replace(tzinfo=timezone.utc).astimezone(zone).isoformat(timespec="seconds"), True
+        try:
+            converted = local.replace(tzinfo=timezone.utc).astimezone(zone)
+        except OverflowError:  # the instant is outside years 1-9999 in the requested zone
+            return "bad_start"
+        return converted.isoformat(timespec="seconds"), True
     tzid = params.get("TZID")
     if not tzid:
         return "floating_time"
