@@ -66,6 +66,7 @@ class Trace:
         self.target, self.faults = str(target), faults
         self.kind, self.fdopened, self.closes, self.at_unlink, self.replaced = {}, [], [], [], []
         self.leaked = []
+        self.encoding_closed = False
 
     def fault(self, site):
         return self.faults.get(site)
@@ -100,6 +101,15 @@ class Trace:
             kind = self.kind.get(fd)
             if kind and self.fault(kind + "_fdopen"):
                 raise self.fault(kind + "_fdopen")
+            late = self.fault(kind + "_late") if kind else None
+            if late is not None:  # fdopen fails after FileIO accepted the descriptor: io.open closed it already
+                REAL["close"](fd)
+                raise late
+            if kind and self.fault(kind + "_encoding"):  # a real CPython failure after the descriptor was accepted
+                try:
+                    REAL["fdopen"](fd, "w", encoding="not-a-real-encoding")
+                finally:
+                    self.encoding_closed = not is_open(fd)
             if kind:
                 self.fdopened.append(kind)
             stream = REAL["fdopen"](fd, *args, **kwargs)
@@ -237,6 +247,30 @@ class WriterOwnershipTests(unittest.TestCase):
                     self.assert_closed_before_unlink(trace)
                     self.assertEqual(len(trace.closes), 1)
                     self.assertEqual(trace.replaced, [])
+
+    def test_fdopen_failure_after_descriptor_accepted_keeps_original_error(self):
+        """io.open closes an accepted descriptor itself; the cleanup close (EBADF) must not replace the error."""
+        self.bound()
+        for site in ("draft_late", "store_late"):
+            for make in (MemoryError, OSError, Interrupt):
+                with self.subTest(site=site, error=make.__name__):
+                    error = make("synthetic-late-failure")
+                    trace = self.faulted("next", error, **{site: error})
+                    self.assert_closed_before_unlink(trace)
+                    self.assertEqual(trace.replaced, [])
+        for site in ("draft_encoding", "store_encoding"):  # the real io.open error path, no simulation
+            with self.subTest(site=site):
+                before = self.tree()
+                with Trace(self.new_target(), **{site: True}) as trace:
+                    with self.assertRaises(LookupError):
+                        self.call()
+                self.assertTrue(trace.encoding_closed)
+                self.assertEqual(trace.leaked, [])
+                self.assertTrue(is_open(self.sentinel))
+                self.assertEqual(self.tree(), before)
+                self.assert_closed_before_unlink(trace)
+        self.call()  # retry with the fault removed succeeds
+        self.assertTrue(os.path.lexists(self.new_target()))
 
     def test_output_acquisition_failure_never_closes_unowned_descriptor(self):
         self.bound()

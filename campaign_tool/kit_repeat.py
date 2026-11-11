@@ -237,12 +237,24 @@ def repeat_request(root, agency_id, request, new_request, *, through=None, date_
     except BaseException:
         try:
             if owned is not None:
-                os.close(owned)  # closed before its pathname is removed
+                _close_unowned(owned)  # closed before its pathname is removed
         finally:
             os.unlink(target)  # only the draft this call created; the store was replaced atomically or not at all
         raise
     return {"agency_id": agency_id, "request": new_request, "follows": request, "draft": f"requests/{stem}.md",
             "date_from": meta["date_from"], "date_to": meta["date_to"], "draft_sha256": meta["draft_sha256"]}
+
+
+def _close_unowned(fd):
+    """Close a raw descriptor whose fdopen did not hand it over, never replacing the exception being unwound.
+
+    fdopen may fail before it touched the descriptor (still open here) or after FileIO accepted it (CPython's
+    io.open already closed it); a second close then raises EBADF. Either way the original error must escape.
+    """
+    try:
+        os.close(fd)
+    except OSError:
+        pass  # already closed by io.open, or nothing more can be done; the caller re-raises the original error
 
 
 def _store_bytes(document):
@@ -264,7 +276,7 @@ def _replace_store(path, payload):
     except BaseException:
         try:
             if owned is not None:
-                os.close(owned)  # closed before its temporary pathname is removed
+                _close_unowned(owned)  # closed before its temporary pathname is removed
         finally:
             os.unlink(temp)
         raise
