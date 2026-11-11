@@ -484,6 +484,7 @@ for _family, _labels in (("classification", CLASSIFICATION_LABELS), ("confidence
     DEFAULTS.update({f"{_family}.{code}": text for code, text in _labels.items()})
 PLACEHOLDER = re.compile(r"\{([^{}]*)\}")
 CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+SURROGATE = re.compile("[\ud800-\udfff]")
 ALLOWED = {key: set(PLACEHOLDER.findall(text)) for key, text in DEFAULTS.items()}  # each key: its default's set
 
 
@@ -511,6 +512,8 @@ def load_labels(document):
             raise ContentError(f"{where}: unknown label")
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= MAX_LABEL_CHARS:
             raise ContentError(f"{where}: must be text of 1-{MAX_LABEL_CHARS} characters")
+        if SURROGATE.search(text):  # a decoded lone surrogate cannot be written as UTF-8
+            raise ContentError(f"{where}: must contain only Unicode scalar values")
         if "<" in text or ">" in text or CONTROL.search(text):
             raise ContentError(f"{where}: must not contain <, > or control characters")
         for name in PLACEHOLDER.findall(text):
