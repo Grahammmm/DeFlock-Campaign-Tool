@@ -98,7 +98,11 @@ def read_archive(kit_dir):
     """(path, receipts) of kit/sent-undone.json; no file means no receipts. A bad file is never reset.
 
     Any repeated object member name anywhere in the file (escaped spellings included) is refused as
-    ambiguous, so a last-key-wins read can never drop earlier receipts; nothing is written on refusal."""
+    ambiguous, so a last-key-wins read can never drop earlier receipts; nothing is written on refusal.
+
+    A document the JSON decoder cannot finish because its nesting exhausts the interpreter (a RecursionError raised
+    while decoding, object-pairs hook included) is refused with one fixed, value-free message. Only that decode/load
+    call is covered: later failures, such as re-encoding the archive, keep their own diagnostics."""
     path = Path(kit_dir) / ARCHIVE
 
     def bad(reason):
@@ -112,6 +116,8 @@ def read_archive(kit_dir):
         raise bad("duplicate JSON keys") from None
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise bad("not JSON") from None
+    except RecursionError:
+        raise bad("JSON nesting is too deep") from None
     if (not isinstance(document, dict) or document.get("schema_version") != 1
             or not isinstance(document.get("undos"), list)):
         raise bad("expected schema_version 1 with an undos list")

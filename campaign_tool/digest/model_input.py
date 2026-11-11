@@ -192,6 +192,22 @@ class ModelSources:
         return safe
 
     def primary_payload(self, hits, rules, max_chars=60000):
+        """Source view plus detector hits and rules, or a refusal with no authority.
+
+        A ModelInputError raised anywhere while building the payload revokes
+        every issued reference (the document sentinel, units and hit lines), so
+        a payload that never returned cannot authorize restoration or challenge
+        serialization. The earlier view is not restored; a later successful
+        ``source_payload``/``primary_payload`` issues a fresh one. Redactor
+        state is deliberately not rolled back.
+        """
+        try:
+            return self._primary_payload(hits, rules, max_chars)
+        except ModelInputError:
+            self._issued.clear()
+            raise
+
+    def _primary_payload(self, hits, rules, max_chars):
         sources = self.source_payload(max_chars=max_chars)
         safe_hits = []
         for hit in hits:
