@@ -11,7 +11,7 @@ import stat
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from .content import MAX_JSON_BYTES, _read_json, load_meeting
+from .content import MAX_JSON_BYTES, ContentError, _read_json, load_meeting
 from .kit import _kit_folder, _write_json
 
 CHANNELS = ("email", "portal", "mail", "in_person")
@@ -56,6 +56,38 @@ def _entry(value, meeting_id):
     return value
 
 
+def _read_receipts(path, limit=MAX_JSON_BYTES):
+    """Parse the receipt store through ONE no-follow, nonblocking descriptor, reading at most ``limit + 1`` bytes.
+
+    The descriptor must be a regular file no larger than ``limit`` (checked before any payload read); a file that
+    grows afterwards is refused once more than ``limit`` bytes arrive, before decoding or parsing. ``limit`` is
+    captured from content.MAX_JSON_BYTES at definition, so patching this module's constant (the writer check)
+    does not shrink the reader. The descriptor is closed on every path."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ContentError(f"{LABEL}: must be a regular file")
+        if info.st_size > limit:
+            raise ContentError(f"{LABEL}: file too large")
+        chunks, budget = [], limit + 1
+        while budget > 0:
+            chunk = os.read(fd, min(65536, budget))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            budget -= len(chunk)
+        data = b"".join(chunks)
+    finally:
+        os.close(fd)
+    if len(data) > limit:
+        raise ContentError(f"{LABEL}: file too large")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ContentError(f"{LABEL}: not valid UTF-8 JSON") from None
+
+
 def read(root):
     """``{meeting_id: entry}`` from kit/comments-sent.json; ``{}`` when the file does not exist.
 
@@ -66,7 +98,7 @@ def read(root):
     if not os.path.lexists(path):
         return {}
     try:
-        document = _read_json(path)
+        document = _read_receipts(path)
     except (ValueError, OSError) as exc:
         raise MeetingCommentError(f"{LABEL} is not readable JSON ({type(exc).__name__})") from None
     if (not isinstance(document, dict) or document.get("schema_version") != 1
