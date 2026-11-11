@@ -53,7 +53,7 @@ def _names(root):
         raise ValueError("kit/agencies.json unreadable: not a regular file")
     try:
         agencies = kit._load_existing(path)
-    except (OSError, ValueError):  # includes JSON and encoding errors
+    except (OSError, ValueError, RecursionError):  # JSON/encoding errors; unprocessable nesting is unreadable, not absent
         raise ValueError("kit/agencies.json unreadable: not a JSON list of agencies with names") from None
     names = {}
     for entry in agencies:
