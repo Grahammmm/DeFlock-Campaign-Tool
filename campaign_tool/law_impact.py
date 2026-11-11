@@ -152,11 +152,13 @@ def collect(root):
     found = []
     folder = root / "content" / "findings"
     for path in sorted(folder.glob("*.json")) if findings._real_dir(folder) else []:
-        try:
-            document = findings._read_json(path, findings.MAX_DRAFT_BYTES, "published finding")
+        try:  # the reread is admitted like the status pass: it may fail even if status_rows saw a good file
+            document = findings._identified(
+                findings._read_json(path, findings.MAX_DRAFT_BYTES, "published finding"), path, "published finding")
         except ValueError:
-            continue  # status_rows already listed it as unreadable
-        if isinstance(document, dict) and document.get("id") in live:
+            unreadable.append(str(path))  # path only; deduplicated with the status pass below
+            continue
+        if document["id"] in live:
             found.append(("published", str(path), document))
     for row in rows:
         if "draft_path" in row and row["state"] in DRAFT_STATES:
