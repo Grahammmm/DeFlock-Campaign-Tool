@@ -29,7 +29,8 @@ _ABBREVIATION = re.compile(r"[A-Z]{2,6}")
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _QUOTED = re.compile(r'"[^"]*"|“[^”]*”')
 _SENTENCE_END = re.compile(r"[.!?]+(?=\s|$)")
-_OPEN, _CLOSE = re.compile(r"\s*\(\s*\Z"), re.compile(r"\A\s*\)")
+# _CLOSE is matched with ``match(text, offset)`` on the original field: no ``\A`` (it would anchor to the field start), no tail slice.
+_OPEN, _CLOSE = re.compile(r"\s*\(\s*\Z"), re.compile(r"\s*\)")
 _BETWEEN_OPEN, _BETWEEN_CLOSE = re.compile(r"\A\s*\(\s*\Z"), re.compile(r"\A\s*\)")
 
 
@@ -100,11 +101,11 @@ def _is_introduction(text, tokens, position):
 
     before = tokens[position - size:position] if position >= size else []
     if before and spelled(before) and _OPEN.match(text[before[-1]["end"]:token["start"]]) \
-            and _CLOSE.match(text[token["end"]:]):
+            and _CLOSE.match(text, token["end"]):
         return True
     after = tokens[position + 1:position + 1 + size]
     if len(after) == size and spelled(after) and _BETWEEN_OPEN.match(text[token["end"]:after[0]["start"]]) \
-            and _CLOSE.match(text[after[-1]["end"]:]):
+            and _CLOSE.match(text, after[-1]["end"]):
         return True
     return False
 
