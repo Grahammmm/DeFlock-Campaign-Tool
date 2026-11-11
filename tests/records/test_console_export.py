@@ -266,6 +266,28 @@ class ConsoleExportTests(unittest.TestCase):
         copy.close()
         self.assertEqual(tables, ["t"])
 
+    def test_ledger_leaf_swapped_to_symlink_before_open_is_refused(self):
+        outside = self.tmp / "ledger-leaf-outside.sqlite"
+        other = sqlite3.connect(outside)
+        other.execute("create table ext (a)")
+        other.commit()
+        other.close()
+        real_copy, swapped = console_export._copy_file, []
+
+        def copy_after_swap(dir_fd, name, dst):
+            if name == "ledger.sqlite" and not swapped:
+                swapped.append(True)
+                leaf = self.project / "processing-v1" / "ledger.sqlite"
+                leaf.unlink()
+                leaf.symlink_to(outside)
+            return real_copy(dir_fd, name, dst)
+
+        with mock.patch.object(console_export, "_copy_file", copy_after_swap):
+            with self.assertRaises(console_export.ExportError) as caught:
+                console_export.build(str(self.project), RUN, str(self.dest))
+        self.assertTrue(swapped)
+        self.assertIn("SYMLINK_REFUSED", str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

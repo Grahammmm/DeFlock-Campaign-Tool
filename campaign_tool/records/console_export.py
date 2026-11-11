@@ -114,18 +114,29 @@ def _copy_tree(dir_fd, rel, dest):
 
 
 def _backup_ledger(dir_fd, name, dst):
-    """Back up the ledger through the pinned directory (/proc/self/fd keeps -wal/-shm beside it)."""
-    _need(not stat.S_ISLNK(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode), "SYMLINK_REFUSED")
+    """Back up the ledger from no-follow copies of it and its -wal/-shm taken through the pinned directory.
+
+    SQLite never opens the source by name, so a leaf swapped to a symlink is refused atomically (O_NOFOLLOW).
+    """
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-    source = sqlite3.connect(f"file:/proc/self/fd/{dir_fd}/{name}?mode=ro", uri=True, timeout=30)
-    target = sqlite3.connect(dst)
-    try:
-        source.backup(target)
-        target.execute("PRAGMA journal_mode=DELETE")
-        _need(target.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "LEDGER_INVALID")
-    finally:
-        target.close()
-        source.close()
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(dst)) as scratch:
+        work = os.path.join(scratch, name)
+        _copy_file(dir_fd, name, work)
+        for suffix in ("-wal", "-shm"):
+            try:
+                os.stat(name + suffix, dir_fd=dir_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            _copy_file(dir_fd, name + suffix, work + suffix)
+        source = sqlite3.connect(work, timeout=30)
+        target = sqlite3.connect(dst)
+        try:
+            source.backup(target)
+            target.execute("PRAGMA journal_mode=DELETE")
+            _need(target.execute("PRAGMA integrity_check").fetchone()[0] == "ok", "LEDGER_INVALID")
+        finally:
+            target.close()
+            source.close()
 
 
 def latest_run(project):
