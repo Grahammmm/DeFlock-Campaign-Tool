@@ -1,6 +1,8 @@
 """Render agency/finding/source-link UI from reviewed, campaign-owned settings."""
 import json
+import os
 import re
+import stat
 import sys
 import unicodedata
 from pathlib import Path
@@ -99,10 +101,31 @@ def _refuse(name):
     raise ValueError("non-finite number")
 
 
+def _open_regular(path):
+    """Open path for reading without waiting for a writer; refuse any descriptor that is not a regular file.
+
+    Links to regular files stay supported. Only the opened descriptor is inspected and read, never the name again.
+    """
+    flag = getattr(os, "O_NONBLOCK", None)
+    if flag is None:
+        raise OSError("nonblocking open unavailable")
+    fd = os.open(path, os.O_RDONLY | flag)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("not a regular file")
+        return os.fdopen(fd, "rb")  # ownership moves to the stream only once this succeeds
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:  # a failed fdopen may already have closed it
+            pass
+        raise
+
+
 def check(path):
     """Print each config problem (never a value) then problems=N; exit 0 none, 1 problems, 2 unreadable."""
     try:
-        with open(path, "rb") as handle:
+        with _open_regular(path) as handle:
             raw = handle.read(MAX_BYTES + 1)
         config = json.loads(raw.decode("utf-8"), parse_constant=_refuse) if len(raw) <= MAX_BYTES else None
         if not isinstance(config, dict):
