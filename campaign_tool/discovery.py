@@ -192,21 +192,72 @@ def locate_online(query, state="CA", timeout=10, opener=None):
             payload = json.loads(response.read().decode("utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"Census geocoder lookup failed: {exc}") from None
-    matches = payload.get("result", {}).get("addressMatches") or []
+    selected = _select_geocoder_entries(payload, query)
+    county, place = selected
+    county_name = _geocoder_name(county, county=True)
+    place_name = _geocoder_name(place, county=False) if place else None
+    return Location(county["GEOID"], county_name, state.upper(),
+                    place["GEOID"] if place else None, place_name,
+                    "city" if place else "county", query)
+
+
+_MALFORMED_GEOCODER = "Census geocoder returned malformed location data"
+
+
+def _geocoder_list(container, key):
+    """Absent/null/empty -> None; otherwise the list, else malformed."""
+    value = container.get(key)
+    if value is None or value == []:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(_MALFORMED_GEOCODER)
+    return value
+
+
+def _geocoder_object(value):
+    if not isinstance(value, dict):
+        raise ValueError(_MALFORMED_GEOCODER)
+    return value
+
+
+def _select_geocoder_entries(payload, query):
+    """First match / first county / first place, with types checked."""
+    payload = _geocoder_object(payload)
+    result = payload["result"] if "result" in payload else {}
+    matches = _geocoder_list(_geocoder_object(result), "addressMatches")
     if not matches:
         raise ValueError(f"Census geocoder found no match for {query!r}")
-    geographies = matches[0].get("geographies", {})
-    counties = geographies.get("Counties") or []
+    match = _geocoder_object(matches[0])
+    geographies = _geocoder_object(match["geographies"] if "geographies" in match else {})
+    counties = _geocoder_list(geographies, "Counties")
     if not counties:
         raise ValueError("Census geocoder returned no county for " + repr(query))
-    county = counties[0]
-    places = geographies.get("Incorporated Places") or []
-    place = places[0] if places else None
-    county_name = re.sub(r" County$", "", county.get("NAME", "")) or county.get("BASENAME", "")
-    place_name = place and (place.get("BASENAME") or re.sub(r" (city|town)$", "", place.get("NAME", "")))
-    return Location(str(county.get("GEOID")), county_name, state.upper(),
-                    str(place.get("GEOID")) if place else None, place_name or None,
-                    "city" if place else "county", query)
+    county = _geocoder_object(counties[0])
+    places = _geocoder_list(geographies, "Incorporated Places")
+    place = _geocoder_object(places[0]) if places else None
+    for entry in (county, place):
+        if entry is None:
+            continue
+        geoid = entry.get("GEOID")
+        if not isinstance(geoid, str) or not geoid.strip():
+            raise ValueError(_MALFORMED_GEOCODER)
+        for field in ("NAME", "BASENAME"):
+            if entry.get(field) is not None and not isinstance(entry[field], str):
+                raise ValueError(_MALFORMED_GEOCODER)
+    return county, place
+
+
+def _geocoder_name(entry, county):
+    """Existing derivation order on admitted strings; refuse when unusable."""
+    if county:  # county: NAME minus " County", else BASENAME
+        candidates = [re.sub(r" County$", "", entry.get("NAME") or ""), entry.get("BASENAME")]
+    else:  # place: BASENAME, else NAME minus " city"/" town"
+        candidates = [entry.get("BASENAME"),
+                      re.sub(r" (city|town)$", "", entry.get("NAME") or "")]
+    for name in candidates:
+        if isinstance(name, str) and name.strip():
+            return name
+    raise ValueError(_MALFORMED_GEOCODER)
 
 
 def county_for(location, seed):
