@@ -34,6 +34,8 @@ PDF_GAP = re.compile(rb"(?:[\x00\t\n\x0c\r ]|%[^\r\n]*(?=[\r\n]|\Z))*")
 # found wherever it is - in a comment, string or other stream's data too - so no parsing can be led astray
 PDF_STREAM = re.compile(rb"(?<![^\x00\t\n\x0c\r ()<>\[\]{}/%])stream[\x00\t\x0c ]*(?:\r\n|\n|\r)?")
 INFLATE_CHUNK = 64 * 1024
+PDF_SPACE = frozenset(b"\x00\t\n\x0c\r ")
+PDF_DELIMITERS = frozenset(b"()<>[]{}/%")
 # a Flate stream's /DecodeParms (/DP, as some readers also accept) predictor is undone before its names are read
 DECODE_PARMS = {b"DecodeParms", b"DP"}
 PREDICTOR_KEYS = (b"Predictor", b"Colors", b"BitsPerComponent", b"Columns")
@@ -233,9 +235,21 @@ def _inflate(data, at):
         if inflater.unconsumed_tail or len(out) > MAX_INFLATE:
             raise Unreadable()
         at += len(chunk)
-    if data.find(b"endstream", at - len(inflater.unused_data)) < 0:
+    if not _terminated(data, at - len(inflater.unused_data)):
         raise Unreadable()
     return bytes(out)
+
+
+def _terminated(data, at):
+    """True if, from ``at`` (the byte after the compressed member), only PDF whitespace precedes a complete
+    ``endstream`` token. Never scans forward: another stream's terminator, a keyword prefix or junk is not it."""
+    end = len(data)
+    while at < end and data[at] in PDF_SPACE:
+        at += 1
+    if data[at:at + 9] != b"endstream":
+        return False
+    at += 9
+    return at >= end or data[at] in PDF_SPACE or data[at] in PDF_DELIMITERS
 
 
 def _dict_tail(data, end, keyword):
