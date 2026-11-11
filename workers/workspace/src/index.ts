@@ -22,7 +22,7 @@ import { recomputeState } from "./review_state.ts";
 import { runnerApi } from "./runner.ts";
 import { subscribeWebhook } from "./routes/subscribe_webhook.ts";
 import { downloadsConfigured, signDownload, verifyDownload } from "./signing.ts";
-import { page } from "./views/layout.ts";
+import { notFoundBody, page } from "./views/layout.ts";
 import * as V from "./views/screens.ts";
 
 type Vars = { identity: AccessIdentity; repo: Repo };
@@ -103,13 +103,17 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-async function render(c: { env: Env; var: Vars; req: { path: string } }, title: string, body: import("@deflock/shared/html").Safe): Promise<Response> {
+async function render(c: { env: Env; var: Vars; req: { path: string } }, title: string, body: import("@deflock/shared/html").Safe, status = 200): Promise<Response> {
   // Home loads each source independently; do not repeat a failing campaign read in the shell.
   const campaign = c.req.path === "/" ? null : await c.var.repo.campaign();
   return new Response(page(title, campaign?.name ?? "Workspace", c.req.path, c.var.identity, body), {
+    status,
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "private, no-store", "x-frame-options": "DENY", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" },
   });
 }
+
+// Unknown paths (after the identity check) get the shared layout; the status stays 404.
+app.notFound((c) => render(c, "Page not found", notFoundBody(), 404));
 
 app.get("/", async (c) => {
   return render(c, "Waiting on you", await V.home(c.var.repo, c.env));
