@@ -52,6 +52,7 @@ COMMANDS = {
     "schedule": ("schedule", "schedule_main"),
     "analysis-config": ("analysis_config", "main"),
     "analysis-export": ("analysis_export", "main"),
+    "analysis-sync": ("analysis_bridge", "sync_main"),
     "backup": ("records_backup", "backup_main"),
     "backup-verify": ("records_backup", "verify_main"),
 }
