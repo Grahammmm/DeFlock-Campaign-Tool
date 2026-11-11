@@ -293,7 +293,7 @@ def _legend(model):
 
 
 def _head(title, model):
-    notes = ['<p class="diag" role="status">%s: unavailable (%s).</p>' % (esc(k), esc(s.get("code")))
+    notes = ['<p class="diag" role="status">%s</p>' % esc(console_layout.unavailable_note(*console_layout.plain([k]), s.get("code")))
              for k, s in sources(model).items() if s["state"] != "ok"]
     return [console_layout.start(title, "Agencies"),
             "<h1>%s</h1>" % esc(title), "<p>Run %s. %s Nothing is fetched, sent or published.</p>" % (

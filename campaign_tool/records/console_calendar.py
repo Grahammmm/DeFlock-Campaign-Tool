@@ -402,7 +402,12 @@ def render(model, today, first):
         ["%s requests have no usable date." % m.group(1) for n in notes if (m := re.match(r"no clock: (\d+) ", n))])
     if banner:
         out.insert(1, banner)
-    out += ['<p class="diag" role="status">%s</p>' % esc(n) for n in notes]
+    prefix = "follow-up drafting is off for this agency: "
+    off = [n[len(prefix):] for n in notes if n.startswith(prefix)]
+    out += ['<p class="diag" role="status">%s</p>' % esc(n) for n in notes if not n.startswith(prefix)]
+    if off:
+        out.append('<details class="diag"><summary>Follow-up drafting is off for %d agenc%s</summary><ul>%s</ul></details>' % (
+            len(off), "y" if len(off) == 1 else "ies", "".join("<li>%s</li>" % esc(n) for n in off)))
     out.append("<table><caption>%s</caption><thead><tr>%s</tr></thead><tbody>" % (
         esc(first.strftime("%B %Y")), "".join('<th scope="col">%s</th>' % d for d in calendar.day_abbr)))
     for week in calendar.Calendar().monthdayscalendar(first.year, first.month):
