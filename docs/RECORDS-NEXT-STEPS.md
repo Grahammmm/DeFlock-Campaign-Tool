@@ -13,6 +13,13 @@ decision on the draft (who and when, from the queue journal) and nothing else.
 | `next-site-update` | agency in `content/agencies.json` | A unified diff of `content/agencies.json` that changes only that agency's `profile.status` to `Records received YYYY-MM-DD; under review`. The proposed document is checked with `content.load_agencies`. | approved-to-publish |
 | `next-followup-probe` | (agency, request) | A numbered follow-up draft: one ask per proposal, each citing the rule label and quoting the source line and page exactly. | approved-to-send |
 
+Each probe ask reads `Please provide <record>[ held by <custodian>][ for <window>]. This would show whether <tests>[ (<cite>)].`
+and then the quote sentence. `<record>` and `<tests>` are fixed per proposal type (`ASKS` in `next_steps.py`); `<cite>` is the
+proposal's rule label plus the page of the agency policy text when the proposal carries one. The custodian and the window are
+named only when the proposal has `custodian` (short text) or `date_from`/`date_to` (YYYY-MM-DD); otherwise they are left out,
+never guessed, and a misuse lead falls back to "the period covered by the record on page N". Misuse leads end "is consistent
+with <cite>". Every ask is a question about a record or a clause, never a claim about the agency.
+
 All wording is a fixed template; no model is called. Each row shows its source finding(s), why it is recommended and a
 status: proposed (pending), approved, or denied (rejected).
 

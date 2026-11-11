@@ -242,5 +242,90 @@ class GeneratorTests(Base):
         self.assertEqual(sorted(p.name for p in self.project.iterdir()), ["approvals", "run-outputs"])
 
 
+CITE = "Gov. Code § 7922.535"
+LEDGER = {"proposal_id": pid(7), "agency_id": "ca-caltrans", "request_id": "req-1", "type": "deadline_passed_no_answer",
+          "detector_or_field": "determination_due_at", "confidence": "medium", "item_id": None, "page": None,
+          "quote": "determination_due_at=2026-10-01; no determination recorded", "rule_ref": {"label": CITE}}
+PINNED = {  # one pinned ask per proposal type: the record, the window (misuse leads) and the clause the answer would test
+    "policy_gap": (proposal(1), "Please provide the current ALPR usage and privacy policy section governing retention, and any "
+                                "records showing how it was applied. This would show whether the material received on retention "
+                                f"meets the policy section or comparison point cited ({CITE})."),
+    "misuse_lead/sharing": (proposal(2, type="misuse_lead", field="sharing"),
+                            "Please provide the ALPR data-sharing agreements in effect and the audit log entries for searches made "
+                            "by or on behalf of agencies outside California for the period covered by the record on page 2. This "
+                            f"would show whether the sharing described on page 2 is consistent with {CITE}."),
+    "misuse_lead/immigration": (proposal(3, type="misuse_lead", field="immigration"),
+                                "Please provide the audit log entries and any records of access to or sharing of ALPR data for "
+                                "immigration-related purposes for the period covered by the record on page 2. This would show "
+                                f"whether the access or sharing described on page 2 is consistent with {CITE}."),
+    "promised_not_received": (proposal(4, type="promised_not_received", field="stated_date"),
+                              "Please provide the further response or records the agency stated on page 2 it would provide. This "
+                              "would show whether the response promised on page 2 has been provided within the time the cited "
+                              f"section allows ({CITE})."),
+    "deadline_passed_no_answer": (LEDGER, "Please provide the agency's determination on this request, or the date it will issue "
+                                          "one. This would show whether a determination was issued within the time the cited "
+                                          f"section allows ({CITE})."),
+    "exemption_without_citation": (proposal(5, type="exemption_without_citation", field=None),
+                                   "Please provide the provision or exemption the agency relies on for the denial on page 2. This "
+                                   "would show whether the denial on page 2 names the provision it relies on, as the cited "
+                                   f"section contemplates ({CITE})."),
+    "fee_review": (proposal(6, type="fee_review", field=None),
+                   "Please provide the basis and an itemization of the fee stated on page 2. This would show whether the fee "
+                   f"on page 2 is limited to the direct cost of duplication ({CITE})."),
+    "missing_field/request_id": (proposal(8, type="missing_field", field="request_id"),
+                                 "Please provide confirmation of which request the item on page 2 answers. This would show "
+                                 "whether the item on page 2 can be matched to the request it answers under the cited section "
+                                 f"({CITE})."),
+    "missing_field/received_at": (proposal(9, type="missing_field", field="received_at"),
+                                  "Please provide the date the item on page 2 was received. This would show whether the receipt "
+                                  "date of the item on page 2 can be set against the response time the cited section allows "
+                                  f"({CITE})."),
+}
+
+
+class ProbeWordingTests(Base):
+    def test_one_pinned_ask_per_proposal_type_and_it_passes_the_guard(self):
+        for name, (p, expected) in PINNED.items():
+            with self.subTest(name):
+                self.assertEqual(ns._ask(p), expected)
+                self.assertNotIn("None", expected)
+                for bad in ("()", "[]", "held by .", " for .", "  ", " ,"):
+                    self.assertNotIn(bad, expected)
+                self.assertEqual(ns.legal_claims.legal_claims(expected), [])
+
+    def test_probe_body_numbers_each_ask_and_keeps_the_quote_sentence(self):
+        result = ns.recommend(doc(("ca-caltrans", "req-1", [PINNED["fee_review"][0], PINNED["misuse_lead/sharing"][0]])),
+                              AGENCIES, run_id=RUN, received={"items": []})
+        body = next(d["body"] for d in result["drafts"] if d["kind"] == ns.PROBE)
+        quote = 'The record states, on page 2: "Camera logs are not enclosed."'
+        self.assertIn(f"1. {PINNED['fee_review'][1]} {quote}", body)
+        self.assertIn(f"2. {PINNED['misuse_lead/sharing'][1]} {quote}", body)
+
+    def test_custodian_and_dates_are_named_only_when_the_proposal_carries_them(self):
+        p = dict(PINNED["misuse_lead/sharing"][0], custodian="the Records Unit", date_from="2025-01-01", date_to="2025-06-30")
+        self.assertIn("agencies outside California held by the Records Unit for 2025-01-01 to 2025-06-30. This would show whether",
+                      ns._ask(p))
+        only_unit = dict(PINNED["fee_review"][0], custodian="the Records Unit")
+        self.assertIn("the fee stated on page 2 held by the Records Unit. This would show", ns._ask(only_unit))
+        bad = dict(p, custodian='x "y"', date_from="yesterday", date_to=None)  # unusable values are left out, not guessed
+        self.assertNotIn("held by", ns._ask(bad))
+        self.assertIn("California for the period covered by the record on page 2.", ns._ask(bad))
+        cited = dict(PINNED["fee_review"][0], policy_section={"page": 4})
+        self.assertIn(f"({CITE}; the agency's policy, page 4).", ns._ask(cited))
+
+    def test_flagged_custodian_or_claim_still_drops_the_probe(self):
+        for p in (dict(PINNED["fee_review"][0], custodian="the unit that violated the law"),
+                  proposal(1, field="agency violated the law")):
+            result = ns.recommend(doc(("ca-caltrans", "req-1", [p])), AGENCIES, run_id=RUN, received={"items": []})
+            self.assertEqual([d["kind"] for d in result["drafts"] if d["kind"] == ns.PROBE], [])
+            self.assertIn("probe_legal_claim_flagged", [d["code"] for d in result["diagnostics"]])
+
+    def test_low_confidence_stays_skipped_and_item_id_is_unchanged(self):
+        report = self.run_ns(dry_run=True)
+        self.assertEqual(report["skipped_low"], 2)
+        probe = next(d for d in report["drafts"] if d["kind"] == ns.PROBE)
+        self.assertEqual(probe["item_id"], "8699d1b68f36fc6d6896caf72e78f35420a54c2f48a53dd657af9809a13fe446")  # value before this change
+
+
 if __name__ == "__main__":
     unittest.main()
