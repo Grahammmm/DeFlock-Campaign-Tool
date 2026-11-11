@@ -104,8 +104,16 @@ def _stage(argv):
     return code, json.loads(lines[0])
 
 
+# One scanned page costs a pdftoppm child plus a tesseract child, each allowed OCR_PAGE_TIMEOUT. The default 120 s stage
+# leaves a ~100 s document budget, which cut the page after its OCR finished (EXTRACT_TIMEOUT). With --ocr the extract
+# stage gets 600 s and a document budget of 2 * page timeout + 60 s, which stays under stage timeout - DEADLINE_MARGIN.
+STAGE_TIMEOUT, OCR_STAGE_TIMEOUT, OCR_PAGE_TIMEOUT = 120, 600, 120
+OCR_DOCUMENT_TIMEOUT = 2 * OCR_PAGE_TIMEOUT + 60
+
+
 def _adapter(name, project, run_id, *extra):
-    code, line = _stage([name, "--project", str(project), "--timeout", "120", "--run-id", run_id,
+    timeout = [] if "--timeout" in extra else ["--timeout", str(STAGE_TIMEOUT)]
+    code, line = _stage([name, "--project", str(project), *timeout, "--run-id", run_id,
                          "--require-sandbox", *extra])
     detail = {"counts": line.get("counts"), "outcomes": line.get("outcomes", [])}
     if code != 0 or line.get("status") == "fail":
@@ -137,7 +145,7 @@ def _post(port, path, fields):
         conn.close()
 
 
-def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None):
+def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None, ocr=False):
     """Replay one message; return the proof report dict. ``out/label`` must not exist yet."""
     now = now or datetime.now(timezone.utc)
     base = Path(os.path.abspath(out)) / label
@@ -251,7 +259,9 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None)
     try:
         line.run("arrival_trigger", arrival_trigger, ["runtime/arrival"])
         line.run("save_mail", save_mail, ["project/processing-v1/ledger.sqlite"])
-        line.run("extract", lambda: _adapter("extract", project, run_id), ["project/processing-v1/extract"])
+        extract_args = ("--ocr", "--timeout", str(OCR_STAGE_TIMEOUT), "--ocr-page-timeout", str(OCR_PAGE_TIMEOUT),
+                        "--document-timeout", str(OCR_DOCUMENT_TIMEOUT)) if ocr else ()
+        line.run("extract", lambda: _adapter("extract", project, run_id, *extract_args), ["project/processing-v1/extract"])
         line.run("digest_gates", lambda: _adapter("digest_gates", project, run_id))
         line.run("outputs", outputs, [f"project/run-outputs/{run_id}/outcomes/{name}" for name in (
             "received-items.json", "comparison.json", "gap-proposals.json", "response-items.json",
@@ -271,7 +281,7 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None)
     report = {"schema": SCHEMA, "run_id": run_id, "sandbox": str(base), "message_sha256": hashlib.sha256(raw).hexdigest(),
               "sent": False, "published": False, "stages": line.stages, "manual_steps": manual,
               "total_seconds": round(sum(s["seconds"] for s in line.stages), 3),
-              "result": "PASS" if not manual else "FAIL"}
+              "result": "PASS" if not manual else "FAIL", "ocr": bool(ocr)}
     (base / "proof-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (base / "proof-report.md").write_text(render_markdown(report), encoding="utf-8")
     return report
@@ -320,10 +330,11 @@ def main(argv=None):
     parser.add_argument("--out", required=True, help="private directory for the sandbox and proof files")
     parser.add_argument("--label", default="replay-1")
     parser.add_argument("--as-of", help="YYYY-MM-DD clock for the deadline and health views")
+    parser.add_argument("--ocr", action="store_true", help="run extract with local OCR (stage 600 s, document budget fits one page)")
     args = parser.parse_args(argv)
     try:
         path = pick_message(args.message, args.mail_store, args.nth)
-        report = replay(path, args.out, args.campaign_root, label=args.label, as_of=args.as_of)
+        report = replay(path, args.out, args.campaign_root, label=args.label, as_of=args.as_of, ocr=args.ocr)
     except ProofError as error:
         print("records e2e-proof: refused (%s)" % error.code, file=sys.stderr)
         return 2
