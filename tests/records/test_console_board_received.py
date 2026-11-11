@@ -58,7 +58,7 @@ class BoardReceived(unittest.TestCase):
         self.aliases("agency_key\talias\nalpha-pd\talphaca\nbeta-pd\talphaca\n")
         model, rows, html = self.run_board()
         self.assertEqual(rows["R-1"]["received"], 2)
-        self.assertIn("aliases: unavailable (aliases_invalid)", html)
+        self.assertIn("aliases: unavailable", html)
         self.assertIn("Statutory due", html)
         self.assertIn("R-4", html)
 
@@ -67,7 +67,7 @@ class BoardReceived(unittest.TestCase):
         model, rows, html = self.run_board()
         self.assertTrue(all(r["received"] is None for r in rows.values()))
         self.assertEqual(html.count("<td>unavailable</td>"), 4)
-        self.assertIn("received: unavailable", html)
+        self.assertIn("received documents: unavailable", html)
         self.assertIn("R-4", html)
 
     def test_single_cd_load(self):

@@ -93,7 +93,7 @@ class ScreenE(Base):
         self.assertEqual(m["timeline"]["state"], "ok")
         self.assertEqual(m["health"]["state"], "ok")  # health reports the bad report itself
         page = co.render_oversight(m)
-        self.assertIn("links: unavailable (missing)", page)
+        self.assertIn("release links: unavailable", page)
         self.assertIn("R-1", page)
         no_report = co.load(self.project, tcb.RUN, None, now=NOW)
         self.assertEqual(no_report["runs"]["code"], "run_report_not_configured")
@@ -102,7 +102,7 @@ class ScreenE(Base):
     def test_missing_timeline_degrades_without_error(self):
         (self.project / "run-outputs" / tcb.RUN / "outcomes" / "timeline.json").unlink()
         page = co.render_oversight(self.model())
-        self.assertIn("timeline: unavailable", page)
+        self.assertIn("the request timeline: unavailable", page)
         self.assertIn("unavailable without a timeline", page)
 
     def test_escaping(self):
@@ -144,7 +144,7 @@ class ScreenF(Base):
         (self.project / pu.JOURNAL).write_text("garbage\n")
         m = self.model()
         self.assertEqual(m["public"]["state"], "unavailable")
-        self.assertIn("public: unavailable", co.render_public(m, "tok"))
+        self.assertIn("public updates: unavailable", co.render_public(m, "tok"))
 
     def test_unfinished_last_line_is_ignored(self):
         self.put_lines(candidate())
