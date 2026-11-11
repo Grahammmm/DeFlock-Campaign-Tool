@@ -92,6 +92,10 @@ class _DuplicateKey(ValueError):
     """A JSON object repeated a key; fixed text only, never the key or a value."""
 
 
+# Matches the 4 MiB cap the reply and quarterly-count readers apply to the whole log; they are not changed here.
+WRITE_CEILING = 4 * 1024 * 1024
+
+
 def _no_repeats(pairs):
     keys = [key for key, _ in pairs]
     if len(set(keys)) != len(keys):  # decoded strings: a literal and an escaped spelling collide
@@ -147,6 +151,16 @@ def _published(root, finding_id):
     raise ValueError(f"no published finding {finding_id}")
 
 
+def _admit(document):
+    """Serialize the prospective log once and refuse it when the bounded reply/count readers could not read it back."""
+    text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    written = text.replace("\n", os.linesep) if os.linesep != "\n" else text  # text-mode newline translation
+    if len(written.encode("utf-8")) > WRITE_CEILING:
+        raise ValueError(f"private/{NAME}: update exceeds the {WRITE_CEILING}-byte reply/count reader limit; "
+                         "nothing was changed")
+    return text
+
+
 def add(root, finding_id, received, summary, today=None):
     """Log one request against a published finding; returns the new open request."""
     path, today = _path(root), _today(today)
@@ -161,7 +175,7 @@ def add(root, finding_id, received, summary, today=None):
         request = {"id": max([r["id"] for r in document["requests"]], default=0) + 1, "finding_id": finding_id,
                    "received_on": day.isoformat(), "summary": _text(summary, "--summary"), "state": "open"}
         document["requests"].append(request)
-        _write_private(path, document, ".correction-requests-")
+        _write_private(path, document, ".correction-requests-", text=_admit(document))
         return request
 
 
@@ -188,7 +202,7 @@ def decide(root, request_id, decision, on, note, today=None):
                 raise ValueError("accept only after recording the correction: finding correct "
                                  f"{request['finding_id']} --date D --note T (dated {request['received_on']} or later)")
         request.update(state=decision, decided_on=day.isoformat(), note=note)
-        _write_private(path, document, ".correction-requests-")
+        _write_private(path, document, ".correction-requests-", text=_admit(document))
         return request
 
 
