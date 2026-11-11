@@ -505,8 +505,6 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
         if code == "STAGE_TIMEOUT" and entry["timeout_seconds"] > remaining:
             code = "RUN_DEADLINE_REACHED"
         stages.append(stage_entry(name, status, counts, seconds, code))
-        if result and result.get("internal") and code == "STAGE_INTERNAL_ERROR":
-            stages[-1]["internal"] = dict(result["internal"])
         if result and result.get("outcomes") and dict(result["counts"]) == counts:
             stages[-1]["outcomes"] = [dict(item) for item in result["outcomes"]]
         if result:

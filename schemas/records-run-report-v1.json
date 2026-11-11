@@ -160,7 +160,6 @@
           "type": ["string", "null"],
           "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
         },
-        "internal": {"type": "object", "additionalProperties": false, "required": ["type", "where"], "description": "STAGE_INTERNAL_ERROR only: exception class name and innermost campaign_tool function. Never a message, value or path.", "properties": {"type": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,63}$"}, "where": {"type": "string", "pattern": "^[A-Za-z0-9_.<>]{1,160}$"}}},
         "outcomes": {
           "type": "array",
           "description": "Optional per-document outcome codes (extract stage). Each document counted in counts.input has exactly one code, so the counts sum to counts.input. Codes are unique. Codes only, never document identities.",
