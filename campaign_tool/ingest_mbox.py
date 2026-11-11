@@ -28,11 +28,13 @@ def _read_mbox(path):
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         raise ValueError("--mbox must be a regular, non-symlink file") from None
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
+    try:  # RF0240-2: this finally is the sole owner of the raw descriptor on every post-open path
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("--mbox must be a regular, non-symlink file")
+        with os.fdopen(fd, "rb", closefd=False) as handle:  # the stream never owns (or closes) fd
+            data = handle.read(MAX_MBOX_BYTES + 1)
+    finally:
         os.close(fd)
-        raise ValueError("--mbox must be a regular, non-symlink file")
-    with os.fdopen(fd, "rb") as handle:
-        data = handle.read(MAX_MBOX_BYTES + 1)
     if len(data) > MAX_MBOX_BYTES:
         raise ValueError("Alpha limit: 200 MiB per mailbox; nothing was imported")
     return data
