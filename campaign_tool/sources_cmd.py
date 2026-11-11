@@ -80,7 +80,7 @@ def _read_existing(path):
         os.close(fd)
         raise
     with stream:
-        fst = os.fstat(stream.fileno())
+        fst = os.stat(fd)  # fstat of the opened descriptor
         if not stat.S_ISREG(fst.st_mode):
             raise ContentError("sources.json: must be a regular file")
         if fst.st_size > MAX_JSON_BYTES:

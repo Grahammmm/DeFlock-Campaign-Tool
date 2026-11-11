@@ -52,7 +52,7 @@ class ReadExistingTests(unittest.TestCase):
 
     def test_growth_after_fstat_reads_only_cap_plus_one(self):
         self.path.write_bytes(b"[]")
-        real_fstat = os.fstat
+        real_fstat = os.stat
         real_fdopen = os.fdopen
         reads = []
 
@@ -66,7 +66,7 @@ class ReadExistingTests(unittest.TestCase):
             stream = real_fdopen(fd, *a, **k)
             return _ReadSpy(stream, reads)
 
-        with mock.patch.object(sources_cmd.os, "fstat", grow), mock.patch.object(sources_cmd.os, "fdopen", spy), \
+        with mock.patch.object(sources_cmd.os, "stat", grow), mock.patch.object(sources_cmd.os, "fdopen", spy), \
                 mock.patch.object(sources_cmd.json, "loads", side_effect=AssertionError("parsed")):
             with self.assertRaisesRegex(ContentError, "file too large"):
                 sources_cmd._read_existing(self.path)
@@ -137,7 +137,7 @@ class ReadExistingTests(unittest.TestCase):
             with self.assertRaises(MemoryError):
                 sources_cmd._read_existing(self.path)
         self.assertEqual(set(os.listdir("/proc/self/fd")), before)
-        with mock.patch.object(sources_cmd.os, "fstat", side_effect=OSError("boom")):
+        with mock.patch.object(sources_cmd.os, "stat", side_effect=OSError("boom")):
             with self.assertRaises(OSError):
                 sources_cmd._read_existing(self.path)
         self.assertEqual(set(os.listdir("/proc/self/fd")), before)
