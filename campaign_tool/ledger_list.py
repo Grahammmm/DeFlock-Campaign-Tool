@@ -140,6 +140,12 @@ def list_receipts(root, source_id=None, since=None, not_in_sources=False):
             + " ORDER BY r.received_at, r.receipt_id", params).fetchall()
     finally:
         db.close()
+    # SQLite lets BLOB/NULL/REAL values into these non-STRICT columns; the projected fields are emitted
+    # without conversion, so refuse the whole listing (every SQL-selected row, before registration/cap).
+    for sha, size, source, _name, received in rows:
+        if (not isinstance(sha, str) or type(size) is not int or size < 0
+                or not isinstance(source, str) or not isinstance(received, str)):
+            raise ValueError("private/ledger.sqlite is not a readable ledger")
     receipts = [{"sha256_prefix": sha[:PREFIX], "bytes": size, "source_id": source,
                  "original_name": CONTROL.sub("?", str(name or ""))[:200], "received_at": received}
                 for sha, size, source, name, received in rows if sha not in registered]
