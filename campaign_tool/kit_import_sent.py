@@ -162,11 +162,12 @@ def import_sent(root, csv_path, *, apply=False, today=None):
     rows = _read_rows(csv_path)
     agencies = _agencies(root)
     try:
-        requests = copy.deepcopy(kit_track.read_sent(root))
-    except ValueError as exc:
-        raise SentImportError(str(exc)) from None
+        stored = kit_track.read_sent(root)
+    except ValueError:  # reader text can embed stored request keys: never forward or inspect it
+        raise SentImportError("kit/sent.json unreadable: invalid request data") from None
     except OSError:
         raise SentImportError("kit/sent.json cannot be read") from None
+    requests = copy.deepcopy(stored)
     first_line, errors, letters, accepted = {}, [], {}, []
     for line, cells in rows:
         key, entry, problems = _check_row(root, cells, agencies, requests, first_line, today, letters)

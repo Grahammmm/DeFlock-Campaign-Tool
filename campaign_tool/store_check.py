@@ -170,18 +170,48 @@ def mode_problems(root):
     return [problem for _, _, problem in _mode_entries(root)]
 
 
+MODE_FIX_UNSUPPORTED = "Private mode repair needs no-follow descriptor support"
+SUBSTITUTED = (errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.ENXIO)
+
+
+def _repair_one(path, kind, expected):
+    """True if the admitted inode was tightened; False if the entry was substituted. Other OSErrors propagate."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        if error.errno in SUBSTITUTED:
+            return False
+        raise
+    try:
+        info = os.fstat(fd)
+        if stat.S_IFMT(info.st_mode) != kind or (info.st_dev, info.st_ino) != (expected.st_dev, expected.st_ino):
+            return False
+        os.fchmod(fd, 0o700 if kind == stat.S_IFDIR else 0o600)
+        return True
+    finally:
+        os.close(fd)
+
+
 def fix_modes(root):
-    """chmod each loose_mode entry to 0700/0600 if a fresh lstat shows the same kind; nothing else."""
+    """Tighten each loose_mode entry to 0700/0600 through one read-only, no-follow descriptor.
+
+    A fresh lstat must show the same kind; the entry is then opened without following links and
+    fchmod'ed only if that descriptor is the same regular file/directory (device and inode) the
+    lstat saw. A replaced entry is skipped, never repaired by pathname. Parent directories are
+    trusted and stationary; no rollback of earlier repairs. Needs O_NOFOLLOW and fchmod and a
+    readable candidate, otherwise it refuses rather than fall back to a pathname chmod.
+    """
     if (root / "private").is_symlink() or (root / "private" / "objects").is_symlink():
         raise ValueError("private/objects must not be a symlink")
+    if not getattr(os, "O_NOFOLLOW", 0) or getattr(os, "fchmod", None) is None:
+        raise ValueError(MODE_FIX_UNSUPPORTED)
     fixed, skipped = [], []
-    nofollow = {"follow_symlinks": False} if os.chmod in os.supports_follow_symlinks else {}
     for path, kind, problem in _mode_entries(root):
         try:
-            same = stat.S_IFMT(_lstat(path).st_mode) == kind
+            expected = _lstat(path)
         except OSError:
-            same = False
-        if same:
-            os.chmod(path, 0o700 if kind == stat.S_IFDIR else 0o600, **nofollow)
+            expected = None
+        same = expected is not None and stat.S_IFMT(expected.st_mode) == kind and _repair_one(path, kind, expected)
         (fixed if same else skipped).append(problem["name"])
     return {"fixed": fixed, "skipped": skipped}

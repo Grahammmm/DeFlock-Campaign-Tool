@@ -505,6 +505,11 @@ def build_brief(root, agency_id, *, replace=False, now=None):
     flags = gate(rows, page, text)
     names = (f"{agency['slug']}-{day.isoformat()}.html", f"{agency['slug']}-{day.isoformat()}.txt")
     expected = _preflight(root, names, replace)
+    # Admit both finished twins as strict UTF-8 before any output-side mutation.
+    try:
+        payloads = (page.encode("utf-8"), text.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise BriefError("kit/briefs: brief outputs cannot be encoded as UTF-8; no brief files were written") from None
     written = []
     root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -514,7 +519,7 @@ def build_brief(root, agency_id, *, replace=False, now=None):
             briefs_fd = _subdir(kit_fd, "briefs")
             try:
                 _flush_setup(kit_fd)  # persist the briefs/ entry before either twin is attempted
-                for name, data in zip(names, (page.encode("utf-8"), text.encode("utf-8"))):
+                for name, data in zip(names, payloads):
                     _write_file(briefs_fd, name, data, replace, expected[name])
                     written.append(name)
             finally:
