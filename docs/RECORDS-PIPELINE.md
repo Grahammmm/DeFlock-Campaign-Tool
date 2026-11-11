@@ -150,4 +150,5 @@ After each run the outputs stage writes `run-outputs/<run>/outcomes/analysis-rea
 private, 0600): per agency and request with newly received records, only the record sha256s, text state, comparison
 finding ids and ratings, gap-proposal ids and the law package id and status; no text, quotes or names. A failure
 there gives the warn code `OUTPUTS_ANALYSIS_READY_UNAVAILABLE` and never suppresses an earlier output. Nothing reads
-it unattended until DFGL-06/07 and G-03; it starts nothing.
+it unattended until DFGL-06/07 and G-03; it starts nothing. `records analysis-export` (docs/RECORDS-ANALYSIS-LANE.md)
+reads it, read-only, to export hash-bound text per settled run.
