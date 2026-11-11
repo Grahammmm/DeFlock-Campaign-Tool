@@ -220,11 +220,13 @@ def _state(root):
 
 def status_lines():
     entries = _load(register_path())  # read once; no lock is held while any campaign is read
+    registered = [e["directory"] for e in entries]
     lines, current = [], True
     for entry in sorted(entries, key=lambda e: e["name"]):
         try:
+            confine(entry["directory"], registered)  # before _root reads campaign.json
             root = _root(entry["directory"])
-            confine(root, [e["directory"] for e in entries])
+            confine(root, registered)
             requests, opened, send, publish, law = _state(root)
             text = f"requests={requests} open={opened} waiting-send={send} waiting-publish={publish} law={law}"
         except Exception as exc:  # one broken campaign must not hide the others; the type name only, never its text
