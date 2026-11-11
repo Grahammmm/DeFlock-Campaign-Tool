@@ -342,10 +342,17 @@ class EditTests(Base):
         def leftovers():
             return sorted(p.name for p in folder.iterdir() if p.name.startswith(".agency-actions"))
 
+        real_open = os.open
+
+        def refuse_staging(path, flags, *args, **kwargs):
+            if flags & os.O_CREAT:
+                raise PermissionError("no temp")
+            return real_open(path, flags, *args, **kwargs)
+
         for target, side_effect in (("campaign_tool.agency_actions.os.replace", OSError(errno.EIO, "replace")),
                                     ("campaign_tool.agency_actions.os.fsync", OSError(errno.ENOSPC, "fsync")),
                                     ("campaign_tool.agency_actions.os.fchmod", PermissionError("chmod")),
-                                    ("campaign_tool.agency_actions.tempfile.mkstemp", PermissionError("no temp"))):
+                                    ("campaign_tool.agency_actions._open", refuse_staging)):
             with self.subTest(target=target), mock.patch(target, side_effect=side_effect):
                 self.refused(lambda: self.add(on="2026-09-09", source_url="https://example.invalid/w"), f"{LABEL}: write failed")
                 self.refused(lambda: remove_action(self.root, POLICE, 1, today=TODAY), f"{LABEL}: write failed")

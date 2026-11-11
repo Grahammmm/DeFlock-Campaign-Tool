@@ -14,8 +14,8 @@ there is no concurrent-writer promise.
 import json
 import os
 import re
+import secrets
 import stat
-import tempfile
 import unicodedata
 from contextlib import ExitStack
 from datetime import date
@@ -223,8 +223,8 @@ def _load(root):
     """Bounded bytes, identity and mode, or honest absence under stable parents.
 
     The supplied root is the trust anchor (its own symlinks are allowed). All
-    subsequent opens are descriptor-relative and no-follow. This confines reads,
-    not the writer's separate pathname-based staging/replacement operations.
+    subsequent opens are descriptor-relative and no-follow. This confines reads;
+    ``_install`` pins its own descriptors for staging, replacement and cleanup.
     """
     with ExitStack() as stack:
         try:
@@ -339,33 +339,76 @@ def _state(root, today):
 
 
 def _install(root, data, loaded):
-    """Write ``data`` beside the target and rename it over; the old bytes survive every ordinary failure."""
-    target = Path(root).joinpath(*PARTS)
+    """Write ``data`` beside the target and rename it over; the old bytes survive every ordinary failure.
+
+    RF2150-3: the supplied root is the trust anchor; ``content`` is admitted once without following links and every
+    stage, replace and cleanup operand is relative to that one descriptor, so a parent substituted mid-edit cannot
+    retarget them or make cleanup remove a foreign file. Only the temporary file this call created is ever unlinked.
+    One organizer writes at a time; there is no cross-process transaction or atomic conditional-unlink claim.
+    """
     mode = 0o644 if loaded is None else loaded[2]
-    name = None
-    try:
-        fd, name = tempfile.mkstemp(dir=target.parent, prefix=".agency-actions-", suffix=".tmp")
-        with os.fdopen(fd, "wb") as handle:  # closes the descriptor on every path
+    changed = f"{LABEL}: changed while it was being edited; nothing was written"
+    name = created = None
+    with ExitStack() as stack:
+        try:
+            root_fd = _open(root, os.O_RDONLY | os.O_DIRECTORY)
+            stack.callback(os.close, root_fd)
+            admitted = _entry(root_fd, "content", "content")
+            if admitted is None:
+                raise ActionError("content/ must be a real folder of this campaign; nothing was written")
+            content_fd = _open("content", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+            stack.callback(os.close, content_fd)
+            if _directory_identity(os.fstat(content_fd)) != _directory_identity(admitted):
+                raise ActionError(changed)
+            for _ in range(16):
+                candidate = ".agency-actions-" + secrets.token_hex(8) + ".tmp"
+                try:
+                    fd = _open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
+                               dir_fd=content_fd)
+                except FileExistsError:
+                    continue  # an entry this call did not create is never opened, changed or cleaned
+                name = candidate
+                break
+            else:
+                raise OSError("no unused staging name")
+            info = os.fstat(fd)
+            created = (info.st_dev, info.st_ino)
+            try:
+                handle = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)
+                raise
+            # The staging descriptor stays open until after the rename and cleanup below, so the kernel cannot recycle
+            # ``created`` for a foreign file of the same name; the ExitStack closes it on every path.
+            stack.enter_context(handle)
             os.fchmod(handle.fileno(), mode)
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        # Recheck the target is still the very file read (or still absent) just before it is replaced.
-        current = _load(root)
-        if (current is None) != (loaded is None) or (current is not None and current[1] != loaded[1]):
-            raise ActionError(f"{LABEL}: changed while it was being edited; nothing was written")
-        os.replace(name, target)
-        name = None
-    except ActionError:
-        raise
-    except OSError:
-        raise ActionError(f"{LABEL}: write failed; the previous file was kept") from None
-    finally:
-        if name is not None:
+            # Recheck the parent is still the admitted folder and the target is still the very file read (or still absent).
             try:
-                os.unlink(name)
-            except OSError:
-                pass
+                now = os.stat("content", dir_fd=root_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                now = None
+            if _directory_identity(now) != _directory_identity(admitted):
+                raise ActionError(changed)
+            current = _entry(content_fd, PARTS[1], LABEL)
+            if (current is None) != (loaded is None) or (current is not None and _identity(current) != loaded[1]):
+                raise ActionError(changed)
+            os.replace(name, PARTS[1], src_dir_fd=content_fd, dst_dir_fd=content_fd)
+            name = None
+        except ActionError:
+            raise
+        except OSError:
+            raise ActionError(f"{LABEL}: write failed; the previous file was kept") from None
+        finally:
+            if name is not None:
+                try:  # only the staging file this call created, only inside the admitted directory
+                    seen = os.stat(name, dir_fd=content_fd, follow_symlinks=False)
+                    if (seen.st_dev, seen.st_ino) == created:
+                        os.unlink(name, dir_fd=content_fd)
+                except OSError:
+                    pass
 
 
 def add_action(root, agency_id, *, on, kind, as_stated, source_url, checked_on, today=None):
