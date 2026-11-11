@@ -13,6 +13,7 @@ from unittest import mock
 
 from campaign_tool import kit_assign
 from tests import test_kit_assign as existing
+from tests.test_kit_assign_bounds import no_creation
 
 NOT_REGULAR = "kit/assignments.json unreadable: not a regular file"
 TOO_LARGE = "kit/assignments.json unreadable: larger than 1 MiB"
@@ -52,10 +53,10 @@ class ReadSafetyTests(unittest.TestCase):
     @contextlib.contextmanager
     def seam(self, before_open=None, before_fdopen=None, fstat_error=None, fdopen_error=None, read_error=None):
         rec = {"flags": [], "fds": [], "errnos": [], "fdopens": 0}
-        store = str(self.store)
 
         def opened(path, flags, *args, **kwargs):
-            if not (isinstance(path, (str, os.PathLike)) and os.fspath(path) == store):
+            # The leaf is opened by name relative to the admitted kit directory descriptor.
+            if not (path == "assignments.json" and isinstance(kwargs.get("dir_fd"), int)):
                 return REAL_OPEN(path, flags, *args, **kwargs)
             if before_open is not None and not rec["flags"]:
                 before_open()
@@ -199,8 +200,8 @@ class ReadSafetyTests(unittest.TestCase):
         for action in (("--to", "Replacement"), ("--clear",), ("--to", "Local Owner"), ("--to", CANARY)):
             with self.subTest(action=action):
                 with self.seam(before_open=self.to_symlink()), \
-                        mock.patch("os.replace", side_effect=AssertionError("replacement attempted")) as _, \
-                        mock.patch("tempfile.mkstemp", side_effect=AssertionError("temporary file attempted")):
+                        mock.patch("os.replace", side_effect=AssertionError("replacement attempted")), \
+                        no_creation():
                     code, out, err = existing.run("kit-assign", "--directory", self.root, "--agency", self.a, *action)
                 self.assertEqual((code, out), (1, ""), err)
                 self.assertIn(NOT_REGULAR, err)
