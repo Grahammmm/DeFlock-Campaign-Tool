@@ -67,3 +67,31 @@ records analysis-export --project P (--run RUN | --after RUN|- [--max-runs N]) (
   without `processing-v1/ledger.sqlite` is refused (`EXPORT_NO_LEDGER`); a busy ledger exits 75 with
   `EXPORT_LEDGER_BUSY` and no output. Symlinked run folders are refused. stderr carries codes and counts only,
   never record text.
+
+## Receipt, retention and replay (DFGL-06, host side)
+
+```
+records analysis-sync --root R --receive (DIR | --tar FILE|-)   # receipt only
+records analysis-sync --root R [--dry-run]                      # replay every pending run x agency pair
+records analysis-sync --root R --last-received | --pending
+```
+
+- **Receipt cursor.** `--last-received` is the newest run id retained in `R/.analysis/runs/<run_id>/` (or `-`). Folders are received
+  in id order; a folder is retained only when `EXPORT.json` (`records-analysis-export-v1`) matches every file's sha256 and every
+  `exported` TEXTS.csv row matches its text. `EXPORT_INVALID` stops receipt there, so the cursor never jumps a gap and the next
+  cycle re-exports from it. Tar members must be regular files with the 06A names, at most 64 MiB each. A retained id arriving
+  again is `RECEIVED_UNCHANGED` (same bytes) or `EXPORT_CONFLICT` (different bytes; the retained copy is never touched).
+- **Retained run store.** `.analysis/runs/` is append-only (dirs 0700, files 0600, temporary folder then rename, never overwritten,
+  never pruned by code). Its `analysis-ready.json` is the copy DFGL-10 reads for `law_package` and per-record metadata.
+- **Replay.** Every call walks the retained runs in id order; each run x agency pair without a final ledger outcome is placed:
+  the agency profile is found by `records_agency_id` (`PROFILE_MISSING`), `texts/<sha>.txt` goes to
+  `agencies/<slug>/review/inputs/records/<sha>.txt` (different existing bytes are `TEXT_CONFLICT`, never overwritten), `MANIFEST.csv`
+  gets one `(file, orig_sha256)` row per sha, `inputs/SOURCES.csv` one row per `(sha, run_id)` carrying `received_at` and
+  `received_at_source` verbatim, then `analysis-config` rebuilds the CONFIG (`CONFIG_INVALID`). `PROFILE_MISSING`, `TEXT_CONFLICT`
+  and `CONFIG_INVALID` stay pending and retry every call (a new ledger line only when the code changes); `SYNCED`, `UNCHANGED`,
+  `NO_AGENCIES` and `ANALYSIS_READY_MISSING` are final and never processed again.
+- **Ledger** `.analysis/analysis-ledger.jsonl` (0600, append-only): `receive` lines (`RECEIVED`, `RECEIVED_UNCHANGED`,
+  `EXPORT_INVALID`, `EXPORT_CONFLICT`) and `sync` lines (`run_id`, `agency_id`, `slug`, `outcome`, `new_texts`, `config`, `at`).
+- **Output and limits.** stdout carries ids, codes and counts only. `--dry-run` writes nothing (`WOULD_SYNC` for placeable pairs).
+  Exit 0 when nothing is pending and no receipt was refused, 1 otherwise. A root inside the repository or shaped like a flock
+  store is `ROOT_REFUSED`. The command never writes a fact and never calls `flock_facts` or a model.
