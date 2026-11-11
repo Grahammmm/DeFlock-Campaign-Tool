@@ -16,6 +16,7 @@ from .content import ContentError
 
 
 UNUSABLE_CONFIG = "campaign.json: must resolve to a readable regular file"
+TOO_DEEP_CONFIG = "campaign.json: JSON nesting is too deep"
 
 
 def _config_present(root):
@@ -51,6 +52,8 @@ def jurisdiction(root):
     from .cli import read_config
     try:
         cfg = read_config(root)
+    except RecursionError:  # the JSON parser's own nesting limit; fixed text, no parser message or config value
+        raise ContentError(TOO_DEEP_CONFIG) from None
     except (OSError, ValueError) as exc:
         raise ContentError(f"campaign.json: {exc}") from None
     return str(cfg.get("country", "US")).lower() + "-" + cfg["state"].lower()
