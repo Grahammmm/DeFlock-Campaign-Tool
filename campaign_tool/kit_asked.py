@@ -10,17 +10,20 @@ content. A request closed without production is left for the organizer to choose
 proposed as ``withdrawn``. Every recorded scope of a request that would yield an item must resolve to a title in the
 configured law package (an unknown scope or an unavailable package stops the run, exit 3, with one fixed message and no
 change; only a request with no recorded scopes gets the generic topic). A changed candidate whose exact writer bytes (indent=2, UTF-8, final newline) exceed the
-reader's ``content.MAX_JSON_BYTES`` is refused in ``propose`` (exit 3) before any write. Nothing is fetched or sent.
+reader's ``content.MAX_JSON_BYTES`` is refused in ``propose`` (exit 3) before any write. The original ``agencies.json`` is
+read from one no-follow, nonblocking descriptor that must be a regular file; a known oversized file is refused before any
+payload read and an admitted one is read at most the limit plus one byte (RF0211-1). Nothing is fetched or sent.
 """
 import copy
 import json
 import os
+import stat
 import sys
 from datetime import date
 from pathlib import Path
 
 from . import kit, kit_track, law
-from .content import MAX_JSON_BYTES, ContentError, _read_json, load_agencies
+from .content import MAX_JSON_BYTES, ContentError, load_agencies
 
 TOPIC_MAX = 120
 NO_SCOPES = "Records request"
@@ -92,6 +95,36 @@ def _proposal(entry, titles):
     return {**proposal, **({"updated_on": step[1]} if step else {})}
 
 
+def _read_agencies(path, limit=MAX_JSON_BYTES):
+    """Parse ``path`` after one bounded read; ``limit`` is bound when defined, so patching the module's output cap
+    never changes input admission. The opened descriptor must be a regular file; it is never reopened by name."""
+    path = Path(path)
+    if path.is_symlink():
+        raise ContentError(f"{path.name}: symlinks are not read")
+    flags = getattr(os, "O_NOFOLLOW", None), getattr(os, "O_NONBLOCK", None)
+    if None in flags:
+        raise ContentError(f"{path.name}: must be a regular file")
+    fd = os.open(path, os.O_RDONLY | flags[0] | flags[1] | getattr(os, "O_CLOEXEC", 0))
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ContentError(f"{path.name}: must be a regular file")
+        if info.st_size > limit:
+            raise ContentError(f"{path.name}: file too large")
+        stream = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    with stream:
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ContentError(f"{path.name}: file too large")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ContentError(f"{path.name}: not valid UTF-8 JSON ({exc})") from None
+
+
 def _show(value):
     return "(absent)" if value is None else json.dumps(value, ensure_ascii=False)
 
@@ -113,7 +146,7 @@ def propose(root, today=None, law_base=None):
     path = root / "content" / "agencies.json"
     if not path.is_file() and not path.is_symlink():
         raise ContentError("content/agencies.json not found; nothing to propose")
-    document = _read_json(path)
+    document = _read_agencies(path)
     if not isinstance(document, list):
         raise ContentError("content/agencies.json: must be a list of agencies")
     sent = kit_track.read_sent(root)
