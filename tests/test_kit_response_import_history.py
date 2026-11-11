@@ -111,15 +111,15 @@ class SelectedHistoryTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), csv_before)
 
     def test_history_errors_are_fixed_private_and_narrow(self):
-        secret = "canary-note-xyz"
-        self.set_steps([{"on": "2026-03-12", "kind": "acknowledged", "note": secret},
+        canary = "canary-note-xyz"
+        self.set_steps([{"on": "2026-03-12", "kind": "acknowledged", "note": canary},
                         {"on": "2026-03-04", "kind": "determination"}])
         path = self.write(NEW_TAIL)
         with self.assertRaises(kit_import_steps.ImportRefused) as raised:
             kit_import_steps.import_steps(self.root, self.agency, path, today=DAY)
         self.assertEqual(str(raised.exception), REFUSAL[len("Stopped: "):-1])
         self.assertTrue(raised.exception.__suppress_context__)
-        self.assertNotIn(secret, str(raised.exception))
+        self.assertNotIn(canary, str(raised.exception))
         with mock.patch.object(kit_track, "validate_steps", side_effect=RuntimeError("bug")):
             with self.assertRaises(RuntimeError):
                 kit_import_steps.import_steps(self.root, self.agency, path, today=DAY)
