@@ -198,11 +198,13 @@ def check_source_bundle(public, expected):
         if not missing:
             raise ContentError(DIFFERS)
         return
-    if missing or not stat.S_ISREG(mode) or os.lstat(current).st_size != len(expected):
+    if missing or not stat.S_ISREG(mode):
         raise ContentError(DIFFERS)
+    # The final component is read through the descriptor-verified, nonfollowing, bounded ``read_copy`` (at most
+    # ``len(expected) + 1`` bytes); its fixed refusal is reported here as the checker's own ``DIFFERS``.
     try:
-        found = current.read_bytes()
-    except OSError:
+        found = read_copy(current, len(expected))
+    except (ContentError, OSError):
         raise ContentError(DIFFERS) from None
     if found != expected:
         raise ContentError(DIFFERS)

@@ -196,6 +196,50 @@ def remove_schedule(root, *, body, today=None):
     return f"Removed body schedule: {body}."
 
 
+def _read_meeting(path, admitted):
+    """RF0330-3: the parsed JSON of one staged meeting leaf, read only through the admitted file itself.
+
+    ``admitted`` is the leaf's lstat result from the path check. The leaf is opened read-only, no-follow and
+    nonblocking (a missing capability refuses rather than falling back), and its descriptor must be a regular file
+    with the admitted device/inode before any payload read. A descriptor size over ``MAX_JSON_BYTES`` is refused
+    unread; otherwise at most ``MAX_JSON_BYTES + 1`` bytes are read, so growth after the size check is caught by the
+    returned length before decoding. Acquisition and I/O failures give one fixed diagnostic with no OS detail.
+    This guards the leaf only: it is not a directory-descriptor walk, a snapshot or a writer lock."""
+    name = path.name
+    unsafe = f"meetings/{name}: cannot be read safely"
+    nofollow, nonblock = getattr(os, "O_NOFOLLOW", None), getattr(os, "O_NONBLOCK", None)
+    if not nofollow or not nonblock:
+        raise BodyScheduleError(unsafe)
+    try:
+        fd = os.open(path, os.O_RDONLY | nofollow | nonblock)
+    except OSError:
+        raise BodyScheduleError(unsafe) from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != (admitted.st_dev, admitted.st_ino):
+            raise BodyScheduleError(unsafe)
+        if info.st_size > MAX_JSON_BYTES:
+            raise ContentError(f"{name}: file too large")
+        handle = os.fdopen(fd, "rb")  # the stream owns the descriptor from here
+    except OSError:
+        os.close(fd)
+        raise BodyScheduleError(unsafe) from None
+    except BaseException:
+        os.close(fd)
+        raise
+    try:
+        with handle:
+            data = handle.read(MAX_JSON_BYTES + 1)
+    except OSError:
+        raise BodyScheduleError(unsafe) from None
+    if len(data) > MAX_JSON_BYTES:
+        raise ContentError(f"{name}: file too large")
+    try:
+        return json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ContentError(f"{name}: not valid UTF-8 JSON ({exc})") from None
+
+
 def _meetings(content, day):
     folder = content / "meetings"
     if not os.path.lexists(folder):
@@ -207,7 +251,15 @@ def _meetings(content, day):
         if path.is_symlink() or not path.is_file():
             raise BodyScheduleError(f"meetings/{path.name}: must be a regular non-symlink file")
         try:
-            meetings.append(load_meeting(_read_json(path), "meetings/" + path.name, today=day))
+            admitted = path.lstat()
+        except OSError:
+            raise BodyScheduleError(f"meetings/{path.name}: cannot be read safely") from None
+        if not stat.S_ISREG(admitted.st_mode):
+            raise BodyScheduleError(f"meetings/{path.name}: must be a regular non-symlink file")
+        try:
+            meetings.append(load_meeting(_read_meeting(path, admitted), "meetings/" + path.name, today=day))
+        except BodyScheduleError:
+            raise
         except (ContentError, OSError) as exc:
             raise BodyScheduleError(f"meetings/{path.name}: {exc}") from None
     return meetings

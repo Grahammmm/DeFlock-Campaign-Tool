@@ -468,16 +468,22 @@ def _ensure_private_dir(root):
 def _temporary(folder, data, mode):
     fd, name = tempfile.mkstemp(dir=folder, prefix=".supporters-", suffix=".tmp")
     try:
-        os.fchmod(fd, mode)
-        with os.fdopen(fd, "wb") as handle:
+        # Until fdopen returns, this function owns the raw descriptor.
+        try:
+            os.fchmod(fd, mode)
+            stream = os.fdopen(fd, "wb")
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        # The stream now owns the descriptor; never close the integer again.
+        with stream as handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
     except BaseException:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
         _discard(name)
         raise
     return name

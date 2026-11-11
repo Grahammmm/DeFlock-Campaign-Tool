@@ -28,20 +28,43 @@ RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 LABELS = {"sharing": "data sharing", "immigration": "immigration-related access", "stated_date": "promised response dates",
           "request_id": "which request an item answers", "received_at": "dates of receipt"}
+# One entry per (type, detector_or_field): the record to ask for, the policy clause or rule the answer would test, and (misuse
+# leads only) the window to use when the proposal carries no dates. "tests" completes "This would show whether ...";
+# a misuse lead ends "is consistent with <cite>" so it reads as a question about the policy, never a claim about the agency.
 ASKS = {
-    ("misuse_lead", "sharing"): "the ALPR data-sharing agreements in effect and the audit log entries for searches made by or "
-                                "on behalf of agencies outside California during the period covered by the record on page {page}",
-    ("misuse_lead", "immigration"): "the audit log entries and any records of access to or sharing of ALPR data for "
-                                    "immigration-related purposes during the period covered by the record on page {page}",
-    ("promised_not_received", None): "the further response or records the agency stated on page {page} it would provide",
-    ("deadline_passed_no_answer", None): "the agency's determination on this request, or the date it will issue one",
-    ("exemption_without_citation", None): "the provision or exemption the agency relies on for the denial on page {page}",
-    ("fee_review", None): "the basis and an itemization of the fee stated on page {page}",
-    ("missing_field", "request_id"): "confirmation of which request the item on page {page} answers",
-    ("missing_field", "received_at"): "the date the item on page {page} was received",
+    ("misuse_lead", "sharing"): {
+        "record": "the ALPR data-sharing agreements in effect and the audit log entries for searches made by or on behalf of "
+                  "agencies outside California",
+        "window": "the period covered by the record on page {page}",
+        "tests": "the sharing described on page {page} is consistent with", "consistent": True},
+    ("misuse_lead", "immigration"): {
+        "record": "the audit log entries and any records of access to or sharing of ALPR data for immigration-related purposes",
+        "window": "the period covered by the record on page {page}",
+        "tests": "the access or sharing described on page {page} is consistent with", "consistent": True},
+    ("promised_not_received", None): {
+        "record": "the further response or records the agency stated on page {page} it would provide",
+        "tests": "the response promised on page {page} has been provided within the time the cited section allows"},
+    ("deadline_passed_no_answer", None): {
+        "record": "the agency's determination on this request, or the date it will issue one",
+        "tests": "a determination was issued within the time the cited section allows"},
+    ("exemption_without_citation", None): {
+        "record": "the provision or exemption the agency relies on for the denial on page {page}",
+        "tests": "the denial on page {page} names the provision it relies on, as the cited section contemplates"},
+    ("fee_review", None): {
+        "record": "the basis and an itemization of the fee stated on page {page}",
+        "tests": "the fee on page {page} is limited to the direct cost of duplication"},
+    ("missing_field", "request_id"): {
+        "record": "confirmation of which request the item on page {page} answers",
+        "tests": "the item on page {page} can be matched to the request it answers under the cited section"},
+    ("missing_field", "received_at"): {
+        "record": "the date the item on page {page} was received",
+        "tests": "the receipt date of the item on page {page} can be set against the response time the cited section allows"},
 }
-GAP_ASK = ("the current ALPR usage and privacy policy section governing {label}, and any records showing how it "
-           "was applied")
+GAP_ASK = {"record": "the current ALPR usage and privacy policy section governing {label}, and any records showing how it "
+                     "was applied",
+           "tests": "the material received on {label} meets the policy section or comparison point cited"}
+CLAIM_FALLBACK = "the agency's ALPR usage and privacy policy"
+MAX_FIELD = 120
 
 
 class NextStepsError(Exception):
@@ -160,22 +183,49 @@ def _site_diff(root, agency_id, day):
                                         tofile="content/agencies.json (proposed)", n=2))
 
 
+def _text(value):
+    """A proposal field used as wording: a short single-line string, else absent (never guessed)."""
+    text = " ".join(value.split()) if isinstance(value, str) else ""
+    return text if text and len(text) <= MAX_FIELD and '"' not in text else ""
+
+
+def _window(p, default):
+    """Dates only when the proposal carries them as YYYY-MM-DD; else the record-anchored default (misuse leads) or nothing."""
+    start, end = (v if isinstance(v, str) and DAY.fullmatch(v) else "" for v in (p.get("date_from"), p.get("date_to")))
+    if start and end:
+        return f"{start} to {end}"
+    return f"{start and 'since ' + start}{end and 'up to ' + end}" or (default or "")
+
+
+def _ask(p):
+    """-> 'Please provide <record>[ held by <custodian>][ for <window>]. This would show whether <tests>[ (<cite>)].'"""
+    spec = ASKS.get((p["type"], p.get("detector_or_field"))) or ASKS.get((p["type"], None)) or GAP_ASK
+    page, label = p.get("page"), _label(p)
+    fill = lambda s: s.format(page=page, label=label)  # noqa: E731 - a page-less proposal is ledger-only; its templates use no page
+    rule = p.get("rule_ref") if isinstance(p.get("rule_ref"), dict) else {}
+    cite = _text(rule.get("label") or rule.get("citation"))
+    policy = p.get("policy_section") if isinstance(p.get("policy_section"), dict) else {}
+    if isinstance(policy.get("page"), int) and not isinstance(policy.get("page"), bool):
+        cite = (cite + "; " if cite else "") + f"the agency's policy, page {policy['page']}"
+    custodian, window = _text(p.get("custodian")), _window(p, spec.get("window") and fill(spec["window"]))
+    text = "Please provide " + fill(spec["record"]) + (f" held by {custodian}" if custodian else "") + \
+        (f" for {window}" if window else "") + ". This would show whether " + fill(spec["tests"])
+    if spec.get("consistent"):
+        return text + f" {cite or CLAIM_FALLBACK}."
+    return text + (f" ({cite})" if cite else "") + "."
+
+
 def _probe(name, request, group):
     asks, recorded = [], False
     for number, p in enumerate(group, 1):
-        template = ASKS.get((p["type"], p.get("detector_or_field"))) or ASKS.get((p["type"], None)) or GAP_ASK
-        ask = template.format(page=p.get("page"), label=_label(p))
-        rule = p.get("rule_ref") if isinstance(p.get("rule_ref"), dict) else {}
-        cite = rule.get("label") or rule.get("citation") or ""
+        ask = _ask(p)
         quote = " ".join(str(p.get("quote") or "").split()).replace('"', "'")  # inner double quotes would end the quotation
         if p.get("item_id") is None and p.get("page") is None:
             # ledger-only proposal (no received record): cite the request ledger, not a record page
-            asks.append(f'{number}. Please provide {ask}' + (f" ({cite})" if cite else "") +
-                        f'. Our request ledger shows: "{quote}"')
+            asks.append(f'{number}. {ask} Our request ledger shows: "{quote}"')
             continue
         recorded = True
-        asks.append(f'{number}. Please provide {ask}' + (f" ({cite})" if cite else "") +
-                    f'. The record states, on page {p.get("page")}: "{quote}"')
+        asks.append(f'{number}. {ask} The record states, on page {p.get("page")}: "{quote}"')
     unquoted = "\n".join(re.sub(r'"[^"\n]*"', " ", a) for a in asks)
     if legal_claims.legal_claims(unquoted):
         return None

@@ -84,7 +84,8 @@ def _read_receipts(path, limit=MAX_JSON_BYTES):
         raise ContentError(f"{LABEL}: file too large")
     try:
         return json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        # RecursionError here is decoder exhaustion on overdeep nesting: same refusal as any malformed JSON.
         raise ContentError(f"{LABEL}: not valid UTF-8 JSON") from None
 
 

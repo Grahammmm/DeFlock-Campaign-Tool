@@ -132,6 +132,12 @@ class DurabilityTests(unittest.TestCase):
             events.append(("close", fd))
             return REAL_CLOSE(fd)
 
+        # The opener delegates dir_fd unchanged. Preserve that capability if a lazy CLI import
+        # probes os.open while instrumentation is active (for example kit_assign via today).
+        if REAL_OPEN in os.supports_dir_fd:
+            patch = mock.patch.object(os, "supports_dir_fd", os.supports_dir_fd | {opener})
+            patch.start()
+            self.patches.append(patch)
         for name, wrapper in (("fsync", fsync), ("replace", replace), ("open", opener), ("close", closer)):
             patch = mock.patch.object(os, name, wrapper)
             patch.start()

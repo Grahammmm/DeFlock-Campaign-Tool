@@ -265,7 +265,10 @@ def _read_bytes(dir_fd, name, st, cap):
     except OSError:
         raise _Bad from None
     try:
-        info = os.fstat(fd)
+        try:
+            info = os.fstat(fd)
+        except OSError:
+            raise _Bad from None
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > cap:
             raise _Bad
         chunks, size = [], 0
@@ -280,8 +283,17 @@ def _read_bytes(dir_fd, name, st, cap):
             if size > cap:
                 raise _Bad
             chunks.append(chunk)
-    finally:
-        os.close(fd)
+    except BaseException:
+        # One close attempt, never retried; it must not replace the primary refusal or exception.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    try:
+        os.close(fd)  # the single close attempt; a failure discards the bytes of this file
+    except OSError:
+        raise _Bad from None
     return b"".join(chunks)
 
 

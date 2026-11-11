@@ -79,7 +79,7 @@ def _read_participation(path):
         if len(data) > PARTICIPATION_LIMIT:
             raise refusal
         return json.loads(data.decode("utf-8"))
-    except (OSError, ValueError):  # JSONDecodeError and UnicodeDecodeError are ValueErrors
+    except (OSError, ValueError, RecursionError):  # JSONDecodeError/UnicodeDecodeError are ValueErrors; deep nesting exhausts the decoder
         raise refusal from None
     finally:
         os.close(fd)
