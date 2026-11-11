@@ -438,11 +438,11 @@ class KitSentImportTests(unittest.TestCase):
         self.sent.write_text(json.dumps({"schema_version": 1, "requests": {self.a: {"sent_on": "2026-03-02"}}}))
         self.refuses(path, "kit/sent.json unreadable")
         self.sent.write_bytes(b" " * (kit_track.MAX_BYTES + 1))
-        self.refuses(path, "larger than 1 MiB")
+        self.refuses(path, "kit/sent.json unreadable: invalid request data")
         self.sent.unlink()
         (self.tmp / "other.json").write_text(json.dumps({"schema_version": 1, "requests": {}}))
         self.sent.symlink_to(self.tmp / "other.json")
-        self.refuses(path, "not a regular file")
+        self.refuses(path, "kit/sent.json unreadable: invalid request data")
         self.sent.unlink()
         agencies = self.kit / "agencies.json"
         original = agencies.read_bytes()
