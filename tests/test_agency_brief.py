@@ -1003,5 +1003,105 @@ class PublicationFailureTests(BriefCase):
                 self.repaired(folder, expected)
 
 
+class EncodingAdmissionTests(BriefCase):
+    FIXED = "kit/briefs: brief outputs cannot be encoded as UTF-8; no brief files were written"
+
+    def snap(self):
+        out = {}
+        for p in sorted(self.root.rglob("*")):
+            st = p.lstat()
+            out[p.relative_to(self.root).as_posix()] = (
+                stat.S_IMODE(st.st_mode), st.st_ino, st.st_dev, st.st_mtime_ns, p.read_bytes() if p.is_file() else None)
+        return out
+
+    def bad_title(self, code="\\ud800"):
+        path = self.content / "findings" / "cedar-policy-posted.json"
+        path.write_text(path.read_text(encoding="utf-8").replace('"title": "', '"title": "X' + code, 1), encoding="utf-8")
+        self.assertIn(code, path.read_text(encoding="utf-8"))
+
+    def bad_ask(self, code="\\udfff"):
+        site = self.read("site.json")
+        site["comment_asks"] = ["Ask QQQQ"]
+        (self.content / "site.json").write_text(json.dumps(site).replace("QQQQ", code), encoding="utf-8")
+
+    def cli(self, replace=False):
+        with mock.patch.object(agency_brief, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            return run("agency-brief", "--directory", self.root, "--agency", POLICE, *(["--replace"] if replace else []))
+
+    def test_real_json_lone_surrogates_refuse_before_setup(self):
+        for kind, code in (("title", "\\ud800"), ("title", "\\udfff"), ("ask", "\\udc00"), ("ask", "\\ud83d")):
+            with self.subTest(kind=kind, code=code):
+                getattr(self, "bad_" + kind)(code)
+                before = self.snap()
+                with self.assertRaises(BriefError) as ctx:
+                    self.brief()
+                self.assertEqual(str(ctx.exception), self.FIXED)
+                self.assertIsNone(ctx.exception.__cause__)
+                self.assertFalse((self.root / "kit").exists())
+                self.assertEqual(before, self.snap())
+
+    def test_refusal_preserves_every_layout_and_cli_is_fixed_and_retryable(self):
+        self.bad_title()
+        for layout in ("neither", "kit-only", "briefs", "pair"):
+            with self.subTest(layout=layout):
+                shutil.rmtree(self.root / "kit", ignore_errors=True)
+                if layout != "neither":
+                    (self.root / "kit").mkdir(mode=0o755)
+                if layout in ("briefs", "pair"):
+                    (self.root / "kit" / "briefs").mkdir(mode=0o755)
+                if layout == "pair":
+                    for name in (HTML, TXT):
+                        (self.root / "kit" / "briefs" / name).write_bytes(b"OLD")
+                before = self.snap()
+                code, out, err = self.cli(replace=(layout == "pair"))
+                self.assertEqual((code, out, err), (1, "", "Stopped: " + self.FIXED + "\n"))
+                self.assertEqual(before, self.snap())
+        shutil.rmtree(self.root / "kit")
+        path = self.content / "findings" / "cedar-policy-posted.json"
+        path.write_text(path.read_text(encoding="utf-8").replace("\\ud800", ""), encoding="utf-8")
+        self.assertEqual(self.cli()[0], 0)
+        self.assertTrue((self.root / "kit" / "briefs" / HTML).is_file())
+
+    def test_admission_precedes_all_output_operations_and_second_twin_is_admitted(self):
+        names = ("_subdir", "_flush_setup", "_write_file")
+        with contextlib.ExitStack() as stack:
+            spies = {n: stack.enter_context(mock.patch.object(agency_brief, n, side_effect=AssertionError(n))) for n in names}
+            real_text = agency_brief.render_text
+            stack.enter_context(mock.patch.object(agency_brief, "render_text", lambda t, r: real_text(t, r) + "\ud800"))
+            with self.assertRaises(BriefError) as ctx:
+                self.brief()
+            self.assertEqual(str(ctx.exception), self.FIXED)
+            for spy in spies.values():
+                spy.assert_not_called()
+            self.assertFalse((self.root / "kit").exists())
+        with mock.patch.object(agency_brief, "render_html", lambda t, r: "<p>\ud800</p>"):
+            with self.assertRaises(BriefError):
+                self.brief()
+        self.assertFalse((self.root / "kit").exists())
+
+    def test_healthy_bytes_are_written_and_precedence_survives(self):
+        written = []
+        real = agency_brief._write_file
+        with mock.patch.object(agency_brief, "_write_file",
+                               side_effect=lambda d, n, data, *a: (written.append(data), real(d, n, data, *a))[1]):
+            self.brief()
+        page, text = self.pair()
+        self.assertEqual(written, [page.encode("utf-8"), text.encode("utf-8")])
+        # a lone surrogate in an unrendered field does not block the brief
+        shutil.rmtree(self.root / "kit")
+        self.edit_agencies(lambda a: a["profile"].update(summary="MARKER"))
+        path = self.content / "agencies.json"
+        path.write_text(path.read_text(encoding="utf-8").replace("MARKER", "\\ud800"), encoding="utf-8")
+        self.brief()
+        # earlier refusals keep precedence over the encoding refusal
+        self.bad_title()
+        with self.assertRaises(BriefError) as ctx:
+            self.brief()
+        self.assertNotEqual(str(ctx.exception), self.FIXED)
+        with self.assertRaisesRegex(BriefError, "timezone-aware"):
+            self.brief(now=datetime(2026, 11, 4))
+
+
 if __name__ == "__main__":
     unittest.main()
