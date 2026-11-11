@@ -10,8 +10,7 @@ def _row(label, value):
 
 
 def render(project, send_config=None, drafts_config=None):
-    out = ['<h1>Settings</h1><p>Read-only. Changes are owner-only steps outside this page.</p>',
-           '<h2>Sending</h2><dl>']
+    out = ['<h1>Settings</h1><p>Read-only. Changes are owner-only steps outside this page.</p>']
     config = None
     if send_config is None:
         out.append(_row('Send config', 'not given to the console'))
@@ -34,6 +33,10 @@ def render(project, send_config=None, drafts_config=None):
                         _row('Mode', 'live' if config['live'] else 'test'),
                         _row('Test recipient', config['test_recipient'] or 'not configured'),
                         _row('SMTP password file', 'configured')))
+    out.insert(1, '<p role="status">%s</p><h2>Sending</h2><dl>' % esc(
+        'Nothing can be sent from this console: sending is not set up.' if config is None else
+        ('Sending is set up and %s.' % ('can send now, after approval' if state['can_send'] else
+                                        'is off, so nothing can be sent now'))))
     present = []
     for index, path in enumerate(mail_send.kill_files(project, config)):
         if os.path.lexists(path):

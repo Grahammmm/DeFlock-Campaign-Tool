@@ -396,7 +396,18 @@ def render(model, today, first):
            "Subscribing from a phone needs hosting, which is not built.</p>" % (esc(model["run_id"]), esc(LABEL), esc(cb.COMPUTED_LEGEND)),
            '<p><a href="/calendar?month=%s">&larr; %s</a> <a href="/calendar?month=%s">%s &rarr;</a></p>' % (
                prev.strftime("%Y-%m"), prev.strftime("%b %Y"), nxt.strftime("%Y-%m"), nxt.strftime("%b %Y"))]
-    out += ['<p class="diag" role="status">%s</p>' % esc(n) for n in notes]
+    banner = console_layout.sources_banner(
+        console_layout.plain(k for k in ("timeline", "links", "public", "packets", "followup", "queue", "sends")
+                             if model.get(k, {}).get("state") == "unavailable"),
+        ["%s requests have no usable date." % m.group(1) for n in notes if (m := re.match(r"no clock: (\d+) ", n))])
+    if banner:
+        out.insert(1, banner)
+    prefix = "follow-up drafting is off for this agency: "
+    off = [n[len(prefix):] for n in notes if n.startswith(prefix)]
+    out += ['<p class="diag" role="status">%s</p>' % esc(n) for n in notes if not n.startswith(prefix)]
+    if off:
+        out.append('<details class="diag"><summary>Follow-up drafting is off for %d agenc%s</summary><ul>%s</ul></details>' % (
+            len(off), "y" if len(off) == 1 else "ies", "".join("<li>%s</li>" % esc(n) for n in off)))
     out.append("<table><caption>%s</caption><thead><tr>%s</tr></thead><tbody>" % (
         esc(first.strftime("%B %Y")), "".join('<th scope="col">%s</th>' % d for d in calendar.day_abbr)))
     for week in calendar.Calendar().monthdayscalendar(first.year, first.month):

@@ -82,9 +82,19 @@ def fix_for(exc):
     return None
 
 
+def _display_text(text):
+    """Keep LF and printable characters; show every other character as its visible ASCII escape."""
+    return "".join(c if c == "\n" or c.isprintable() else ascii(c)[1:-1] for c in text)
+
+
 def emit(exc):
-    """Print `Stopped: <message>` then, for a known cause, one `Fix:` line, both on stderr."""
-    print("Stopped: " + str(exc), file=sys.stderr)
+    """Print `Stopped: <message>` then, for a known cause, one `Fix:` line, both on stderr.
+
+    LF and printable Unicode in the message are kept as they are; every other character
+    (ESC, CR, tab, C1, line separators, bidi marks, lone surrogates) is shown as an
+    escape such as `\\x1b`. The fix is chosen from the original exception, never this text.
+    """
+    print("Stopped: " + _display_text(str(exc)), file=sys.stderr)
     fix = fix_for(exc)
     if fix:
         print("Fix: " + fix, file=sys.stderr)

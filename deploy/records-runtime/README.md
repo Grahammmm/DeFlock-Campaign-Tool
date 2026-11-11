@@ -15,8 +15,9 @@ Files
   15:00 America/Los_Angeles (see "Timer calendar" below). Records requests do
   not arrive on weekends, so no weekend slot exists.
 - `records-arrival.path.in`, `records-arrival.service.in`: the arrival trigger
-  (REC-AUTO-1, see "Arrival runs" below). Rendered, never enabled by the
-  renderer.
+  (REC-AUTO-1, see "Arrival runs" below). Rendered, never enabled by the renderer.
+- `records-health.service.in`, `records-health.timer.in`: the hourly health check
+  (see "Health timer" below). Rendered, never enabled by the renderer.
 - `notify.py`: non-fatal Telegram notifier. It writes the report's `notify`
   stage. Arrival runs get a fixed three-section summary (Came in / Done /
   Needs G), see `docs/RECORDS-ARRIVAL-PROOF.md`.
@@ -446,6 +447,28 @@ scheduled runs; idle stages (no input) never alert. It also flags no scheduled r
 1 untrusted. It complements `records health`. Scheduling it and delivering its alerts beyond
 stdout or `--json-out` are separate operator decisions; it installs and sends nothing.
 
+## Health timer
+
+`records-health.timer` fires hourly (`OnCalendar=hourly`, `Persistent=true`,
+`RandomizedDelaySec=120`) and starts `records-health.service`, a oneshot that
+runs `python3 -B -m campaign_tool.records pipeline-health --record-alerts` for
+`RUNTIME_DIR`, `SCHEDULED_TARGET` and the new `RECORDS_ROOT` value (host path of
+the records root holding `ledger.sqlite`; absolute, required, so a `VALUES.json`
+without it fails closed with `no value for ['RECORDS_ROOT']`). The day, time and
+zone flags come from the same `TIMER_*` values as the run timer, so the check
+judges the schedule the run timer actually uses. The check is read-only apart
+from one alert file per open problem (and a `.cleared` file once resolved) under
+`RUNTIME_DIR/TARGET/alerts`: no successful run, repeated failures, arrival backlog,
+stale mail poll, notify failure or a missed slot. Exit 1 (warn), 2 (unknown) or 3
+(stop) shows as a failed unit; the alert files are the record. Telegram delivery
+is unchanged.
+
+Attended install (operator, not run by this PR), after rendering to `DIR`:
+
+    install -m 0600 DIR/records-health.service DIR/records-health.timer ~/.config/systemd/user/
+    systemctl --user daemon-reload
+    systemctl --user enable --now records-health.timer
+
 ## Timer calendar
 
 The timer's `OnCalendar` lines are built by `render.py` from three optional
@@ -472,6 +495,17 @@ and admin panel pick up a non-default calendar. Pass the same values you rendere
 calendar skips is not a late or missed run. A change takes effect only after the
 operator re-renders, re-installs the timer and runs `systemctl --user
 daemon-reload` and `restart records-run.timer` on the host.
+
+## Backup check (DFGL-12)
+
+Setting `BACKUP_DIR` (an absolute path, the backup directory as mounted in the container) in VALUES.json also renders
+`records-backup-check.service` and a daily `records-backup-check.timer` (`OnCalendar=*-*-* 06:10`, `Persistent=true`). Without
+it neither is rendered and the other units are unchanged. The unit runs `records backup-check --into BACKUP_DIR`: it verifies
+the newest set listed in `backup-digests.jsonl` against its trusted manifest digest and prints one code (`BACKUP_OK`,
+`BACKUP_NONE`, `BACKUP_STALE` when no verified set is under 8 days old, `BACKUP_VERIFY_FAILED`, `DIGESTS_INVALID`); anything
+but `BACKUP_OK` exits 1 and writes a codes-only alert in `BACKUP_DIR-alerts` beside the backup directory. The check never
+takes the records run lock, never backs up and never writes into the project or the backup directory. Making a backup is the
+operator's attended procedure in `docs/RECORDS-BACKUP-OPERATIONS.md`. Installing the timer is a separate approved step.
 
 ## Arrival runs (REC-AUTO-1)
 

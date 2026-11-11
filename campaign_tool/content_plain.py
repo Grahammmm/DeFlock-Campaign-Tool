@@ -117,6 +117,10 @@ def _read(dir_fd, name, label):
     except RecursionError:
         # The decoder, not this module, sets the nesting limit: refuse with a fixed line (no cause, path or fragment).
         raise ContentError(f"{label}: JSON nesting too deep") from None
+    except ValueError:
+        # Must follow the subclass branch above. Any other decoder refusal (e.g. the runtime's integer-conversion
+        # guard) gets a fixed line naming the file, never the interpreter's message or advice.
+        raise ContentError(f"{label}: JSON value could not be decoded") from None
 
 
 def _string(document, key, label):
