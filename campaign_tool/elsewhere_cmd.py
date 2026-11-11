@@ -103,15 +103,19 @@ def _read(folder_fd, name, label, single_link=False):
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder_fd)
         try:  # own the raw fd until closed here, even if fdopen itself fails (closefd=False)
+            # Admit the descriptor actually opened (type, identity, link count) before any stream or payload read;
+            # the pathname stat above only vets what the name pointed to a moment earlier.
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                raise ElsewhereError(f"{label}: changed while it was being read; {UNTOUCHED}")
+            if single_link and opened.st_nlink != 1:
+                raise ElsewhereError(f"{label}: must be a regular file with a single link; {UNTOUCHED}")
             with os.fdopen(fd, "rb", closefd=False) as handle:
-                opened = os.fstat(handle.fileno())
                 data = handle.read(MAX_JSON_BYTES + 1)
         finally:
             os.close(fd)
     except OSError:
         raise ElsewhereError(f"{label}: cannot be read; {UNTOUCHED}") from None
-    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
-        raise ElsewhereError(f"{label}: changed while it was being read; {UNTOUCHED}")
     if len(data) > MAX_JSON_BYTES:
         raise ElsewhereError(f"{label}: file too large; {UNTOUCHED}")
     identity = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_nlink)
