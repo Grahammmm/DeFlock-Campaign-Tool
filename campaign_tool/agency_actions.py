@@ -378,11 +378,13 @@ def _install(root, data, loaded):
             except BaseException:
                 os.close(fd)
                 raise
-            with handle:  # closes the descriptor on every path
-                os.fchmod(handle.fileno(), mode)
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
+            # The staging descriptor stays open until after the rename and cleanup below, so the kernel cannot recycle
+            # ``created`` for a foreign file of the same name; the ExitStack closes it on every path.
+            stack.enter_context(handle)
+            os.fchmod(handle.fileno(), mode)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
             # Recheck the parent is still the admitted folder and the target is still the very file read (or still absent).
             try:
                 now = os.stat("content", dir_fd=root_fd, follow_symlinks=False)
