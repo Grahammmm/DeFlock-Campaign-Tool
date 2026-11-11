@@ -5,6 +5,7 @@ module, never a metadata value. A truncated or malformed structure is ``unreadab
 """
 import errno
 import os
+import stat
 import struct
 import tempfile
 import zlib
@@ -254,9 +255,24 @@ def strip_file(source, out=None):
         raise ValueError(f"{target}: already exists; nothing written")
     if "public" in target.resolve().parent.parts:
         raise ValueError(f"{target}: is inside a public/ folder; write the copy elsewhere; nothing written")
-    handle = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    with os.fdopen(handle, "rb") as stream:
+    # RF1315-3: the source must be a regular file acquired without following a final symlink or blocking on a FIFO.
+    # The raw descriptor is ours until os.fdopen returns; only then does the stream own (and close) it.
+    if not (hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_NONBLOCK")):
+        raise Unreadable()
+    handle = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(handle)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_BYTES:
+            raise Unreadable()
+        stream = os.fdopen(handle, "rb")
+        handle = None
+    finally:
+        if handle is not None:
+            os.close(handle)
+    with stream:
         data = stream.read(MAX_BYTES + 1)
+    if len(data) > MAX_BYTES:
+        raise Unreadable()
     kinds, cleaned = metadata_kinds(data, source.suffix), strip(data, source.suffix)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     # RF1925-10: stage the cleaned bytes in a private 0700 sibling directory, write, fsync and close them, then publish
