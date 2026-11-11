@@ -31,6 +31,11 @@ class SettingsTests(Base):
         data.update(changes)
         return self.write(self.project / 'approvals' / 'send.json', data)
 
+    def test_plain_sentence_at_the_top(self):
+        html = self.render()
+        self.assertIn('Nothing can be sent from this console', html.split('<h2>Sending</h2>')[0])
+        self.assertIn('Sending is set up and is off, so nothing can be sent now.', self.render(self.config()))
+
     def test_missing_and_invalid_send_config(self):
         html = self.render()
         for text in ('not given to the console', '<dd>no</dd>', 'Switch: OFF',

@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily read-only check of the newest records backup set
+
+[Service]
+Type=oneshot
+UMask=0077
+# Read-only: never takes the records run lock and never makes a backup. A failed check exits 1 and writes an alert record.
+ExecStart=@DOCKER@ exec -u @CONTAINER_USER@ @CONTAINER@ env PYTHONPATH=@CONTAINER_ENGINE_DIR@ @CONTAINER_PYTHON@ -B -m campaign_tool.records backup-check --into @BACKUP_DIR@
+TimeoutStartSec=10min
+StandardOutput=journal
+StandardError=null

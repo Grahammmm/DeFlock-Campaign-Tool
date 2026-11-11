@@ -955,7 +955,7 @@ _MODULES = {
         records.legacy_adoption records.mail_adoption records.mail_drafts records.mail_poll records.mail_send records.mail_resolution_census records.model_advice
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
         records.analysis_export records.outcomes.analysis_ready records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register records.outcomes.timeline
-        records.outcomes.textstate records.pipeline_health records.portal.download records.portal.engine records.portal.ledger_adapter
+        records.outcomes.textstate records.pipeline_health records.project_init records.portal.download records.portal.engine records.portal.ledger_adapter
         records.portal.store records.console_manual_events records.public_packets records.public_updates records.publish records.queue_runtime records.recovery.backup
         records.recovery.backup_v2 records.recovery.publication records.quiescence_audit records.records_backup records.review_bundle records.review_retirement
         records.run records.run_orchestrator records.run_stages records.runner.canonical_mail records.runner.core
@@ -1063,6 +1063,7 @@ MODULE_FUNCTIONS = {
     ),
     'records.e2e_proof': ('replay', 'replay.console', 'replay.telegram_text', '_apply_seed',),  # replay writes only under a new --out proof dir (OUT_EXISTS refuses reuse); _apply_seed writes only the replay sandbox ledger and its fact-sheets file (SEED_NOT_SANDBOX refuses any other project); sends and publishes nothing
     'records.export_clearance': ('clearance',),
+    'records.project_init': ('_write', 'init_project',),  # one new private records project: campaign.json, .campaign-root, empty ledger and queue; refuses an existing root; sends nothing
     'records.first_request': ('main',),  # prints a draft to stdout; --queue appends only via the approval journal
     'records.extract.ocr': (
         '_hold', '_index', '_link_new', '_page_lock', '_prune_unrecorded', '_publish_blocked_disposition',
@@ -1101,7 +1102,7 @@ MODULE_FUNCTIONS = {
     'records.mail_drafts': ('_Journal.append',),  # approvals/mail-drafts.jsonl placement journal, 0600 append-only; sends nothing
     'records.mail_send': ('_Dir.append', 'init',),  # approvals/mail-send.jsonl attempt log + send.json/SEND-STOP at setup; 0600, owner-only
     'records.mail_poll': ('_poll_receipt', '_write_once', 'poll',),
-    'records.records_backup': ('backup_main',),  # appends DIR/backup-digests.jsonl (0600) after a verified local backup set; never off-box
+    'records.records_backup': ('backup_main', 'check_main',),  # backup_main appends DIR/backup-digests.jsonl (0600) after a verified local backup set; check_main is read-only on the backup dir and writes only the pipeline-health alert files in the separate <into>-alerts dir; never off-box
     'records.quiescence_audit': ('main',),  # writes only the 0600 evidence file --out, outside the project
     'records.mail_resolution_census': ('inventory',),
     'records.native_extract': ('_write_private', 'run', 'write_awaiting_ocr', 'write_failure_manifest', 'write_private_list',),

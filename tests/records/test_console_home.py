@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from campaign_tool.records import approval_queue as aq, console_home as home, public_packets as pp
+from campaign_tool.records.console_layout import plain
 from campaign_tool.records import public_updates as pu
 from tests.records import test_admin_panel as panel
 from tests.records.test_console_board import build, put, RUN
@@ -102,7 +103,7 @@ class Home(unittest.TestCase):
         self.assertLess(table.index(queue[0]["link"]), table.index(queue[1]["link"]))
         self.assertLess(table.index(queue[1]["link"]), table.index(queue[2]["link"]))
         self.assertEqual({r["link"] for r in rows if r["source"] == "packets"}, {"/packets"})
-        self.assertEqual({r["what"] for r in rows if r["source"] == "public"}, {"Public status line"})
+        self.assertEqual({r["what"] for r in rows if r["source"] == "public"}, {"Public status line (L1, 2026-11-04)"})
         self.assertEqual({r["what"] for r in rows if r["source"] == "packets"}, {"Update packet"})
 
     def test_label_map_unknown_escaping_and_age_ties(self):
@@ -270,12 +271,12 @@ class Home(unittest.TestCase):
         path.write_bytes(b"not-json\n")
         with self.assertRaisesRegex(pp.PacketError, "journal_invalid"):
             pp.pending(self.project)
-        self.assertIn("packets: unavailable (journal_invalid)", home.render_home(self.model(), ""))
+        self.assertIn("update packets: unavailable", home.render_home(self.model(), ""))
         for source in ("timeline", "queue", "public", "packets", "sends"):
             model = self.model()
             model[source] = {"state": "unavailable", "code": "synthetic_bad"}
             page = home.render_home(model, "")
-            self.assertIn(source + ": unavailable (synthetic_bad)", page)
+            self.assertIn(plain([source])[0] + ": unavailable", page)
             self.assertIn("Needs your decision", page)
         with mock.patch.object(home.mail_send, "results", side_effect=OSError):
             self.assertEqual(self.model(send_config="not-read")["sends"]["state"], "unavailable")
@@ -592,7 +593,7 @@ class Routes(panel.ServerCase):
         self.assertNotIn("Follow-ups 0", get("/")[2])
         (self.project / pp.JOURNAL).write_bytes(b"invalid\n")
         self.assertEqual(get("/")[0], 200)
-        self.assertIn("packets: unavailable (journal_invalid)", get("/")[2])
+        self.assertIn("update packets: unavailable", get("/")[2])
 
 
 class Reminders(unittest.TestCase):

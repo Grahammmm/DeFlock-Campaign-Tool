@@ -7,7 +7,8 @@ and a fixed reason, never the note itself.
 The privacy lint is bounded pattern detection, not a claim that every personal name can be recognised: the redactor's
 categories (plate, email, phone, address, SSN, date of birth, ranked or labelled name) refuse, and so does any pair of
 adjacent title-cased words, which also refuses capitalised institution names. Write impersonal lower-case wording;
-there is no override.
+there is no override. The pair check runs on the note as typed and on a temporary NFC view of it, so a decomposed
+spelling of a refused pair is refused too; the note itself is never normalised, only kept or refused.
 """
 import re
 import unicodedata
@@ -46,7 +47,9 @@ def validate_update_note(note, label):
             or any(unicodedata.category(ch) in _REFUSED_CATEGORIES or ch in "<>" for ch in note)):
         raise UpdateError(f"{label}: update note must be 1-{NOTE_MAX} plain-text characters")
     from .digest.redact import redact  # local: the digest package is not needed by importers of this module
-    if redact(note).counts or _has_name_pair(note):
+    # The NFC form is a temporary analysis view only (canonically equivalent spellings must not dodge the pair lint);
+    # the original text is checked too and is what is returned.
+    if redact(note).counts or _has_name_pair(note) or _has_name_pair(unicodedata.normalize("NFC", note)):
         raise UpdateError(f"{label}: update note contains private information")
     return note
 
