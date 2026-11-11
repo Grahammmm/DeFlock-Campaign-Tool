@@ -20,6 +20,12 @@ The JSON summary names a private `private/imports/` receipt listing each attempt
 path, outcome and extension-only kind hint. Keep these receipts private; successful
 preservation is not substantive review, redaction, publication or authenticity verification.
 
+If the campaign's `private` entry already exists but is a symlink (including a dangling
+one), a file or any other non-directory, import-existing refuses before import, even for an
+empty source: nothing is read, changed or written. Inspect and fix the campaign layout
+manually before retrying; the tool never deletes or moves files for you. This is an early
+check of the existing entry, not a guarantee against concurrent changes.
+
 A receipt is written completely under a hidden name in `private/imports/` and then linked
 to its final `<stamp>-<label>[-N].json` name without replacing anything, so a completed
 receipt name always holds a full document and an earlier receipt is never overwritten.
