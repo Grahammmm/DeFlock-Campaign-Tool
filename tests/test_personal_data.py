@@ -1101,7 +1101,7 @@ MODULE_FUNCTIONS = {
     'records.mail_drafts': ('_Journal.append',),  # approvals/mail-drafts.jsonl placement journal, 0600 append-only; sends nothing
     'records.mail_send': ('_Dir.append', 'init',),  # approvals/mail-send.jsonl attempt log + send.json/SEND-STOP at setup; 0600, owner-only
     'records.mail_poll': ('_poll_receipt', '_write_once', 'poll',),
-    'records.records_backup': ('backup_main',),  # appends DIR/backup-digests.jsonl (0600) after a verified local backup set; never off-box
+    'records.records_backup': ('backup_main', 'check_main',),  # backup_main appends DIR/backup-digests.jsonl (0600) after a verified local backup set; check_main is read-only on the backup dir and writes only the pipeline-health alert files in the separate <into>-alerts dir; never off-box
     'records.quiescence_audit': ('main',),  # writes only the 0600 evidence file --out, outside the project
     'records.mail_resolution_census': ('inventory',),
     'records.native_extract': ('_write_private', 'run', 'write_awaiting_ocr', 'write_failure_manifest', 'write_private_list',),
