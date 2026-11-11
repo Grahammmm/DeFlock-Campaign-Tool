@@ -21,7 +21,8 @@ untrusted documents.
 other heading levels, ``1) `` numbered lists, malformed ``|`` tables, unclosed ``**``, raw HTML, single
 ``*x*``/``_x_`` emphasis, ``image`` for any ``![`` line render would not show as an image; with
 ``images=None`` only the image syntax is checked) as sorted ``(line_no, code, detail)`` tuples; it
-never echoes link text or targets and never changes ``render``.
+never echoes link text or targets and never changes ``render``. Link findings use the renderer's
+own escaped-punctuation protection, so ``\\[x](...)`` is literal text, not a link.
 ``python3 -m campaign_tool.markdown_lite --lint FILE...`` prints
 ``FILE:LINE: CODE: detail`` lines and ``files=N findings=M`` (exit 0 clean,
 1 findings, 2 usage error or an unreadable, non-UTF-8, oversize or missing file).
@@ -79,12 +80,18 @@ def _link(match):
     return '<a href="' + escape(raw, quote=True) + '" rel="noopener noreferrer">' + text + "</a>"
 
 
+def _protect_inline(text):
+    """Protect escaped punctuation from markup recognition, without adding visible backslashes.
+
+    Escape ordinary text first so input entities remain literal. ``inline`` and the link lint share this view.
+    """
+    return "".join(f"&#{ord(part)};" if index % 2 else escape(part, quote=True)
+                   for index, part in enumerate(_ESCAPED.split(text)))
+
+
 def inline(text):
     """Render inline markup for one already-plain-text line."""
-    # Protect escaped punctuation from markup recognition, without adding visible
-    # backslashes. Escape ordinary text first so input entities remain literal.
-    out = "".join(f"&#{ord(part)};" if index % 2 else escape(part, quote=True)
-                  for index, part in enumerate(_ESCAPED.split(text)))
+    out = _protect_inline(text)
     out = _BOLD.sub(lambda m: "<strong>" + m.group(1) + "</strong>", out)
     return _LINK.sub(_link, out)
 
@@ -228,7 +235,7 @@ def _line_codes(line):
 
 def _inline_codes(body):
     codes = []
-    marked = _BOLD.sub(lambda m: "<strong>" + m.group(1) + "</strong>", escape(body, quote=True))
+    marked = _BOLD.sub(lambda m: "<strong>" + m.group(1) + "</strong>", _protect_inline(body))
     # A "![...](...)" span is reported once as ``image`` by lint(), not again as a link.
     codes += [code for m in _LINK.finditer(marked)
               if marked[m.start() - 1:m.start()] != "!" and (code := _target_code(unescape(m.group(2))))]
