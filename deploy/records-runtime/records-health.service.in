@@ -1,0 +1,16 @@
+[Unit]
+Description=Records pipeline health check (writes alert files)
+# Candidate only. Started by records-health.timer; never enabled by the renderer.
+
+[Service]
+Type=oneshot
+UMask=0077
+# Read-only assessment of the last run, failures, arrival backlog, mail poll,
+# notify and schedule; --record-alerts writes or clears one alert file per open
+# problem under RUNTIME_DIR/TARGET/alerts. Exit 1 warn, 2 unknown, 3 stop shows
+# as a failed unit; the alert files are the record.
+Environment=PYTHONPATH=@ENGINE_DIR@
+ExecStart=@HOST_PYTHON@ -B -m campaign_tool.records pipeline-health --runtime-dir @RUNTIME_DIR@ --target @SCHEDULED_TARGET@ --root @RECORDS_ROOT@ --days @HEALTH_DAYS@ --times @HEALTH_TIMES@ --timezone @HEALTH_TIMEZONE@ --record-alerts
+TimeoutStartSec=2min
+StandardOutput=null
+StandardError=null
