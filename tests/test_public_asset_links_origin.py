@@ -1,16 +1,24 @@
 """RF0540-3: HTTPS authority identity (port presence, userinfo presence) in unlinked-asset diagnostics. Synthetic; no network."""
+import datetime
 import json
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from campaign_tool.content_check import content_problems
+from campaign_tool import public_asset_links
+from campaign_tool.content import ContentError
 from campaign_tool.public_asset_links import local_path, unlinked_asset_paths
+from campaign_tool.site import build_site, preview_site
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 HOST = "https://cedar.example.invalid"
+DAY = datetime.date(2026, 11, 11)
 LINE = "public-assets/authority.pdf: published but not linked from any page"
 
 
@@ -87,6 +95,81 @@ class SourceUrlIntegrationTests(unittest.TestCase):
         self.assertEqual(content_problems(self.root), [LINE])
         self.point_source(self.base.rstrip("/") + "/authority.pdf")
         self.assertEqual(content_problems(self.root), [])
+
+    def zero_port(self):
+        host = self.base.rstrip("/")
+        origin = "/".join(host.split("/", 3)[:3])
+        self.point_source(origin + ":0" + host[len(origin):] + "/authority.pdf")
+
+    def cli(self, *args):
+        return subprocess.run([sys.executable, "-B", "-m", "campaign_tool", *args, "--directory", str(self.root)],
+                              cwd=REPO_ROOT, capture_output=True, text=True, timeout=300)
+
+    def tree(self, base=None):
+        base = base or self.root
+        return {p.relative_to(base).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
+                for p in sorted(base.rglob("*")) if p.is_file()}
+
+    def test_content_check_text_and_json_name_the_asset(self):
+        self.zero_port()
+        result = self.cli("content-check")
+        self.assertEqual((result.returncode, result.stdout.splitlines()[:1]), (3, ["content/: 1 problem(s)"]))
+        self.assertEqual(result.stdout.splitlines()[-1], LINE)
+        records = json.loads(self.cli("content-check", "--json").stdout)
+        self.assertEqual([(r["file"], r["message"]) for r in records["problems"]],
+                         [("public-assets/authority.pdf", "published but not linked from any page")])
+
+    def test_strict_builder_and_cli_refuse_before_any_output(self):
+        self.zero_port()
+        with self.assertRaises(ContentError) as raised:
+            build_site(self.root, DAY, require_linked_assets=True)
+        self.assertEqual(str(raised.exception), LINE)
+        checked = self.cli("build", "--check")
+        self.assertEqual(checked.returncode, 1, checked.stdout)
+        self.assertIn(LINE, checked.stderr)
+        self.assertNotIn("passed", checked.stdout)
+        self.assertFalse((self.root / "public").exists())
+        self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith(".public")], [])
+        # an existing public/ tree and the inputs keep their bytes and mtimes through a refusal
+        build_site(self.root, DAY)
+        before = self.tree()
+        with self.assertRaises(ContentError):
+            build_site(self.root, DAY, require_linked_assets=True)
+        self.assertEqual(self.cli("build", "--check").returncode, 1)
+        self.assertEqual(self.tree(), before)
+
+    def test_ordinary_build_is_frozen_and_only_the_diagnostic_differs(self):
+        self.zero_port()
+        old, new = [], []
+        build_site(self.root, DAY, notes=new)
+        repaired = {k: v[0] for k, v in self.tree(self.root / "public").items()}
+        shutil.rmtree(self.root / "public")
+        with mock.patch.object(public_asset_links, "unlinked_asset_paths", return_value=[]):  # old diagnostic outcome
+            build_site(self.root, DAY, notes=old)
+        previous = {k: v[0] for k, v in self.tree(self.root / "public").items()}
+        self.assertEqual([n for n in new if "not linked" in n], [LINE])
+        self.assertEqual([n for n in old if "not linked" in n], [])
+        self.assertEqual(sorted(repaired), sorted(previous))
+        self.assertTrue(repaired == previous, "emitted bytes differ")
+        self.assertEqual(repaired["authority.pdf"], b"%PDF-1.4\n%%EOF\n")
+
+    def test_acknowledgement_and_preview_preserve_contracts(self):
+        self.zero_port()
+        build_site(self.root, DAY)
+        before = self.tree()
+        preview_site(self.root, DAY)
+        self.assertEqual(self.tree(), before)  # preview writes nothing
+        self.assertNotIn("not linked", self.cli("build", "--preview").stdout)
+        self.assertEqual(self.tree(), before)
+        site_path = self.root / "content" / "site.json"
+        site = json.loads(site_path.read_text(encoding="utf-8"))
+        site["unlinked_assets_ok"] = ["authority.pdf"]
+        site_path.write_text(json.dumps(site), encoding="utf-8")
+        self.assertEqual(content_problems(self.root), [])
+        self.assertEqual(self.cli("build", "--check").returncode, 0)
+        site["unlinked_assets_ok"] = ["missing.pdf"]  # stale acknowledgement still refuses
+        site_path.write_text(json.dumps(site), encoding="utf-8")
+        self.assertTrue(content_problems(self.root))
 
 
 if __name__ == "__main__":
