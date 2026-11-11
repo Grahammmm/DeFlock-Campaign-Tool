@@ -99,8 +99,10 @@ def diff(old, new):
         elif field in LISTS:
             if (a or []) != (b or []):
                 removed, added = _minus(a or [], b or []), _minus(b or [], a or [])
-                if field == "also_agency_ids" and not removed and not added:  # order only: show both ordered lists
-                    changes.append({"field": field, "old": a or [], "new": b or []})
+                # Two list shapes: a membership change reports removed/added; a pure reordering (equal multisets)
+                # has no delta, so it reports both ordered lists as detached copies.
+                if not removed and not added:
+                    changes.append({"field": field, "old": list(a or []), "new": list(b or [])})
                 else:
                     changes.append({"field": field, "removed": removed, "added": added})
         elif a != b:

@@ -215,6 +215,10 @@ def ingest_zip(args, root):
     """Store the archive, then each acceptable member; print the listing (dry run: write nothing)."""
     data = _read_archive(args.zip)
     name = os.path.basename(os.path.abspath(args.zip))
+    try:  # container-name admission: SQLite receipts need strict UTF-8; refuse before any lookup or write
+        name.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        raise ValueError("Archive filename cannot be represented as UTF-8; nothing was imported") from None
     dry = getattr(args, "dry_run", False)
     with _open_archive(data, name) as archive:
         if dry:
