@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -193,7 +194,7 @@ class RuntimeHarness(unittest.TestCase):
             "RECORDS_DROP_DIR": str(self.tmp / "drop"),
             "STUB_FIXTURE": str(self.fixture_path),
             # 64 MiB floor: any CI or dev host has that much free scratch space.
-            "MIN_FREE_BYTES": str(64 * 1024 ** 2),
+            "MIN_FREE_BYTES": str(64 * 1024 ** 2), "RECORDS_ROOT": str(self.tmp / "records-root"),
         }
         self.render()
 
@@ -887,6 +888,7 @@ class RendererTests(unittest.TestCase):
             "SCHEDULED_TARGET": "TEST", "RUN_RECORDS_SH": "/srv/runtime/run-records.sh",
             "RECORDS_DROP_DIR": "/srv/records-drop",
             "STUB_FIXTURE": "/srv/fixture.json", "MIN_FREE_BYTES": "2147483648",
+            "RECORDS_ROOT": "/srv/records-root",
         }
         self.targets = [("TEST", str(STUB_TEMPLATE))]
 
@@ -897,6 +899,7 @@ class RendererTests(unittest.TestCase):
     def test_suggested_values_render_weekday_twice_daily_pacific_slots(self):
         written = self.do_render()
         self.assertEqual(sorted(written), ["records-arrival.path", "records-arrival.service",
+                                           "records-health.service", "records-health.timer",
                                            "records-run.service", "records-run.timer",
                                            "run-records.sh", "targets/TEST.json"])
         out = self.tmp / "out"
@@ -1239,6 +1242,77 @@ class RendererTests(unittest.TestCase):
             spec = types.SimpleNamespace(on_calendar=lambda: ["Mon..Fri *-*-* 07:00:00 UTC;x"])
             self.render.check_timer("OnCalendar=Mon..Fri *-*-* 07:00:00 UTC;x\nPersistent=true\n", spec)
 
+    def test_health_units_render_hourly_with_the_pipeline_health_argv(self):
+        self.do_render()
+        out = self.tmp / "out"
+        timer = (out / "records-health.timer").read_text().splitlines()
+        self.assertEqual([line for line in timer if line.startswith("OnCalendar=")], ["OnCalendar=hourly"])
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("RandomizedDelaySec=120", timer)
+        self.assertIn("Unit=records-health.service", timer)
+        service = (out / "records-health.service").read_text().splitlines()
+        self.assertIn("Type=oneshot", service)
+        self.assertIn("UMask=0077", service)
+        starts = [line for line in service if line.startswith("ExecStart=")]
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(shlex.split(starts[0][len("ExecStart="):]), [
+            "/usr/bin/python3", "-B", "-m", "campaign_tool.records", "pipeline-health",
+            "--runtime-dir", "/srv/runtime", "--target", "TEST", "--root", "/srv/records-root",
+            "--days", "Mon..Fri", "--times", "07:00,15:00", "--timezone", "America/Los_Angeles",
+            "--record-alerts"])
+        self.assertIn("Environment=PYTHONPATH=/srv/engine", service)
+        for name in ("records-health.service", "records-health.timer"):
+            self.assertEqual(stat.S_IMODE((out / name).stat().st_mode), 0o600)
+
+    def test_health_check_follows_a_custom_timer_calendar(self):
+        self.do_render({**self.values, "TIMER_DAYS": "daily", "TIMER_TIMES": "06:30",
+                        "TIMER_TIMEZONE": "America/Chicago"})
+        service = (self.tmp / "out" / "records-health.service").read_text()
+        self.assertIn("--days daily --times 06:30 --timezone America/Chicago --record-alerts", service)
+
+    def test_health_units_refuse_a_missing_or_unsafe_records_root(self):
+        values = dict(self.values)
+        del values["RECORDS_ROOT"]
+        with self.assertRaisesRegex(self.render.RenderError, r"no value for \['RECORDS_ROOT'\]"):
+            self.do_render(values)
+        for bad in ("relative/root", "/srv/root with space"):
+            with self.assertRaises(self.render.RenderError, msg=bad):
+                self.do_render({**self.values, "RECORDS_ROOT": bad}, out=self.tmp / ("o" + str(len(bad))))
+
+    def test_health_timer_check_refuses_other_calendars_or_no_catch_up(self):
+        good = "[Timer]\nOnCalendar=hourly\nPersistent=true\n"
+        self.render.check_health_timer(good)
+        for bad in (good.replace("hourly", "daily"), good + "OnCalendar=hourly\n",
+                    good.replace("Persistent=true\n", "")):
+            with self.assertRaises(self.render.RenderError, msg=bad):
+                self.render.check_health_timer(bad)
+
+    def test_existing_units_render_byte_identical_to_before_health_units(self):
+        self.do_render()
+        out = self.tmp / "out"
+        pins = {"records-run.service": "d66c4f624528a4d3a4932a88f66f0e666b1383012204e5d7a40c9aad940ffa4d",  # pragma: allowlist secret -- SHA-256 of a rendered unit, not a credential
+                "records-run.timer": "acef242a6eadb3dc9ab23e80bc97b545b8acce40a3e909cfa00c1ed5056f9997",  # pragma: allowlist secret -- SHA-256 of a rendered unit, not a credential
+                "records-arrival.path": "444a5ba6e1ae389f69a6e7bd13f20d056376a761a45ee127e85c9e04daad2421",  # pragma: allowlist secret -- SHA-256 of a rendered unit, not a credential
+                "records-arrival.service": "69c0addd29e02ce3dd42b9aa6ab46caefa5b691e7ccd5366d3771035ebab1ad7"}  # pragma: allowlist secret -- SHA-256 of a rendered unit, not a credential
+        for name, digest in pins.items():
+            self.assertEqual(hashlib.sha256((out / name).read_bytes()).hexdigest(), digest, name)
+
+    def test_rendered_health_units_pass_systemd_analyze_verify(self):
+        analyzer = shutil.which("systemd-analyze")
+        if not analyzer:
+            self.skipTest("systemd-analyze not installed")
+        self.do_render({**self.values, "HOST_PYTHON": sys.executable})
+        out = self.tmp / "out"
+        result = subprocess.run([analyzer, "verify", str(out / "records-health.timer"),
+                                 str(out / "records-health.service")],
+                                capture_output=True, text=True, timeout=30)
+        if "records-health" not in result.stderr:
+            return
+        # Only host-specific complaints (paths absent on this machine) may remain.
+        problems = [line for line in result.stderr.splitlines()
+                    if "records-health" in line and "Executable" not in line and "not found" not in line]
+        self.assertEqual(problems, [], result.stderr)
+
     def test_unknown_timer_value_names_still_refused(self):
         self.assert_refused("unknown placeholder", values={**self.values, "TIMER_DAY": "Mon"})
 
@@ -1326,6 +1400,13 @@ class TemplateHygieneTests(unittest.TestCase):
             self.assertNotRegex(text, r"sha256:[0-9a-f]{64}", path.name)
             self.assertNotRegex(text, host_paths, path.name)
             self.assertNotRegex(text, re.compile(r"bot\d{6,}:"), path.name)
+
+    def test_health_templates_hold_only_placeholders_for_host_values(self):
+        for name in ("records-health.service.in", "records-health.timer.in"):
+            lines = [line for line in (RUNTIME / name).read_text().splitlines()
+                     if line and not line.startswith("#")]
+            for line in lines:
+                self.assertNotRegex(re.sub(r"@[A-Z_]+@", "", line), r"(^|[= ])/[A-Za-z]", f"{name}: {line}")
 
     def test_wrapper_is_posix_sh_syntax(self):
         result = subprocess.run(["/bin/sh", "-n", str(RUNTIME / "run-records.sh.in")],

@@ -24,7 +24,8 @@ any IANA zone). Each OnCalendar line is built from those after strict validation
 stays, so a slot missed during downtime catches up.
 
 Output: run-records.sh (0700), records-run.service, records-run.timer,
-records-arrival.path, records-arrival.service and targets/NAME.json (0600). Installing them into the private runtime and the
+records-arrival.path, records-arrival.service, records-health.service,
+records-health.timer and targets/NAME.json (0600). Installing them into the private runtime and the
 systemd user directory is a separate, owner-approved cutover step (plan T17).
 Nothing here installs, enables or starts anything.
 """
@@ -46,13 +47,17 @@ TEMPLATES = (("run-records.sh.in", "run-records.sh", 0o700),
              ("records-run.service.in", "records-run.service", 0o600),
              ("records-run.timer.in", "records-run.timer", 0o600),
              ("records-arrival.path.in", "records-arrival.path", 0o600),
-             ("records-arrival.service.in", "records-arrival.service", 0o600))
+             ("records-arrival.service.in", "records-arrival.service", 0o600),
+             ("records-health.service.in", "records-health.service", 0o600),
+             ("records-health.timer.in", "records-health.timer", 0o600))
 # Marker lines that bracket the optional console-export post-step in run-records.sh.in.
 CONSOLE_BLOCK = re.compile(r"^# CONSOLE-EXPORT-BEGIN.*?^# CONSOLE-EXPORT-END\n", re.MULTILINE | re.DOTALL)
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
 ABSOLUTE = {"ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
             "NOTIFY_PY", "NOTIFY_ENV_FILE", "CONSOLE_EXPORT_DIR", "RUN_RECORDS_SH", "STUB_FIXTURE", "RECORDS_DROP_DIR",
+            # Host path of the records root holding ledger.sqlite (health check only).
+            "RECORDS_ROOT",
             # Container stage plans (targets/test-container.json.in,
             # targets/live-container.json.in and the Phase 2 OCR plans
             # targets/live-ocr-container.json.in and
@@ -79,14 +84,15 @@ MIN_FREE_BYTES_CEILING = 1024 ** 5
 DF_PROBE_SECONDS = 10 + 2
 TARGET_NAMES = {"DEFAULT_TARGET", "SCHEDULED_TARGET"}
 # Supplied per target by the renderer, never by VALUES.json.
-RESERVED = {"TARGET_NAME", "TIMER_ONCALENDAR"}
+RESERVED = {"TARGET_NAME", "TIMER_ONCALENDAR", "HEALTH_DAYS", "HEALTH_TIMES", "HEALTH_TIMEZONE"}
 # Optional timer calendar inputs; absent means the default weekday schedule.
 TIMER_KEYS = ("TIMER_DAYS", "TIMER_TIMES", "TIMER_TIMEZONE")
 # Safety placeholders a template must keep: a wrapper template that dropped
 # the free-space preflight would otherwise render cleanly without it.
 REQUIRED_PLACEHOLDERS = {"run-records.sh.in": {"MIN_FREE_BYTES", "RECORDS_DROP_DIR", "SCHEDULED_TARGET"},
                          "records-arrival.path.in": {"RECORDS_DROP_DIR", "RUNTIME_DIR"},
-                         "records-arrival.service.in": {"RUN_RECORDS_SH"}}
+                         "records-arrival.service.in": {"RUN_RECORDS_SH"},
+                         "records-health.service.in": {"RECORDS_ROOT", "RUNTIME_DIR", "SCHEDULED_TARGET"}}
 UNIT_TIMEOUT_SECONDS = 47 * 60
 KILL_GRACE = 2
 BACKSTOP_GRACE = 15
@@ -220,6 +226,15 @@ def check_timer(text, expected=None):
                 raise RenderError(f"timer: systemd-analyze rejected OnCalendar {slot!r}")
 
 
+def check_health_timer(text):
+    """The health timer must fire hourly and catch up after downtime."""
+    lines = text.splitlines()
+    if [line for line in lines if line.startswith("OnCalendar=")] != ["OnCalendar=hourly"]:
+        raise RenderError("health timer: OnCalendar must be exactly hourly")
+    if "Persistent=true" not in lines:
+        raise RenderError("health timer: Persistent=true is required")
+
+
 def inside_git_checkout(path):
     for parent in [path, *path.parents]:
         if (parent / ".git").exists():
@@ -271,7 +286,9 @@ def render(values, targets, out):
             raise RenderError(f"{template}: template lost required placeholder(s) "
                               f"{missing_required}")
         used.update(found)
-        extra = {"TIMER_ONCALENDAR": "\n".join("OnCalendar=" + line for line in timer.on_calendar())}
+        extra = {"TIMER_ONCALENDAR": "\n".join("OnCalendar=" + line for line in timer.on_calendar()),
+                 "HEALTH_DAYS": timer.days_spec, "HEALTH_TIMES": timer.times_spec,
+                 "HEALTH_TIMEZONE": timer.timezone}
         if "CONSOLE_EXPORT_DIR" not in values:  # the post-step exists only when its target is given
             text = CONSOLE_BLOCK.sub("", text)
         files.append((output, substitute(text, {**values, **extra}, template), mode))
@@ -295,6 +312,7 @@ def render(values, targets, out):
         raise RenderError(f"values: unknown placeholder(s) {unknown}")
     check_budget(values)
     check_timer(next(text for output, text, _ in files if output == "records-run.timer"), timer)
+    check_health_timer(next(text for output, text, _ in files if output == "records-health.timer"))
 
     old_umask = os.umask(0o077)
     try:

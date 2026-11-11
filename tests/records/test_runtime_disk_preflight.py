@@ -231,6 +231,7 @@ class DiskPreflightRenderTests(unittest.TestCase):
             "SCHEDULED_TARGET": "TEST", "RUN_RECORDS_SH": "/srv/runtime/run-records.sh",
             "RECORDS_DROP_DIR": "/srv/records-drop",
             "STUB_FIXTURE": "/srv/fixture.json", "MIN_FREE_BYTES": "2147483648",
+            "RECORDS_ROOT": "/srv/records-root",
         }
         self.out = 0
 
