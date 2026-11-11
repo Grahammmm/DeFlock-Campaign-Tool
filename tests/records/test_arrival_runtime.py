@@ -362,6 +362,7 @@ class RenderArrivalTests(unittest.TestCase):
             "RUN_BUDGET_SECONDS": "2640", "DEFAULT_TARGET": "TEST", "SCHEDULED_TARGET": "TEST",
             "RUN_RECORDS_SH": "/srv/runtime/run-records.sh", "STUB_FIXTURE": "/srv/fixture.json",
             "MIN_FREE_BYTES": "2147483648", "RECORDS_DROP_DIR": "/srv/records-drop",
+            "RECORDS_ROOT": "/srv/records-root",
         }
         self.targets = [("TEST", str(harness.STUB_TEMPLATE))]
         self.n = 0
