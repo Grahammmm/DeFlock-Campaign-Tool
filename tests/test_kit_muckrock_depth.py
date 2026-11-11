@@ -52,7 +52,7 @@ class DepthTests(unittest.TestCase):
                 with self.assertRaises(RecursionError):
                     json.loads(path.read_text(encoding="utf-8"))
                 stream = bounded.Growing()
-                with mock.patch.object(kit_muckrock, "open", stream, create=True):
+                with stream.patching():
                     self.refusal(path, lambda: kit_muckrock._load(path))
                 self.assertEqual((stream.opens, stream.requests, stream.returned, stream.closed),
                                  (1, [kit_muckrock.MAX_BYTES + 1], [path.stat().st_size], 1))
@@ -121,7 +121,7 @@ class DepthTests(unittest.TestCase):
             kit_muckrock._load(path)
         self.assertEqual(str(caught.exception), f"{path}: larger than 1 MiB")
         path = self.deep()
-        with mock.patch.object(kit_muckrock, "open", bounded.Growing(kit_muckrock.MAX_BYTES + 1), create=True), \
+        with bounded.Growing(kit_muckrock.MAX_BYTES + 1).patching(), \
                 mock.patch.object(kit_muckrock.json, "loads", side_effect=AssertionError("parsed")):
             with self.assertRaises(ValueError) as caught:
                 kit_muckrock._load(path)
@@ -139,7 +139,7 @@ class DepthTests(unittest.TestCase):
         # In particular a RecursionError from reading is NOT a decoder-depth refusal.
         for error in (OSError("read"), RecursionError("read")):
             stream = bounded.Growing(read_error=error)
-            with mock.patch.object(kit_muckrock, "open", stream, create=True):
+            with stream.patching():
                 with self.assertRaises(type(error)) as caught:
                     kit_muckrock._load(path)
             self.assertIs(caught.exception, error)

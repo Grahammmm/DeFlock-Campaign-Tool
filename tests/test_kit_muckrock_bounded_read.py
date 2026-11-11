@@ -1,6 +1,8 @@
 """kit-muckrock-import reads at most MAX_BYTES + 1 bytes of the saved JSON, so a file that grows after the size check is
 refused before decoding, parsing or kit/sent.json. Offline, synthetic: no socket may be opened."""
+import contextlib
 import json
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -16,42 +18,61 @@ REAL_OPEN = open
 
 
 class Growing:
-    """Stands in for the reader's `open`: grows the real file to `grow_to` bytes with JSON whitespace (after every
-    size check has passed), then hands back a forwarding stream that records every read request and its result."""
+    """Instruments the reader's descriptor seams (os.open / os.fstat / os.fdopen, real descriptor throughout): after the
+    real fstat has returned a genuine result, grows that same real inode to `grow_to` bytes with JSON whitespace, then
+    returns the captured result; hands back a forwarding stream that records every read request and its result."""
 
     def __init__(self, grow_to=None, read_error=None):
         self.grow_to, self.read_error = grow_to, read_error
         self.requests, self.returned, self.closed, self.opens = [], [], 0, 0
+        self.fd = self.path = None
 
-    def __call__(self, file, mode="r", *args, **kwargs):
-        self.opens += 1
-        if self.grow_to is not None:
-            size = Path(file).stat().st_size
-            if size < self.grow_to:
-                with REAL_OPEN(file, "ab") as extra:
-                    extra.write(b" " * (self.grow_to - size))
-        outer, real = self, REAL_OPEN(file, mode, *args, **kwargs)
+    def patching(self):
+        outer, real_open, real_fstat, real_fdopen = self, os.open, os.fstat, os.fdopen
 
-        class Stream:
-            def read(self, size=-1):
-                outer.requests.append(size)
-                if outer.read_error:
-                    raise outer.read_error
-                data = real.read(size)
-                outer.returned.append(len(data))
-                return data
+        def opener(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if flags & getattr(os, "O_NOFOLLOW", 0):
+                outer.opens, outer.fd, outer.path = outer.opens + 1, fd, path
+            return fd
 
-            def close(self):
-                outer.closed += 1
-                real.close()
+        def fstat(fd):
+            info = real_fstat(fd)
+            if fd == outer.fd and outer.grow_to is not None and info.st_size < outer.grow_to:
+                with REAL_OPEN(outer.path, "ab") as extra:  # the path is unreplaced here: same inode as the descriptor
+                    extra.write(b" " * (outer.grow_to - info.st_size))
+            return info
 
-            def __enter__(self):
-                return self
+        def fdopen(fd, mode="r", *args, **kwargs):
+            real = real_fdopen(fd, mode, *args, **kwargs)
+            if fd != outer.fd:
+                return real
 
-            def __exit__(self, *exc):
-                self.close()
+            class Stream:
+                def read(self, size=-1):
+                    outer.requests.append(size)
+                    if outer.read_error:
+                        raise outer.read_error
+                    data = real.read(size)
+                    outer.returned.append(len(data))
+                    return data
 
-        return Stream()
+                def close(self):
+                    outer.closed += 1
+                    real.close()
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *exc):
+                    self.close()
+
+            return Stream()
+
+        stack = contextlib.ExitStack()
+        for name, value in (("open", opener), ("fstat", fstat), ("fdopen", fdopen)):
+            stack.enter_context(mock.patch.object(os, name, value))
+        return stack
 
 
 class BoundedReadTests(base.KitMuckrockTests):
@@ -73,7 +94,7 @@ class BoundedReadTests(base.KitMuckrockTests):
                 for p in sorted(self.root.rglob("*"))}
 
     def grow(self, size=None, **kwargs):
-        return mock.patch.object(kit_muckrock, "open", Growing(size, **kwargs), create=True)
+        return Growing(size, **kwargs).patching()
 
     def test_growth_after_the_size_check_refuses_before_decode_json_or_history(self):
         path = self.saved(status="processed")
@@ -93,13 +114,13 @@ class BoundedReadTests(base.KitMuckrockTests):
     def test_binary_read_asks_for_at_most_cap_plus_one_and_always_closes(self):
         path = self.saved()
         stream = Growing(CAP + 5 * (1 << 20))  # far larger than the cap: an unlimited read would return it all
-        with mock.patch.object(kit_muckrock, "open", stream, create=True):
+        with stream.patching():
             with self.assertRaises(ValueError):
                 kit_muckrock._load(path)
         self.assertEqual((stream.opens, stream.requests, stream.returned, stream.closed),
                          (1, [CAP + 1], [CAP + 1], 1))
         small = Growing()  # normal return
-        with mock.patch.object(kit_muckrock, "open", small, create=True):
+        with small.patching():
             self.assertEqual(kit_muckrock._load(self.saved())["id"], 90001)
         self.assertEqual((small.opens, small.requests, small.closed), (1, [CAP + 1], 1))
         for label, body in (("not utf-8", b"\xff\xfe"), ("broken json", b"{")):
@@ -107,12 +128,12 @@ class BoundedReadTests(base.KitMuckrockTests):
                 bad = self.tmp / "bad.json"
                 bad.write_bytes(body)
                 stream = Growing()
-                with mock.patch.object(kit_muckrock, "open", stream, create=True):
+                with stream.patching():
                     with self.assertRaisesRegex(ValueError, "not UTF-8 JSON"):
                         kit_muckrock._load(bad)
                 self.assertEqual((stream.opens, stream.closed), (1, 1))
         stream = Growing(read_error=OSError("synthetic read failure"))
-        with mock.patch.object(kit_muckrock, "open", stream, create=True):
+        with stream.patching():
             with self.assertRaisesRegex(OSError, "synthetic read failure"):
                 kit_muckrock._load(self.saved())
         self.assertEqual((stream.opens, stream.requests, stream.closed), (1, [CAP + 1], 1))

@@ -2,7 +2,9 @@
 and kit/sent.json; nothing is fetched or sent, and no MuckRock account or token is used.
 See docs/KIT-MUCKROCK-IMPORT.md for how a re-import is compared with the request's last step."""
 import json
+import errno
 import os
+import stat
 from pathlib import Path
 
 from . import kit_track
@@ -18,14 +20,37 @@ NO_STEP = {**dict.fromkeys(("started", "submitted", "ack"), "waiting for the age
            **dict.fromkeys(("appealing", "lawsuit"), "record by hand")}
 
 
+def _open_leaf(path):  # one non-following, nonblocking descriptor, admitted by fstat; the stream owns it on return
+    flags = getattr(os, "O_NOFOLLOW", None), getattr(os, "O_NONBLOCK", None)
+    if None in flags:
+        raise ValueError(f"{path}: safe non-symlink file reads are unavailable")
+    try:
+        fd = os.open(path, os.O_RDONLY | flags[0] | flags[1])
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOENT, errno.ENOTDIR):
+            raise ValueError(f"{path}: not a regular file (symlinks are refused)") from None
+        raise
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"{path}: not a regular file (symlinks are refused)")
+        if info.st_size > MAX_BYTES:
+            raise ValueError(f"{path}: larger than 1 MiB")
+        stream = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    return stream
+
+
 def _load(path):  # a regular, small, UTF-8 JSON object; refused before kit/sent.json is read
     path = Path(path)
     if not os.path.lexists(path) or path.is_symlink() or not path.is_file():
         raise ValueError(f"{path}: not a regular file (symlinks are refused)")
     if path.stat().st_size > MAX_BYTES:
         raise ValueError(f"{path}: larger than 1 MiB")
-    with open(path, "rb") as handle:  # bounded: the file may have grown since the size check above
-        raw = handle.read(MAX_BYTES + 1)
+    with _open_leaf(path) as handle:  # the checks above are advisory; the descriptor is the authority
+        raw = handle.read(MAX_BYTES + 1)  # bounded: the file may have grown since the descriptor check
     if len(raw) > MAX_BYTES:
         raise ValueError(f"{path}: larger than 1 MiB")
     try:
