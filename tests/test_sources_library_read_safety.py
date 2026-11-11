@@ -39,7 +39,7 @@ class ReadExistingTests(unittest.TestCase):
         raw, doc = sources_cmd._read_existing(self.path)
         self.assertEqual((len(raw), doc), (MAX_JSON_BYTES, []))
         self.path.write_bytes(b"[]" + b" " * (MAX_JSON_BYTES - 1))
-        with mock.patch.object(sources_cmd.os, "open", side_effect=AssertionError("opened")):
+        with mock.patch.object(sources_cmd, "_library_open", side_effect=AssertionError("opened")):
             with self.assertRaisesRegex(ContentError, "file too large"):
                 sources_cmd._read_existing(self.path)
 
@@ -66,7 +66,7 @@ class ReadExistingTests(unittest.TestCase):
             stream = real_fdopen(fd, *a, **k)
             return _ReadSpy(stream, reads)
 
-        with mock.patch.object(sources_cmd.os, "stat", grow), mock.patch.object(sources_cmd.os, "fdopen", spy), \
+        with mock.patch.object(sources_cmd, "_library_fstat", grow), mock.patch.object(sources_cmd, "_library_fdopen", spy), \
                 mock.patch.object(sources_cmd.json, "loads", side_effect=AssertionError("parsed")):
             with self.assertRaisesRegex(ContentError, "file too large"):
                 sources_cmd._read_existing(self.path)
@@ -83,7 +83,7 @@ class ReadExistingTests(unittest.TestCase):
         live.symlink_to(target)
         dangling = self.dir / "dangling"
         dangling.symlink_to(self.dir / "nowhere")
-        with mock.patch.object(sources_cmd.os, "open", side_effect=AssertionError("opened")):
+        with mock.patch.object(sources_cmd, "_library_open", side_effect=AssertionError("opened")):
             for special in (fifo, directory):
                 with self.assertRaisesRegex(ContentError, "must be a regular file"):
                     sources_cmd._read_existing(special)
@@ -109,12 +109,12 @@ class ReadExistingTests(unittest.TestCase):
             return real_open(p, flags, *a, **k)
 
         self.path.write_bytes(b"[]")
-        with mock.patch.object(sources_cmd.os, "open", swap_link):
+        with mock.patch.object(sources_cmd, "_library_open", swap_link):
             with self.assertRaisesRegex(ContentError, "symlinks are not read"):
                 sources_cmd._read_existing(self.path)
         os.unlink(self.path)
         self.path.write_bytes(b"[]")
-        with mock.patch.object(sources_cmd.os, "open", swap_fifo):
+        with mock.patch.object(sources_cmd, "_library_open", swap_fifo):
             with self.assertRaisesRegex(ContentError, "must be a regular file"):
                 sources_cmd._read_existing(self.path)
 
@@ -126,18 +126,18 @@ class ReadExistingTests(unittest.TestCase):
             os.unlink(p)
             return real_open(p, flags, *a, **k)
 
-        with mock.patch.object(sources_cmd.os, "open", vanish):
+        with mock.patch.object(sources_cmd, "_library_open", vanish):
             with self.assertRaises(FileNotFoundError):
                 sources_cmd._read_existing(self.path)
 
     def test_descriptor_closed_on_faults_and_success(self):
         self.path.write_bytes(b"[]")
         before = set(os.listdir("/proc/self/fd"))
-        with mock.patch.object(sources_cmd.os, "fdopen", side_effect=MemoryError):
+        with mock.patch.object(sources_cmd, "_library_fdopen", side_effect=MemoryError):
             with self.assertRaises(MemoryError):
                 sources_cmd._read_existing(self.path)
         self.assertEqual(set(os.listdir("/proc/self/fd")), before)
-        with mock.patch.object(sources_cmd.os, "stat", side_effect=OSError("boom")):
+        with mock.patch.object(sources_cmd, "_library_fstat", side_effect=OSError("boom")):
             with self.assertRaises(OSError):
                 sources_cmd._read_existing(self.path)
         self.assertEqual(set(os.listdir("/proc/self/fd")), before)

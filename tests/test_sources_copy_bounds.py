@@ -362,13 +362,7 @@ class CopyBoundsTests(unittest.TestCase):
             copy.write_bytes(RECORD)  # the tool never restores the caller's grown file; the test does
             self.assertEqual(self.snapshot(), before)
         # selection and date/reason validation still refuse before the download is opened
-        real_open = os.open
-
-        def open_library_only(path, *args, **kwargs):  # the source library itself is read with os.open
-            if Path(path).name != "sources.json":
-                raise AssertionError("opened")
-            return real_open(path, *args, **kwargs)
-        with mock.patch.object(sources_cmd.os, "open", open_library_only):
+        with mock.patch.object(sources_cmd.os, "open", side_effect=AssertionError("opened")):
             for call, message in (
                     (lambda: self.verify(copy, sha=A[:12]), "multiple public URLs"),
                     (lambda: self.verify(copy, sha="0" * 12, fragment="cedar-one"), "no library entry starts with"),

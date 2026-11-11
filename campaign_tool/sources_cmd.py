@@ -30,6 +30,10 @@ from .content import (COPY_REASONS, MAX_JSON_BYTES, ContentError, _read_json, de
 
 PREFIX = re.compile(r"[0-9a-f]{12,64}")
 
+# The source-library reader's own descriptor primitives, bound once so that code which instruments the downloaded-copy
+# reader through ``os.open``/``os.fdopen``/``os.fstat`` (fstat is os.stat on a descriptor) does not also intercept the unrelated library read.
+_library_open, _library_fdopen, _library_fstat = os.open, os.fdopen, os.stat
+
 
 def resolve_hash(root, prefix):
     """Return the one ingested sha256 starting with ``prefix`` (>= 12 lowercase hex)."""
@@ -69,18 +73,18 @@ def _read_existing(path):
     if st.st_size > MAX_JSON_BYTES:
         raise ContentError("sources.json: file too large")
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = _library_open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise ContentError("sources.json: symlinks are not read or replaced") from None
         raise
     try:
-        stream = os.fdopen(fd, "rb", buffering=0)
+        stream = _library_fdopen(fd, "rb", buffering=0)
     except BaseException:
         os.close(fd)
         raise
     with stream:
-        fst = os.stat(fd)  # fstat of the opened descriptor
+        fst = _library_fstat(fd)  # fstat of the opened descriptor
         if not stat.S_ISREG(fst.st_mode):
             raise ContentError("sources.json: must be a regular file")
         if fst.st_size > MAX_JSON_BYTES:
