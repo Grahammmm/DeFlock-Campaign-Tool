@@ -2,6 +2,7 @@ import { html, type Safe } from "@deflock/shared/html";
 import type { Repo, RequestRow } from "../db.ts";
 import type { Env } from "../env.ts";
 import { readReadiness } from "../readiness.ts";
+import { tableWrap } from "./layout.ts";
 
 const ROUTES = [
   ["/requests", "Requests"], ["/inbox", "Inbox"], ["/records", "Records"],
@@ -26,7 +27,7 @@ function requestGroups(rows: RequestRow[], overdue: Set<string>): Safe {
   const group = (state: typeof STATES[number]): Safe => {
     const members = rows.filter(r => r.state === state);
     if (!members.length) return html``;
-    const table = html`<table class="data"><tr><th>Request id</th><th>Determination reminder</th><th>Extension claimed until</th><th>Reminder status</th></tr>${members.map(r => html`<tr><td>${r.request_id}</td><td>${r.determination_due ?? "not recorded"}</td><td>${r.extension_claimed_until ?? "not recorded"}</td><td>${overdue.has(r.request_id) ? "overdue" : ""}</td></tr>`)}</table>`;
+    const table = html`${tableWrap(`${state} requests`, html`<table class="data"><tr><th>Request id</th><th>Determination reminder</th><th>Extension claimed until</th><th>Reminder status</th></tr>${members.map(r => html`<tr><td>${r.request_id}</td><td>${r.determination_due ?? "not recorded"}</td><td>${r.extension_claimed_until ?? "not recorded"}</td><td>${overdue.has(r.request_id) ? "overdue" : ""}</td></tr>`)}</table>`)}`;
     return state === "closed" || state === "denied"
       ? html`<details><summary>${state} (${members.length})</summary>${table}</details>`
       : html`<h3>${state} (${members.length})</h3>${table}`;

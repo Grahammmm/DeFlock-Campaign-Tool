@@ -34,3 +34,13 @@ export function statePill(state: string): Safe {
         : "";
   return html`<span class="pill ${cls}">${state}</span>`;
 }
+
+/** A data table in its own labelled, keyboard-scrollable box so a wide table scrolls inside it on a phone. */
+export function tableWrap(label: string, table: Safe): Safe {
+  return html`<div class="table-wrap" role="region" aria-label="${label}" tabindex="0">${table}</div>`;
+}
+
+/** Shared-layout page for an unknown path. */
+export function notFoundBody(): Safe {
+  return html`<h1>Page not found</h1><p>That page does not exist in this workspace.</p><p><a href="/">Back to Waiting on you</a></p>`;
+}

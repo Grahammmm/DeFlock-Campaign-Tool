@@ -55,7 +55,7 @@ export const APP_CSS = `
 .app-main h1{font-size:clamp(1.8rem,3vw,2.6rem);letter-spacing:-.04em;margin:0 0 1rem}
 .app-main h2{font-size:1.35rem;margin:2rem 0 .8rem}
 .app-nav{display:flex;flex-wrap:wrap;gap:.4rem 1.2rem;padding:.8rem 4vw;background:var(--paper);border-bottom:1px solid var(--line);font-size:.9rem}
-.app-nav a{color:var(--ink);text-decoration:none;font-weight:600}.app-nav a.is-active{border-bottom:2px solid var(--coral)}
+.app-nav a{display:inline-flex;align-items:center;min-height:24px;color:var(--ink);text-decoration:none;font-weight:600}.app-nav a.is-active{border-bottom:2px solid var(--coral)}
 .steps{display:flex;flex-wrap:wrap;gap:.5rem;list-style:none;padding:0;margin:0 0 1.5rem;font-size:.85rem}
 .steps li{padding:.3rem .6rem;background:var(--paper);border-radius:2px;color:var(--muted)}.steps li.is-active{background:var(--ink);color:#fff}.steps li.is-done{background:var(--mint)}
 form.stack{display:grid;gap:1rem;max-width:44rem}
@@ -86,6 +86,8 @@ pre.json{background:var(--ink);color:#e6f2ee;padding:1rem;overflow:auto;font-siz
 .timeline li.outbound{border-color:var(--coral)}
 .checklist{display:grid;gap:.4rem}
 @media(max-width:850px){.app-main{padding:1.2rem 1rem}}
+.table-wrap{overflow-x:auto;max-width:100%}.table-wrap:focus-visible,pre.json:focus-visible{outline:3px solid var(--coral);outline-offset:2px}
+@media(max-width:700px){.app-nav a{min-height:44px}}
 `;
 
 export interface ShellOptions {
@@ -114,5 +116,5 @@ export function fmtDate(iso: string | null | undefined): string {
 }
 
 export function jsonBlock(value: unknown): Safe {
-  return html`<pre class="json">${JSON.stringify(value, null, 2)}</pre>`;
+  return html`<pre class="json" tabindex="0" role="region" aria-label="JSON data">${JSON.stringify(value, null, 2)}</pre>`;
 }
