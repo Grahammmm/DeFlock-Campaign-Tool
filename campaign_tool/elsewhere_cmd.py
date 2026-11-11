@@ -102,9 +102,12 @@ def _read(folder_fd, name, label, single_link=False):
         raise ElsewhereError(f"{label}: file too large; {UNTOUCHED}")
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder_fd)
-        with os.fdopen(fd, "rb") as handle:
-            opened = os.fstat(handle.fileno())
-            data = handle.read(MAX_JSON_BYTES + 1)
+        try:  # own the raw fd until closed here, even if fdopen itself fails (closefd=False)
+            with os.fdopen(fd, "rb", closefd=False) as handle:
+                opened = os.fstat(handle.fileno())
+                data = handle.read(MAX_JSON_BYTES + 1)
+        finally:
+            os.close(fd)
     except OSError:
         raise ElsewhereError(f"{label}: cannot be read; {UNTOUCHED}") from None
     if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
@@ -236,11 +239,14 @@ def _install(root, data, loaded, *, folder_id):
     try:
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
         staged = True
-        with os.fdopen(fd, "wb") as handle:
-            os.fchmod(handle.fileno(), 0o644 if loaded is None else loaded[2])
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
+        try:  # own the raw fd until closed here, even if fdopen itself fails (closefd=False)
+            with os.fdopen(fd, "wb", closefd=False) as handle:
+                os.fchmod(handle.fileno(), 0o644 if loaded is None else loaded[2])
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            os.close(fd)
         _verify_path(root, folder_id)
         _unchanged(folder, loaded)
         if loaded is None:
