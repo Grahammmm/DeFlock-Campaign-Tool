@@ -223,7 +223,7 @@ def _read_scan(root):
         raise ManualMeetingError("kit/meetings.json: larger than 4 MiB")
     try:
         document = json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (ValueError, RecursionError) as exc:  # includes UnicodeDecodeError, JSONDecodeError, integer-digit limit
         raise ManualMeetingError(f"kit/meetings.json: not UTF-8 JSON ({exc.__class__.__name__})") from None
     if not isinstance(document, dict) or document.get("schema_version") != 1:
         raise ManualMeetingError("kit/meetings.json: unsupported schema_version (expected 1)")
