@@ -202,9 +202,9 @@ def repeat_request(root, agency_id, request, new_request, *, through=None, date_
     requests_dir = kit_dir / "requests"
     _regular_folder(requests_dir, "kit/requests")
     source = requests_dir / (kit_track._stem(agency_id, request) + ".md")
-    if source.is_symlink() or not source.is_file():
+    if source.is_symlink() or not source.is_file():  # an early refusal only; _read_source admits what is read
         raise ValueError(f"the original draft kit/requests/{source.name} must be a regular file (not a symlink)")
-    data = source.read_bytes()
+    data = _read_source(source)
     source_hash = hashlib.sha256(data).hexdigest()
     if source_hash != entry["draft_sha256"]:
         raise ValueError(f"kit/requests/{source.name} changed since it was recorded as sent; restore it to repeat it")
@@ -243,6 +243,34 @@ def repeat_request(root, agency_id, request, new_request, *, through=None, date_
         raise
     return {"agency_id": agency_id, "request": new_request, "follows": request, "draft": f"requests/{stem}.md",
             "date_from": meta["date_from"], "date_to": meta["date_to"], "draft_sha256": meta["draft_sha256"]}
+
+
+def _read_source(source):
+    """The original draft's bytes, read once from the object opened here, never through a final-component symlink.
+
+    The source is opened without following a leaf symlink and without blocking (a FIFO swapped in cannot stall the
+    command), then admitted as a regular file on that descriptor before any byte is read. Ancestors are not anchored,
+    no size limit is applied, and a later rename of the pathname does not redirect the read away from the opened inode.
+    """
+    refusal = f"the original draft kit/requests/{source.name} must be a regular file (not a symlink)"
+    try:
+        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ValueError(refusal) from None
+        raise
+    owned = fd  # raw descriptor owned here until fdopen hands it to a stream
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(refusal)
+        handle = os.fdopen(fd, "rb")
+        owned = None  # the stream owns it now; never close it a second time
+    except BaseException:
+        if owned is not None:
+            _close_unowned(owned)
+        raise
+    with handle:
+        return handle.read()
 
 
 def _close_unowned(fd):
