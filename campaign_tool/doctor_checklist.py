@@ -10,10 +10,17 @@ ORGANIZER, LAW_REVIEWER, MAINTAINER = "organizer", "independent law reviewer", "
 TOOL = "python3 -m campaign_tool"
 
 
+def _has_control(text):
+    return any(ord(c) < 32 or 127 <= ord(c) < 160 or c in "\u2028\u2029" for c in text)
+
+
 def _stale_contacts_next(report, d):
     found = report["stale_contacts"]
     count = len(found) + int(report.get("stale_contacts_more") or 0)
-    ids = ", ".join(str(entry.get("agency_id")) for entry in found[:3]) + (", …" if count > 3 else "")
+    shown = [str(entry.get("agency_id")) for entry in found[:3]]
+    if any(_has_control(agency_id) for agency_id in shown):  # only the ids this advice would display
+        raise ValueError("checklist stale contact agency_id contains a control character; repair kit/agencies.json")
+    ids = ", ".join(shown) + (", …" if count > 3 else "")
     return (f"Re-check {count} contact(s): `{TOOL} kit-verify-agency --directory {d} --agency-id ID "
             f"--records-email EMAIL --source-url URL --checked-on YYYY-MM-DD` for {ids}; give the contact you "
             f"checked: --records-email EMAIL, --records-url URL or --portal URL (at least one is required)")
@@ -85,7 +92,7 @@ def _control_free_directory(directory):
     path would reach the terminal or forge an extra checklist line. Same policy as kit_agencies._has_control; the
     message never echoes the path."""
     raw = str(directory)
-    if any(ord(c) < 32 or 127 <= ord(c) < 160 or c in "\u2028\u2029" for c in raw):
+    if _has_control(raw):
         raise ValueError("checklist directory contains a control character; use a control-free path to this campaign")
     return raw
 
