@@ -76,7 +76,10 @@ def _write(content, document):
     if content.is_symlink() or target.is_symlink():
         raise CoverageError("coverage.json: symbolic links are not written")
     mode = stat.S_IMODE(os.lstat(target).st_mode) if os.path.lexists(target) else 0o644
-    handle, name = tempfile.mkstemp(dir=content, prefix=".coverage-", suffix=".tmp")
+    try:  # RF1440-1: a refused staging allocation (read-only content/, no space, ...) is the same fixed refusal, path-free
+        handle, name = tempfile.mkstemp(dir=content, prefix=".coverage-", suffix=".tmp")
+    except OSError:
+        raise CoverageError("coverage.json: could not be written; the previous file was kept") from None
     try:
         with os.fdopen(handle, "wb") as out:
             os.fchmod(out.fileno(), mode)
