@@ -185,8 +185,9 @@ class ReaderTests(IoBase):
             with self.grow_after_fstat("store"), self.assertRaises(BAD):
                 ms._read_regular(path, limit, False, BAD("bad"))  # refused on the returned length
             path.write_bytes(original)
-            with self.assertRaises(PermissionError), mock.patch.object(ms.os, "fdopen", side_effect=PermissionError):
+            with self.assertRaises(BAD) as caught, mock.patch.object(ms.os, "fdopen", side_effect=PermissionError):
                 ms._read_regular(path, limit, False, BAD("bad"))
+            self.assertEqual(str(caught.exception), "bad")
         self.assertEqual(len(opened), 2)
         self.assertEqual(opened, closed)
 
