@@ -53,12 +53,23 @@ def _spans(text):
         start = end + 1
 
 
+class _Hits(list):
+    """draft_problems' list of {"line", "placeholder"}; also records, from the full unclipped spans, whether any
+    span names a fee cap or a date range."""
+    fee_cap = date_range = False
+
+
 def draft_problems(text):
     """Every unfilled bracket placeholder in ``text`` as {"line", "placeholder"} (1-based line numbers).
 
-    The placeholder is clipped to HIT_CHARS for display; recognition does not depend on its length.
+    The placeholder is clipped to HIT_CHARS for display; recognition and the fee/date flags do not depend on it.
     """
-    return [{"line": number, "placeholder": span[:HIT_CHARS]} for number, span in _spans(text)]
+    hits = _Hits()
+    for number, span in _spans(text):
+        hits.append({"line": number, "placeholder": span[:HIT_CHARS]})
+        word = span.lower()
+        hits.fee_cap, hits.date_range = hits.fee_cap or "cap" in word, hits.date_range or "date range" in word
+    return hits
 
 
 def _read_regular(path):
@@ -207,15 +218,10 @@ def agency_report(root, entry, *, include_suggestion=False):
         report = {**row, "draft": None, "ok": False, "error": error}
     else:
         text = primary.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-        hits, count, fee, date = [], 0, False, False
-        for number, span in _spans(text):  # count and flags use the full span; only the display is clipped
-            count += 1
-            if len(hits) < HITS_MAX:
-                hits.append({"line": number, "placeholder": span[:HIT_CHARS]})
-            word = span.lower()
-            fee, date = fee or "cap" in word, date or "date range" in word
-        report = {**row, "draft": f"kit/requests/{agency_id}.md", "placeholders": hits, "placeholder_count": count,
-                  "fee_cap_missing": fee, "date_range_missing": date, "ok": not count and row["recipient_verified"]}
+        hits = draft_problems(text)  # count and flags use the full spans; only the display is clipped
+        report = {**row, "draft": f"kit/requests/{agency_id}.md", "placeholders": list(hits[:HITS_MAX]),
+                  "placeholder_count": len(hits), "fee_cap_missing": hits.fee_cap, "date_range_missing": hits.date_range,
+                  "ok": not hits and row["recipient_verified"]}
     differs = _suggested_differs(root, agency_id, primary) if include_suggestion else None
     if differs is not None:
         report["suggested_differs"], report["ok"] = differs, False
