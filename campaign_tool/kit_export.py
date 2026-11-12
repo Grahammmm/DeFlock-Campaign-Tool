@@ -71,33 +71,51 @@ def _open_parent(path):
         for name in names:
             held.append(os.open(name, _DIR_FLAGS, dir_fd=held[-1]))
     except OSError:
-        _close_all(held)
+        _close_quiet(held)  # a release failure never replaces the sanitized refusal
         raise ValueError(_PARENT_ERROR) from None
     except BaseException:
-        _close_all(held)
+        _release_beside_active(held)
         raise
     last = held.pop()
     try:
         _close_all(held)
     except OSError:
-        _close_all([last])
+        _close_quiet([last])
         raise ValueError(_PARENT_ERROR) from None
     except BaseException:
-        _close_all([last])
+        _release_beside_active([last])
         raise
     return last
 
 
-def _close_all(fds):
-    """Close every descriptor; the first OSError is raised after all have been tried."""
+def _close_each(fds):
+    """Try to close every descriptor, whatever any single close raises; the first error seen, or None."""
     first = None
     for fd in fds:
         try:
             os.close(fd)
-        except OSError as error:
+        except BaseException as error:
             first = first or error
+    return first
+
+
+def _close_all(fds):
+    """Close every descriptor; the first error is raised after all have been tried."""
+    first = _close_each(fds)
     if first is not None:
         raise first
+
+
+def _close_quiet(fds):
+    """Close every descriptor; release OSErrors are dropped (the caller already reports its own refusal)."""
+    first = _close_each(fds)
+    if first is not None and not isinstance(first, OSError):
+        raise first
+
+
+def _release_beside_active(fds):
+    """Close every descriptor while another exception is propagating; nothing raised here may replace it."""
+    _close_each(fds)
 
 
 def _same_dir(fd, identity):
@@ -139,8 +157,10 @@ def write_rows(target, out, header, rows):
             check_fd = _open_parent(target)
             try:
                 confirmed = _same_dir(check_fd, parent_identity)
-            finally:
-                os.close(check_fd)
+            except BaseException:
+                _release_beside_active([check_fd])  # a close failure must not replace the active error
+                raise
+            os.close(check_fd)
             if confirmed:
                 final = os.lstat(name, dir_fd=parent_fd)
                 confirmed = stat.S_ISREG(final.st_mode) and (final.st_dev, final.st_ino) == identity

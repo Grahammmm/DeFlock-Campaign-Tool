@@ -13,7 +13,7 @@ from campaign_tool import kit_export, kit_fees, kit_track  # noqa: E402
 from tests.test_kit_check import ready_drafts  # noqa: E402
 from tests.test_kit_status_csv import run  # noqa: E402
 
-REAL_OPEN, REAL_FSYNC = os.open, os.fsync
+REAL_OPEN, REAL_FSYNC, REAL_CLOSE = os.open, os.fsync, os.close
 
 
 class Boom(OSError):
@@ -166,6 +166,110 @@ class ParentScopeTests(unittest.TestCase):
                 self.write()
         self.assertEqual(fd_count(), before)
         self.assertFalse(os.path.lexists(self.target))
+
+    # --- combined faults: the active error is never replaced by a release failure ---
+    def fault_harness(self, fail_open=None, fail_close=lambda fd, opened: True):
+        """Patch os.open/os.close: the open of the component named ``private`` raises ``fail_open`` (if given);
+        every close really releases the descriptor, records it, and then raises OSError when ``fail_close``."""
+        opened, closed = [], []
+
+        def opener(path, flags, *args, **kwargs):
+            if fail_open is not None and path == "private":
+                raise fail_open
+            fd = REAL_OPEN(path, flags, *args, **kwargs)
+            opened.append(fd)
+            return fd
+
+        def closer(fd):
+            REAL_CLOSE(fd)
+            closed.append(fd)
+            if fail_close(fd, opened):
+                raise OSError("close-marker")
+
+        return opened, closed, opener, closer
+
+    def test_acquisition_error_survives_release_failure_on_every_acquired_ancestor(self):
+        before = fd_count()
+        for error in (KeyboardInterrupt(), RuntimeError("sentinel")):
+            with self.subTest(error=type(error).__name__):
+                opened, closed, opener, closer = self.fault_harness(fail_open=error)
+                with mock.patch.object(os, "open", side_effect=opener), mock.patch.object(os, "close", side_effect=closer):
+                    with self.assertRaises(type(error)) as ctx:
+                        kit_export._open_parent(self.target)
+                self.assertIs(ctx.exception, error)
+                self.assertGreater(len(opened), 1)
+                self.assertEqual(closed, opened)  # every acquired descriptor was still released
+                self.assertEqual(fd_count(), before)
+
+    def test_acquisition_oserror_with_release_failure_still_refuses_sanitized(self):
+        before = fd_count()
+        opened, closed, opener, closer = self.fault_harness(fail_open=PermissionError("private-marker"))
+        with mock.patch.object(os, "open", side_effect=opener), mock.patch.object(os, "close", side_effect=closer):
+            with self.assertRaises(ValueError) as ctx:
+                kit_export._open_parent(self.target)
+        self.assertEqual(str(ctx.exception), kit_export._PARENT_ERROR)
+        self.assertIsNone(ctx.exception.__cause__)
+        self.assertTrue(ctx.exception.__suppress_context__)
+        self.assertNotIn("marker", str(ctx.exception))
+        self.assertEqual(closed, opened)
+        self.assertGreater(len(opened), 1)
+        self.assertEqual(fd_count(), before)
+
+    def test_final_release_failures_keep_sanitized_refusal_and_close_everything(self):
+        before = fd_count()
+        opened, closed, opener, closer = self.fault_harness()  # every close fails, the held parent included
+        with mock.patch.object(os, "open", side_effect=opener), mock.patch.object(os, "close", side_effect=closer):
+            with self.assertRaises(ValueError) as ctx:
+                kit_export._open_parent(self.target)
+        self.assertEqual(str(ctx.exception), kit_export._PARENT_ERROR)
+        self.assertIsNone(ctx.exception.__cause__)
+        self.assertEqual(sorted(closed), sorted(opened))
+        self.assertEqual(fd_count(), before)
+
+    def test_final_release_interrupt_survives_failing_parent_close(self):
+        before = fd_count()
+        interrupt = KeyboardInterrupt()
+        opened, closed, opener, closer = self.fault_harness(fail_close=lambda fd, seen: fd == seen[-1])
+
+        def interrupting_closer(fd):
+            closer(fd)
+            if fd == opened[1]:  # the first intermediate ancestor
+                raise interrupt
+
+        with mock.patch.object(os, "open", side_effect=opener), \
+                mock.patch.object(os, "close", side_effect=interrupting_closer):
+            with self.assertRaises(KeyboardInterrupt) as ctx:
+                kit_export._open_parent(self.target)
+        self.assertIs(ctx.exception, interrupt)
+        self.assertEqual(sorted(closed), sorted(opened))  # later ancestors and the parent were still released
+        self.assertEqual(fd_count(), before)
+
+    def test_reverification_error_survives_failing_release_of_the_check_descriptor(self):
+        before = fd_count()
+        for error, expected in ((KeyboardInterrupt(), KeyboardInterrupt),
+                                (OSError("fstat-marker"), ValueError)):
+            with self.subTest(error=type(error).__name__):
+                seen = []
+
+                def same_dir(fd, identity):
+                    seen.append(fd)
+                    raise error
+
+                def closer(fd):
+                    REAL_CLOSE(fd)
+                    if seen and fd == seen[0]:
+                        raise OSError("close-marker")
+
+                with mock.patch.object(kit_export, "_same_dir", side_effect=same_dir), \
+                        mock.patch.object(os, "close", side_effect=closer):
+                    with self.assertRaises(expected) as ctx:
+                        self.write()
+                if expected is KeyboardInterrupt:
+                    self.assertIs(ctx.exception, error)
+                else:
+                    self.assertNotIn("marker", str(ctx.exception))
+                self.assertFalse(os.path.lexists(self.target))
+                self.assertEqual(fd_count(), before)
 
     # --- leaf protections survive ---
     def test_leaf_replacement_protections_survive_parent_anchoring(self):
