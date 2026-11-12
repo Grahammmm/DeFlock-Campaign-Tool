@@ -361,9 +361,26 @@ def _get(rows, ident, revision=None):
     return rows[ident]
 
 
-def payload(project, ident):
-    with _Locked(project) as lock:
-        return _payload(project, _get(fold(lock.events()), ident))
+def _reading(project, read_only, use, absent):
+    """Run use(lock). read_only opens the lock O_RDONLY (never creates it); with no lock file, absent() answers
+    only when no journal, switch or kill file exists either, else the state is unreadable (same rule as switch_state)."""
+    try:
+        with _Locked(project, read_only=read_only) as lock:
+            return use(lock)
+    except FileNotFoundError:
+        if not read_only:
+            raise
+        if any(os.path.lexists(os.path.join(project, name)) for name in (JOURNAL, SWITCH, KILL)):
+            raise PacketError("packets_unavailable") from None
+        return absent()
+
+
+def _no_packet():
+    raise PacketError("packet_unknown")
+
+
+def payload(project, ident, *, read_only=False):
+    return _reading(project, read_only, lambda lock: _payload(project, _get(fold(lock.events()), ident)), _no_packet)
 
 
 def approve(project, ident, signature, now=None, *, revision=None):
@@ -439,10 +456,11 @@ def write_change(project, ident, now=None):
     return {"id": ident, "file": f"{OUT}/{name}", "result": "written"}
 
 
-def pending(project, now=None):
+def pending(project, now=None, *, read_only=False):
     """Pending metadata only; no content, events or journal writes (an absent journal is empty)."""
     now = time.time() if now is None else now
-    with _Locked(project) as lock:
+
+    def use(lock):
         rows = fold(lock.events())
         out = []
         for row in rows.values():
@@ -458,14 +476,17 @@ def pending(project, now=None):
                 "approved_at": _iso(row["approved_ts"]) if "approved_ts" in row else None,
                 "signed_by": row.get("signed_by")})
         return out
+    return _reading(project, read_only, use, list)
 
 
-def status(project, now=None):
+def status(project, now=None, *, read_only=False):
     now = time.time() if now is None else now
-    with _Locked(project) as lock:
+
+    def use(lock):
         events = lock.events()
         rows = fold(events)
         return {"switch": _switch_state(lock, events), "packets": [_view(r, now) for r in rows.values()]}
+    return _reading(project, read_only, use, lambda: {"switch": "OFF", "packets": []})
 
 
 # ---- command line ------------------------------------------------------------------------------
