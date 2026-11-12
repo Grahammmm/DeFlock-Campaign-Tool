@@ -67,6 +67,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1007,9 +1008,23 @@ def stage_result(outcomes: list[Outcome], queue_errors: dict, backlog: int = 0) 
     return out, 0
 
 
-def fail(code: str) -> tuple[dict, int]:
-    return {"stage_result_version": 1, "status": "fail",
-            "counts": {"input": 0, "output": 0, "failed": 1, "skipped": 0}, "error_code": code}, 1
+def fail(code: str, internal: dict | None = None) -> tuple[dict, int]:
+    line = {"stage_result_version": 1, "status": "fail",
+            "counts": {"input": 0, "output": 0, "failed": 1, "skipped": 0}, "error_code": code}
+    return ({**line, "internal": internal} if internal else line), 1
+
+
+def internal_error(error):
+    """Exception class and innermost campaign_tool function only: no message, argument, path or line."""
+    root, where = Path(__file__).resolve().parent.parent, None
+    for frame, _ in traceback.walk_tb(error.__traceback__):
+        try:
+            rel = Path(frame.f_code.co_filename).resolve().relative_to(root)
+        except ValueError:
+            continue
+        where = ".".join(("campaign_tool", *rel.with_suffix("").parts, frame.f_code.co_name))
+    return {"type": re.sub(r"\W", "_", type(error).__name__)[:64],
+            "where": re.sub(r"[^\w.<>]", "_", where or "unknown")[:160]}
 
 
 def load_config(path: str | None) -> dict:
@@ -1158,8 +1173,8 @@ def main(argv=None) -> int:
         line, code, outcomes = run(args)
     except StageDeadline:
         line, code = fail("STAGE_CONTAINER_TIMEOUT")
-    except Exception:  # noqa: BLE001 - never print exception text (may hold private values)
-        line, code = fail("STAGE_INTERNAL_ERROR")
+    except Exception as error:  # noqa: BLE001 - class and function only, never exception text
+        line, code = fail("STAGE_INTERNAL_ERROR", internal_error(error))
     finally:
         signal.alarm(0)
     if args.report and outcomes:
