@@ -53,6 +53,10 @@ def redirect_rows(document):
               or ".." in row["from"].split("/")):
             problems.append(f"redirects[{n}]: from {row['from']!r} must be an ASCII path starting with / of at most "
                             f"{MAX_FROM} characters, without .. segments, //, ?, #, *, : or spaces")
+        elif "." in row["from"].split("/"):
+            # RF1420-4: a literal single-dot segment is another spelling of the path without it, which the textual
+            # owned-page and withdrawn-finding checks would miss. Refused, never normalized, before those checks.
+            problems.append(f"redirects[{n}]: from {row['from']!r} must not contain . path segments")
         else:
             rows.append((n, row["from"], row["to"]))
     _refuse(problems)
