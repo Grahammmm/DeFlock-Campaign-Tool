@@ -223,4 +223,33 @@ ages at export time.
 **Read-only.** An approved row's review page says "Approved by <principal>: signature verified on the live project (<id>) at export
 <time>" with the signed revision and the signature hash; pending rows show the exported payload (its `project:` line is the live project
 id). No approve, reject, edit, packet or oversight form or button is rendered, and every POST is answered 503 `read_only_export` before
-any handler or writer runs (DFGL-16B replaces this with journaling).
+any handler or writer runs (with `--decisions-dir` they are journaled instead, below).
+
+### Decision journal (DFGL-16B)
+
+`records panel --export-root DIR --run-id auto --actor NAME --decisions-dir J` renders the decision forms again and records each
+organizer decision instead of writing it. `--decisions-dir` without `--export-root` is refused (`journal_needs_export`, exit 2); `J` must
+be absolute, owner-only 0700, its own `realpath` and disjoint from `DIR` (else `decisions_dir_invalid`). Without `--decisions-dir` the
+export stays read-only (every POST is 503 `read_only_export`).
+
+**What runs.** Approve, reject and edit (`/approvals/*`), packet approve and reject (`/packets/*`) and oversight Undo, OFF and kill
+(`/public-updates/*`) keep their parsing, CSRF and field checks. The decision is then checked against the **pinned snapshot** with the
+writer's rules (row exists; `pending` for approve and reject; the posted `expected_revision` or `revision` equals the snapshot's; a packet
+is `proposed` and unexpired to approve, `proposed` or `approved` to reject; an Undo names an open line) and refused with the same status as
+today (e.g. 409 for a stale edit), journaling nothing. A passing decision appends one line to `J/decisions.jsonl` (0600, `O_APPEND`,
+`flock` on `J/decisions.lock`): `records-console-decision-v1` with `entry_id` (sha256 of the line without it), `at`, `actor`, `route`,
+`action`, `target_id`, `revision_seen`, `value` (signature, reason, edited body or packet reason as the writer would receive it, `\r\n`
+folded to `\n`; a message-link approve also carries `choice`), `source_project_id`, `export_run_id` and `export_name`, and answers with
+the redirect it always did. No writer, signature check, `approval_queue` or `public_packets` function runs, and nothing is written under
+`DIR` or the live project; `/send` is 404 and mail-draft placement stays unavailable. Signature checks happen only when DFGL-16C applies the
+entries to the live project.
+
+**Signing text** is the exported live payload (`console-model/queue.json` / `packets.json`), byte for byte what the live project would
+ask G to sign, with its `project:` line the live project id.
+
+**Pending apply.** On each request the journal is read (an unreadable or corrupt one answers 503 `journal_unavailable`; a half-written
+last line is ignored). Each entry of this project not listed in the pinned `EXPORT.json.applied_journal_ids` shows `pending apply: <action>`
+on its row (review, dashboard and next steps, packets, public updates); a later entry for the same target replaces the text, and every
+entry stays in the journal. An entry in `EXPORT.json.apply_outcomes` as `{"refusal": "<code>"}` shows `not applied: <code>`. This survives
+export swaps because the journal lives outside the export. OFF and kill add that they take effect at the next apply (records run); for an
+immediate stop run `records public-updates off|kill --project <live project> --actor NAME` on the host that owns the project.

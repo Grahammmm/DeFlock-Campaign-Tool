@@ -26,7 +26,7 @@ from . import public_updates as pu
 from . import console_board as cb
 from .outcomes import release_links as _rl
 from .outcomes.reading import BANNER, esc
-from . import console_layout, console_snapshot
+from . import console_journal, console_layout, console_snapshot
 
 STUCK_HOURS = 72
 EXPIRING_DAYS = cb.EXPIRING_DAYS
@@ -335,6 +335,8 @@ def render_public(model, token):
         return "\n".join(out + ["<p>No journal can be read, so no lines are listed.</p></main></body></html>"]) + "\n"
     out.append('<p role="status">Auto-post switch: <strong>%s</strong> (OFF, ON when signed by G, or KILLED). '
                "It can only be turned ON by G's signature through the command line; this page can only make it safer.</p>" % esc(pub["switch"]))
+    if pub.get("pending_apply"):
+        out.append('<p role="status">Auto-post switch: %s</p>' % esc(pub["pending_apply"]))
     out.append(_form("/public-updates/off", token, "Turn auto-post OFF") + _form("/public-updates/kill", token, "Kill switch: stop and retract held lines"))
     for state in STATES:
         rows = lines_in(model, state)
@@ -355,8 +357,8 @@ def render_public(model, token):
                 when = "proposed"
             action = _form("/public-updates/retract", token, "Undo" if state == "posted" else "Veto",
                            (("id", r["id"]),)) if state in ("proposed", "holding", "posted") else ""
-            out.append("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
-                esc(r["id"]), esc(r["agency_key"]), esc(r["text"]), esc(when), action))
+            out.append("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s%s</td></tr>" % (
+                esc(r["id"]), esc(r["agency_key"]), esc(r["text"]), esc(when), action, esc(r.get("pending_apply") or "")))
         out.append("</tbody></table>")
     refused = [r for r in pub["lines"] if r["state"] == "refused"]
     if refused:
@@ -426,6 +428,10 @@ def post(handler):
         return True
     if not hmac.compare_digest(fields["csrf_token"].encode("utf-8"), handler.server.csrf_token.encode("ascii")):
         handler._fail(403)
+        return True
+    if handler.server.decisions_dir is not None:  # journal mode: checked against the snapshot, journaled, never written
+        if console_journal.oversight(handler, handler.path.rpartition("/")[2], fields.get("id")):
+            handler._send(303, "", location="/public-updates")
         return True
     project, actor = handler.server.options["project"], _journal_actor(handler.server.actor)
     try:
