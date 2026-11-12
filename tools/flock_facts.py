@@ -15,7 +15,14 @@ EVIDENCE_FIELDS = ["agency", "request", "fact_type", "value", "source_sha256", "
 LOCK_WAIT = 30.0
 
 
+JOURNAL, STAGED = ".FACTS-TXN.json", (".FACTS.csv.txn", ".FACT-REVIEWS.csv.txn", ".FACTS-TXN.json.tmp")
+
+
 class Locked(Exception):
+    pass
+
+
+class TxnCorrupt(Exception):
     pass
 
 
@@ -254,6 +261,96 @@ def write_atomic(path, rows):
         raise
 
 
+def _digest(path):
+    data = plain_bytes(path)
+    return "missing" if data is None else hashlib.sha256(data).hexdigest()
+
+
+def _put(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as out:
+        out.write(data)
+        out.flush()
+        os.fsync(out.fileno())
+
+
+def _sync_dir(folder):
+    fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def txn_write(store, slug, facts_rows, log_bytes):
+    """DFGL-07c: FACTS.csv and FACT-REVIEWS.csv change as one journaled transaction. Call inside store_lock(store). The journal
+    replace is the commit point; recover() rolls a committed transaction forward, and no journal means the old pair is intact."""
+    folder, new = store / "agencies" / slug, {"facts": serialize(facts_rows), "log": log_bytes}
+    names, doc = {"facts": "FACTS.csv", "log": "FACT-REVIEWS.csv"}, {"schema": "flock-facts-txn-v1", "agency": slug}
+    try:
+        for key, name in names.items():
+            _put(folder / STAGED[key == "log"], new[key])
+            doc[key] = {"old": _digest(folder / name), "new": hashlib.sha256(new[key]).hexdigest()}
+        _put(folder / STAGED[2], json.dumps(doc).encode())
+        os.replace(folder / STAGED[2], folder / JOURNAL)  # commit point
+    except BaseException:  # not committed: the old pair stands, drop this writer's temps
+        for name in STAGED:
+            with contextlib.suppress(OSError): os.unlink(folder / name)
+        raise
+    _sync_dir(folder)
+    os.replace(folder / STAGED[1], folder / names["log"])
+    os.replace(folder / STAGED[0], folder / names["facts"])
+    _sync_dir(folder)
+    os.unlink(folder / JOURNAL)
+    _sync_dir(folder)
+
+
+def recover(store, slug):
+    """Inside store_lock(store): finish a committed transaction (per file: current == new is done; else the staged file with
+    hash new is replaced in) or drop the writer's own uncommitted temps. TxnCorrupt, nothing touched, when a hash fits neither."""
+    folder = store / "agencies" / slug
+    if os.path.islink(folder.parent) or os.path.islink(folder) or not folder.is_dir():  # a linked agencies folder is refused untouched
+        return
+    if os.path.lexists(folder / JOURNAL):
+        try:
+            doc = json.loads(plain_bytes(folder / JOURNAL))
+            todo = []
+            assert doc["schema"] == "flock-facts-txn-v1" and doc["agency"] == slug
+            for key, name, stage in (("log", "FACT-REVIEWS.csv", STAGED[1]), ("facts", "FACTS.csv", STAGED[0])):
+                now, old, new = _digest(folder / name), doc[key]["old"], doc[key]["new"]
+                if now != new:
+                    assert now == old and _digest(folder / stage) == new
+                    todo.append((folder / stage, folder / name))
+        except (AssertionError, KeyError, TypeError, ValueError) as exc:
+            raise TxnCorrupt() from exc
+        for stage, target in todo:
+            os.replace(stage, target)
+        _sync_dir(folder)
+    for name in STAGED:
+        if os.path.lexists(folder / name):
+            os.unlink(folder / name)
+    if os.path.lexists(folder / JOURNAL):
+        os.unlink(folder / JOURNAL)
+    _sync_dir(folder)
+
+
+def read_reviewed(store, slug):
+    """(rows, log rows, codes) under the shared lock: REVIEW_TXN_PENDING for a journal, REVIEW_STATE_INVALID for a failed check
+    or a raw status edit, else the validated view. Never writes and never recovers."""
+    folder = Path(store) / "agencies" / slug
+    with store_lock(Path(store), exclusive=False):
+        if os.path.lexists(folder / JOURNAL):
+            return [], [], ["REVIEW_TXN_PENDING"]
+        path, log = folder / "FACTS.csv", folder / "FACT-REVIEWS.csv"
+        try:
+            if os.path.islink(folder) or os.path.islink(path) or not path.is_file() or check_file(path, slug) or overlay_errors(path, log):
+                return [], [], ["REVIEW_STATE_INVALID"]
+            got = read_log(log)
+            return [r for _, r in load(path, slug)[1]], [dict(zip(got[0], rec)) for rec in got[1] if rec] if got else [], []
+        except (OSError, UnicodeDecodeError, csv.Error):
+            return [], [], ["REVIEW_STATE_INVALID"]
+
+
 def plan_import(args):
     """Every import check, no writes (RF0740-9): (errors, source rows by slug, store rows by slug)."""
     store = Path(args.store).resolve()
@@ -286,6 +383,9 @@ def do_import(args, store_lock_held=False):
     if not errors and not args.dry_run and not store_lock_held:  # plan found nothing wrong: create the store, then plan again under its lock
         store.mkdir(mode=0o700, parents=True, exist_ok=True)
         with store_lock(store):
+            for folder in sorted(store.glob("agencies/*")):  # DFGL-07c: finish a crashed review before the locked re-plan reads the store
+                if any(os.path.lexists(folder / n) for n in (JOURNAL, *STAGED)):
+                    recover(store, folder.name)  # recover() itself leaves a linked agencies folder alone
             return do_import(args, store_lock_held=True)
     return import_planned(args, errors, by_slug, old)
 
@@ -587,6 +687,7 @@ def review(args):
     store = Path(args.store).resolve()
     if store.is_dir() and store != REPO and REPO not in store.parents:  # a missing store keeps the unlocked error path
         with store_lock(store):
+            recover(store, slugify(args.agency))
             return review_locked(args)
     return review_locked(args)
 
@@ -622,25 +723,14 @@ def review_locked(args):
     if changed:
         for i, *_ in changed:
             by_id[i]["status"] = args.set
-        old, add, swapped = plain_bytes(log), io.StringIO(), False
+        old, add = plain_bytes(log), io.StringIO()
         got = read_log(log) if old else None
         v1 = bool(got) and got[0] == REVIEW_HEAD
         if v1:  # a consistent v1 log (checked above) is upgraded in this same write
             up = upgrade_v1([dict(zip(REVIEW_HEAD, rec)) for rec in got[1] if rec], rows)
             csv.writer(add, lineterminator="\n").writerows([REVIEW_HEAD_V2] + [[u[k] for k in REVIEW_HEAD_V2] for u in up])
         csv.writer(add, lineterminator="\n").writerows(([] if old else [REVIEW_HEAD_V2]) + changed)
-        fd, tmp = tempfile.mkstemp(prefix=".FACT-REVIEWS.csv.", suffix=".tmp", dir=log.parent)
-        try:  # the log is replaced first; if FACTS.csv then cannot be, the old log is put back
-            with os.fdopen(fd, "wb") as out:
-                out.write((b"" if v1 else old + b"\n" if old and not old.endswith(b"\n") else old or b"") + add.getvalue().encode())
-            os.replace(tmp, log)
-            swapped = True
-            write_atomic(files[0], rows)
-        except BaseException:
-            with contextlib.suppress(OSError): os.unlink(tmp)
-            if swapped:
-                with contextlib.suppress(OSError): log.write_bytes(old) if old is not None else log.unlink()
-            raise
+        txn_write(store, slug, rows, (b"" if v1 else old + b"\n" if old and not old.endswith(b"\n") else old or b"") + add.getvalue().encode())
     print(*lines, "reviewed=%d changed=%d unchanged=%d" % (len(ids), len(changed), len(ids) - len(changed)), sep="\n")
     return 0
 
@@ -677,6 +767,9 @@ def main(argv=None):
         return _main(argv)
     except Locked:
         print("locked: fact store busy")
+        return 1
+    except TxnCorrupt:
+        print("REVIEW_TXN_CORRUPT")
         return 1
     except (OSError, UnicodeDecodeError, csv.Error) as exc:
         print("io: %s" % type(exc).__name__)

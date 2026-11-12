@@ -238,6 +238,11 @@ def _read_meeting(path, admitted):
         return json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ContentError(f"{name}: not valid UTF-8 JSON ({exc})") from None
+    except RecursionError:
+        # RF1741-3: fixed category text only; never echo decoder resource details or payload.
+        raise ContentError(f"{name}: JSON nesting is too deep") from None
+    except ValueError:  # e.g. the interpreter's integer-conversion limit; JSONDecodeError was handled above
+        raise ContentError(f"{name}: JSON number could not be decoded") from None
 
 
 def _meetings(content, day):
