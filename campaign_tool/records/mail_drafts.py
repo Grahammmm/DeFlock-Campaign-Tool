@@ -388,7 +388,7 @@ def _place_one(client, config, row, thread, reason, now):
 def place(project, config, *, factory=mail_poll.default_connect, now=None, only_id=None, dry_run=False):
     """Place every approved, not yet placed row. Content-free summary; never sends."""
     now = now or _now()
-    rows = [r for r in approval_queue.load_queue(project) if r["status"] == "approved" and r["kind"] not in draft_templates.NEXT_STEP_KINDS
+    rows = [r for r in approval_queue.load_queue(project) if r["status"] == "approved" and r["kind"] not in draft_templates.NON_MAIL_KINDS
             and (only_id is None or r["id"] == only_id)]
     summary = {"placed": 0, "existing": 0, "failed": 0, "skipped": 0}
     with _Journal(project, not dry_run) as journal:
@@ -457,7 +457,7 @@ def record_failure(project, queue_id, code, *, now=None):
     """Journal a placement failure (for example a refused config) for one approved row; sends nothing."""
     now = now or _now()
     rows = [r for r in approval_queue.load_queue(project) if r["id"] == queue_id and r["status"] == "approved"
-            and r["kind"] not in draft_templates.NEXT_STEP_KINDS]
+            and r["kind"] not in draft_templates.NON_MAIL_KINDS]
     with _Journal(project, True) as journal:
         journal.append([_row(r, "failed", now, code=str(code)[:80]) for r in rows])
 

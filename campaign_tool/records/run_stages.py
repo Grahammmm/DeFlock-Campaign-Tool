@@ -1029,6 +1029,14 @@ def stage_outputs(args):
         raise
     except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
         warning = "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"
+    # Untied received messages become 'tie to a request' decisions (DFGL-04): own try, own code; earlier outputs stay.
+    try:
+        from .outcomes.unmatched import write_run_unmatched
+        write_run_unmatched(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
+        warning = warning or "OUTPUTS_UNMATCHED_UNAVAILABLE"
     # Shadow-only model advice (REC-H2O-1): off unless the campaign enables it; never changes another output.
     try:
         from .model_advice import write_run_model_advice

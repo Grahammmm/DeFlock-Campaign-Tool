@@ -25,6 +25,7 @@ from . import approval_queue, console_board, console_calendar, console_documents
 from . import console_origin
 from . import console_access, console_layout, console_review, console_settings
 from .ledger import store
+from .outcomes import unmatched
 from .outcomes.reading import BANNER, esc
 
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
@@ -894,6 +895,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(fields)
         action, names = route
         back = fields.pop("return", "/")  # optional; it only chooses the 303 target
+        choice = fields.pop("choice", None)  # DFGL-04: only an approve of a message_link row carries it
         if back == "review" and action in ("approve", "reject", "edit") and "csrf_token" not in fields \
                 and DRAFT_ID.fullmatch(fields.get("id", "")):
             return console_review.refuse(self, fields["id"], MISSING_CSRF, None)
@@ -915,6 +917,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if back == "review":
                 return console_review.refuse(self, ident, EMPTY_FIELD[action], (names[2], value))
             return self._fail(400)
+        link = None
+        try:
+            row = next((r for r in approval_queue.load_queue(self.server.options["project"]) if r["id"] == ident), None)
+            if row is not None and row["kind"] == draft_templates.MESSAGE_LINK and action == "approve":
+                link = unmatched.choose(row, choice)  # not among the candidates -> 400 before anything changes
+            elif choice is not None:
+                return self._fail(400)
+        except ValueError:
+            return self._fail(400)
+        except (approval_queue.ApprovalQueueError, OSError):
+            return self._fail(503)
         if action == "edit" and not REVISION.fullmatch(fields["expected_revision"]):
             return self._fail(400)
         project, actor = self.server.options["project"], self.server.actor
@@ -940,7 +953,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(503)
         if rows.get(ident, {}).get("status") not in expected:  # never claim success from a return value alone
             return self._fail(503)
-        if hook and self.server.mail_drafts_config and rows[ident].get("kind") not in draft_templates.NEXT_STEP_KINDS:
+        if link is not None:
+            try:
+                unmatched.append_link(project, rows[ident]["item_id"], link[0], link[1], rows[ident]["approved_by"])
+            except ValueError as error:
+                return self._fail(409 if str(error) == "message_link_conflict" else 503)
+            except OSError:
+                return self._fail(503)
+        if hook and self.server.mail_drafts_config and rows[ident].get("kind") not in draft_templates.NON_MAIL_KINDS:
             _place_after_approve(project, self.server.mail_drafts_config, ident)
         self._send(303, "", location="/review?id=" + urllib.parse.quote(ident) if back == "review" else back)
 

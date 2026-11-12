@@ -16,6 +16,8 @@ import re
 from .. import kit_track
 
 NEXT_STEP_KINDS = ("next-social-post", "next-site-update", "next-followup-probe")  # REC-AUTO-10 recommendations
+MESSAGE_LINK = "message_link"  # DFGL-04: a decision, never a mail draft
+NON_MAIL_KINDS = NEXT_STEP_KINDS + (MESSAGE_LINK,)
 KINDS = ("reply-extension", "appeal-denial", "fee-reply", "followup-missing-records", "first-request",
          "reminder-no-response", "reminder-promised-date", "formal-notice-no-response") + NEXT_STEP_KINDS + ("followup-playbook",)
 FOLLOWUP_KINDS = KINDS[5:8]
