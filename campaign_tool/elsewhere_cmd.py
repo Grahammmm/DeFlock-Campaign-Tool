@@ -277,16 +277,24 @@ def _install(root, data, loaded, *, folder_id):
 
 
 def _remove_file(root, loaded, *, folder_id):
-    """Unlink the very file read: the commit point of removing the last entry (an empty array is never written)."""
+    """Unlink the very file read: the commit point of removing the last entry (an empty array is never written).
+    The folder is then flushed through the same descriptor; a flush failure after the unlink is reported as removed
+    with durability unconfirmed, never as a kept file, and nothing is recreated or retried."""
     folder = _content_fd(root, folder_id)
     try:
-        _verify_path(root, folder_id)
-        _unchanged(folder, loaded)
-        os.unlink(FILE, dir_fd=folder)
-    except FileExistsError:
-        raise ElsewhereError(f"{LABEL}: changed while it was being edited; {UNTOUCHED}") from None
-    except OSError:
-        raise ElsewhereError(f"{LABEL}: could not be removed; the previous file was kept") from None
+        try:
+            _verify_path(root, folder_id)
+            _unchanged(folder, loaded)
+            os.unlink(FILE, dir_fd=folder)
+        except FileExistsError:
+            raise ElsewhereError(f"{LABEL}: changed while it was being edited; {UNTOUCHED}") from None
+        except OSError:
+            raise ElsewhereError(f"{LABEL}: could not be removed; the previous file was kept") from None
+        try:  # after the commit point: nothing here may claim the previous file was kept
+            os.fsync(folder)
+        except OSError:
+            raise ElsewhereError(f"{LABEL}: removed, but the folder could not be flushed to disk; check it with "
+                                 "content elsewhere list") from None
     finally:
         os.close(folder)
 
