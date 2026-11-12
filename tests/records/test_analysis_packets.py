@@ -111,6 +111,8 @@ class AnalysisPacketImportTests(unittest.TestCase):
 
     def test_from_directory_and_approval_side_functions_are_never_called(self):
         folder = self.project.parent / "outbox-dir"
+        shutil.rmtree(folder, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
         folder.mkdir()
         (folder / "sent").mkdir()
         shutil.copy(self.path, folder / self.name)
