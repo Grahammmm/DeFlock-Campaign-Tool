@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import console_board as cb, console_oversight as co, console_outstanding, console_standing, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
-from . import console_calendar, console_layout, followup_clock
+from . import console_calendar, console_layout, console_snapshot, followup_clock
 
 GROUPS = ("request", "follow-up", "send", "site-update", "social-post", "status-line", "packet")
 LABELS = ("Requests", "Follow-ups", "Sends", "Site updates", "Social posts", "Status lines", "Packets")
@@ -23,12 +23,13 @@ NEXT = {"next-site-update": ("site-update", "site"), "next-social-post": ("socia
         "next-followup-probe": ("follow-up", "followup")}
 
 
-def load(project, run_id, run_report_path=None, now=None, *, send_config=None, meetings_dir=None):
-    model = co.load(project, run_id, run_report_path, now)
+def load(project, run_id, run_report_path=None, now=None, *, send_config=None, meetings_dir=None, source=None):
+    source = source or console_snapshot.LiveSource(project)
+    model = co.load(project, run_id, run_report_path, now, source=source)
     calendar = {}
     try:
         calendar = console_calendar.load(project, run_id, model["now"], send_config=send_config,
-                                         meetings_dir=meetings_dir)
+                                         meetings_dir=meetings_dir, source=source)
         if calendar.get("state") == "unavailable":
             model["calendar"] = co._unavailable(calendar.get("code", "calendar_unreadable"))
         else:
@@ -59,7 +60,7 @@ def load(project, run_id, run_report_path=None, now=None, *, send_config=None, m
         model["waiting"] = co._unavailable("board_unreadable")
         model["received"] = co._unavailable("board_unreadable")
     try:
-        model["packets"] = {"state": "ok", "rows": public_packets.pending(project, model["now"].timestamp())}
+        model["packets"] = {"state": "ok", "rows": source.packets_pending(model["now"].timestamp())}
     except public_packets.PacketError as error:
         model["packets"] = co._unavailable(error.code)
     except (OSError, ValueError, KeyError, TypeError):
@@ -67,7 +68,7 @@ def load(project, run_id, run_report_path=None, now=None, *, send_config=None, m
     model["sends"] = {"state": "ok", "rows": [], "configured": send_config is not None}
     if send_config is not None:
         try:
-            model["sends"]["rows"] = mail_send.results(project, strict=True)
+            model["sends"]["rows"] = source.send_results()
         except (mail_send.MailSendError, OSError, ValueError, KeyError, TypeError):
             model["sends"] = co._unavailable("sends_unreadable")
     return model
@@ -375,12 +376,13 @@ def render_home(model, token):
 def serve(handler):
     if urllib.parse.urlsplit(handler.path).path != "/":
         return False
-    options = handler.server.options
+    options = handler.options
     try:
         model = load(options["project"], options["run_id"], options.get("run_report_path"),
-                     send_config=options.get("send_config"), meetings_dir=getattr(handler.server, "meetings_dir", None))
+                     send_config=options.get("send_config"), meetings_dir=getattr(handler.server, "meetings_dir", None),
+                     source=options.get("source"))
     except ValueError:
         handler._fail(503)
         return True
-    handler._send(200, render_home(model, handler.server.csrf_token))
+    handler._send(200, render_home(model, handler.csrf_token()))
     return True

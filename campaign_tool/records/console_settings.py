@@ -1,7 +1,7 @@
 """Read-only outgoing switches for the private loopback console; no transports."""
 import os
 
-from . import console_layout, followup_clock, mail_send, public_packets, public_updates
+from . import console_layout, console_snapshot, followup_clock, mail_send, public_packets, public_updates
 from .outcomes.reading import esc
 
 
@@ -9,7 +9,8 @@ def _row(label, value):
     return '<dt>%s</dt><dd>%s</dd>' % (esc(label), esc(value))
 
 
-def render(project, send_config=None, drafts_config=None):
+def render(project, send_config=None, drafts_config=None, source=None):
+    source = source or console_snapshot.LiveSource(project)
     out = ['<h1>Settings</h1><p>Read-only. Changes are owner-only steps outside this page.</p>']
     config = None
     if send_config is None:
@@ -63,11 +64,11 @@ def render(project, send_config=None, drafts_config=None):
                                     effective['notice_after_days'])) + '</tr>')
     out.append('</table><p>Edit <code>followup-settings.json</code> (owner-only); '
                '<code>draft</code> makes reminder drafts, there is no send value.</p>')
-    for title, module, command, payload in (
-            ('Public status lines', public_updates, 'public-updates', 'payload'),
-            ('Packets', public_packets, 'public-packets', 'switch-payload')):
+    for title, switch_state, command, payload in (
+            ('Public status lines', source.public_updates_switch, 'public-updates', 'payload'),
+            ('Packets', source.packets_switch, 'public-packets', 'switch-payload')):
         try:
-            state = module.switch_state(project, read_only=True)
+            state = switch_state()
         except (public_updates.PublicUpdatesError, public_packets.PacketError, OSError, ValueError, KeyError, TypeError):
             state = 'unavailable (not confirmed ON or OFF)'
         out.append('<h2>%s</h2><p>Switch: %s</p><p>G uses <code>records %s off --project PROJECT</code> '
@@ -81,6 +82,7 @@ def render(project, send_config=None, drafts_config=None):
 def serve(handler):
     if handler.path != '/settings':
         return False
-    options = handler.server.options
-    handler._send(200, render(options['project'], options.get('send_config'), handler.server.mail_drafts_config))
+    options = handler.options
+    handler._send(200, render(options['project'], options.get('send_config'), handler.server.mail_drafts_config,
+                              options['source']))
     return True

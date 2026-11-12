@@ -26,7 +26,7 @@ from . import public_updates as pu
 from . import console_board as cb
 from .outcomes import release_links as _rl
 from .outcomes.reading import BANNER, esc
-from . import console_layout
+from . import console_layout, console_snapshot
 
 STUCK_HOURS = 72
 EXPIRING_DAYS = cb.EXPIRING_DAYS
@@ -103,11 +103,11 @@ def _load_health(project, target_dir, now):
         return _unavailable("health_unreadable")
 
 
-def _load_queue(project):
+def _load_queue(project, source):
     try:
-        return {"state": "ok", "rows": approval_queue.load_queue(project)}
-    except approval_queue.ApprovalQueueError:
-        return _unavailable("queue_invalid")
+        return {"state": "ok", "rows": source.queue_rows()}
+    except approval_queue.ApprovalQueueError as error:
+        return _unavailable(error.code if error.code.startswith("console_model_") else "queue_invalid")
     except OSError:
         return _unavailable("queue_io")
 
@@ -122,8 +122,10 @@ class _Files:
         return os.path.join(self.project, name)
 
 
-def _load_public(project):
+def _load_public(project, source=None):
     """Read-only fold of the public-updates journal. A missing journal is an empty one, not an error."""
+    if source is not None and source.snapshot:
+        return source.public_updates()
     try:
         project = pu._dir(project)
         files = _Files(project)
@@ -142,13 +144,15 @@ def _load_public(project):
         return _unavailable("journal_unreadable")
 
 
-def load(project, run_id, run_report_path=None, now=None):
+def load(project, run_id, run_report_path=None, now=None, *, source=None):
     now = now or datetime.now(timezone.utc)
+    source = source or console_snapshot.LiveSource(project)
     board = cb.load(project, run_id)
     target = _target(run_report_path)
     return {"run_id": run_id, "now": now, "timeline": board["timeline"], "links": board["links"], "tiers": board["tiers"],
             "runs": _load_runs(target, now), "health": _load_health(project, target, now),
-            "queue": _load_queue(project), "public": _load_public(project), "project": project}
+            "queue": _load_queue(project, source), "public": _load_public(project, source), "project": project,
+            "source": source}
 
 
 def sources(model):
@@ -317,6 +321,8 @@ def render_oversight(model):
 
 
 def _form(path, token, label, fields=()):
+    if token is None:  # a read-only export renders no form
+        return ""
     hidden = "".join('<input type="hidden" name="%s" value="%s">' % (esc(k), esc(v)) for k, v in fields)
     return ('<form method="post" action="%s"><input type="hidden" name="csrf_token" value="%s">%s'
             '<button type="submit">%s</button></form>' % (path, esc(token), hidden, esc(label)))
@@ -360,7 +366,8 @@ def render_public(model, token):
         out.append(_table("Oversight alerts", ("Code", "Agency", "When"), [(a["code"], a["agency_key"], a["at"]) for a in pub["alerts"]]))
     out.append("<h2>Approval packets awaiting G</h2>")
     try:
-        packets = public_packets.pending(model["project"], model["now"].timestamp())
+        packets = (model.get("source") or console_snapshot.LiveSource(model["project"])).packets_pending(
+            model["now"].timestamp())
         out.append(_table("Pending update packets", ("Packet", "Kind", "Agency", "Waiting"),
                           [(p["id"][:12], p["kind"], p["agency_key"], _ago(p["age_hours"])) for p in packets])
                    + '<p><a href="/packets">Review packets with G\'s signature</a></p>')
@@ -372,8 +379,8 @@ def render_public(model, token):
 # ---- panel seams -------------------------------------------------------------------------------------
 
 def _model(handler):
-    options = handler.server.options
-    return load(options["project"], options["run_id"], options.get("run_report_path"))
+    options = handler.options
+    return load(options["project"], options["run_id"], options.get("run_report_path"), source=options.get("source"))
 
 
 def serve(handler):
@@ -386,7 +393,7 @@ def serve(handler):
     except ValueError:
         handler._fail(503)
         return True
-    handler._send(200, render_oversight(model) if path.path == "/oversight" else render_public(model, handler.server.csrf_token))
+    handler._send(200, render_oversight(model) if path.path == "/oversight" else render_public(model, handler.csrf_token()))
     return True
 
 

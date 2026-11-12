@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import approval_queue, console_board, console_calendar, console_documents, console_home, console_jobs, console_manual_events, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
 from . import console_origin
-from . import console_access, console_layout, console_review, console_settings
+from . import console_access, console_export, console_layout, console_review, console_settings, console_snapshot
 from .ledger import store
 from .outcomes import unmatched
 from .outcomes.reading import BANNER, esc
@@ -46,7 +46,8 @@ SECTIONS = (("mail", "Inbox: mail received"), ("documents", "Documents"), ("stag
             ("findings", "Findings"), ("deadlines", "Deadlines"), ("drafts", "Drafts"))
 # Upstream codes are content-free; only these are ever shown.
 QUEUE_CODES = frozenset({"queue_invalid", "queue_io", "unknown_id", "invalid_transition", "approval_required",
-                         "invalid_draft", "invalid_actor", "source_invalid", "source_conflict"})
+                         "invalid_draft", "invalid_actor", "source_invalid", "source_conflict", "console_model_missing",
+                         "console_model_invalid", "console_model_mismatch"})
 MISSING_CSRF = "The form expired; reload the page and try again."
 EMPTY_FIELD = {"approve": "Paste the detached signature", "reject": "Say why you are rejecting",
                "edit": "The edited text is empty"}
@@ -212,9 +213,10 @@ def _load_kit(kit_root, day):
         return _diag("kit_unreadable")
 
 
-def _load_queue(project):
+def _load_queue(project, source=None):
+    source = source or console_snapshot.LiveSource(project)
     try:
-        rows = approval_queue.load_queue(project)
+        rows = source.queue_rows()
     except approval_queue.ApprovalQueueError as error:
         return _diag(error.code if error.code in QUEUE_CODES else "queue_invalid")
     except OSError:
@@ -225,16 +227,16 @@ def _load_queue(project):
         row["payload"] = None
         if row["status"] == "pending":
             try:
-                row["payload"] = approval_queue.approval_payload(project, row["id"]).decode("utf-8", "replace")
+                row["payload"] = source.queue_payload(row["id"]).decode("utf-8", "replace")
             except (approval_queue.ApprovalQueueError, OSError):
                 row["payload"] = None
         drafts.append(row)
     return {"state": "ok", "drafts": drafts}
 
 
-def _load_mail_drafts(project):
+def _load_mail_drafts(project, source=None):
     try:
-        return {"state": "ok", "rows": mail_drafts.placements(project)}
+        return {"state": "ok", "rows": (source or console_snapshot.LiveSource(project)).mail_drafts()}
     except mail_drafts.MailDraftError as error:
         return _diag(error.code)
     except OSError:
@@ -288,7 +290,7 @@ def check_run_id(run_id):
 
 
 def load_dashboard(project, run_id, *, run_report_path=None, kit_root=None, as_of=None, timers=DEFAULT_TIMERS,
-                   system=True, send_config=None):
+                   system=True, send_config=None, source=None):
     """Read-only. Every source fails independently; nothing is created or written."""
     check_run_id(run_id)
     now, day = parse_as_of(as_of)
@@ -303,8 +305,8 @@ def load_dashboard(project, run_id, *, run_report_path=None, kit_root=None, as_o
              "run_outputs_present": present,
              "ledger": _load_ledger(processing / "ledger.sqlite"),
              "report": _load_report(run_report_path, run_id), "received": _load_received(project, run_id),
-             "kit": _load_kit(kit_root, day), "queue": _load_queue(project),
-             "mail_drafts": _load_mail_drafts(project),
+             "kit": _load_kit(kit_root, day), "queue": _load_queue(project, source),
+             "mail_drafts": _load_mail_drafts(project, source),
              "send": mail_send.switch_state(project, send_config, now=now) if send_config else None,
              "mail_send": mail_send.results(project) if send_config else None,
              "health": _load_health(processing, now),
@@ -749,11 +751,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     sys_version = ""
     protocol_version = "HTTP/1.0"
     timeout = SOCKET_TIMEOUT
+    options = pin = None  # set per request by _begin
 
     def log_message(self, *args):  # request lines and bodies may carry record text or tokens
         pass
 
     def _send(self, status, body, location=None):
+        if self.pin is not None:  # every export page names its run and export
+            body = body.replace("</main>", '<footer class="muted"><p>Run %s, export %s, exported %s.</p></footer></main>' % (
+                esc(self.pin.run_id), esc(self.pin.name), esc(self.pin.exported_at)), 1)
         data = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -779,9 +785,31 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _host_ok(self):
         return console_origin.request_ok(self, post=False)
 
+    def _begin(self):
+        """Per-request options: in export mode a new dict pinned to one real export, so a swap of `current`
+        during the request cannot mix two exports and shared server state is never mutated."""
+        self.options, self.pin = self.server.options, None
+        pinner = self.server.pinner
+        if pinner is None:
+            return True
+        try:
+            self.pin = pinner.pin()
+        except console_snapshot.SnapshotError:
+            self._fail(503, "export_unavailable")
+            return False
+        self.options = {**self.server.options, "project": self.pin.path, "run_id": self.pin.run_id,
+                        "source": console_snapshot.SnapshotSource(self.pin)}
+        return True
+
+    def csrf_token(self):
+        """The form token; None (no form is rendered) for a read-only export."""
+        return None if self.pin is not None else self.server.csrf_token
+
     def do_GET(self):
         if not self._host_ok():
             return self._fail(403)
+        if not self._begin():
+            return
         if console_packets.serve(self):
             return
         if console_settings.serve(self):
@@ -810,13 +838,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(404)
         try:
             if route == "/next-steps":
-                model = {"queue": _load_queue(self.server.options["project"])}
+                model = {"queue": _load_queue(self.options["project"], self.options["source"])}
             else:
-                model = load_dashboard(**self.server.options)
+                model = load_dashboard(**self.options)
         except PanelError:
             return self._fail(503)
         render = render_next_steps if route == "/next-steps" else render_dashboard
-        self._send(200, render(model, csrf_token=self.server.csrf_token))
+        self._send(200, render(model, csrf_token=self.csrf_token()))
 
     def _prepare_send(self, query):
         """Review page behind Approve and send: read-only, contacts the Drafts mailbox only when sending is on."""
@@ -883,6 +911,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not console_origin.request_ok(self, post=True):
             return self._fail(403)
+        if self.server.pinner is not None and not (self.path == "/manual-event" and self.server.manual_events_dir):
+            return self._fail(503, "read_only_export")  # DFGL-16B replaces this with journaling; nothing runs before it
+        if not self._begin():
+            return
         if console_packets.post(self):
             return
         if console_oversight.post(self):  # Screen F: Undo, OFF and kill only
@@ -981,13 +1013,26 @@ def _access_cfg(public_origin, access_config):
         raise PanelError("access_config_invalid") from None
 
 
-def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
+def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
                  timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None,
-                 access_config=None, access_clock=None, manual_events_dir=None, meetings_dir=None):
-    """Unstarted loopback-only server; the caller serves and closes it."""
+                 access_config=None, access_clock=None, manual_events_dir=None, meetings_dir=None, export_root=None):
+    """Unstarted loopback-only server; the caller serves and closes it.
+
+    export_root (DFGL-16A) with run_id "auto" serves the one real export DIR/current points at, pinned per request.
+    """
     check_run_id(run_id)
     check_actor(actor)
     parse_as_of(as_of)
+    if export_root is not None:
+        try:
+            console_export._check_dir(export_root)
+        except console_export.ExportError:
+            raise PanelError("export_mode_invalid") from None
+        if project is not None or run_id != "auto" or send_config or mail_drafts_config:
+            raise PanelError("export_mode_invalid")
+        project = export_root
+    elif project is None or run_id == "auto":
+        raise PanelError("export_mode_invalid")
     if type(port) is not int or not 0 <= port <= 65535:
         raise PanelError("port_invalid")
     try:
@@ -1012,7 +1057,8 @@ def build_server(project, run_id, *, actor, port=0, run_report_path=None, kit_ro
     server.send_hooks = {}  # tests inject imap_factory / smtp_factory; production uses the real ones
     server.options = {"project": os.path.abspath(project), "run_id": run_id, "run_report_path": run_report_path,
                       "kit_root": kit_root, "as_of": as_of, "timers": tuple(timers), "system": system,
-                      "send_config": send_config}
+                      "send_config": send_config, "source": console_snapshot.LiveSource(os.path.abspath(project))}
+    server.pinner = console_snapshot.Pinner(os.path.abspath(project)) if export_root is not None else None
     return server
 
 
@@ -1022,7 +1068,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="records panel", description="Private local records dashboard; sends nothing.",
         epilog="Documentation: docs/RECORDS-ADMIN-PANEL.md")
-    parser.add_argument("--project", required=True)
+    parser.add_argument("--project")
+    parser.add_argument("--export-root", metavar="DIR",
+                        help="serve the one real export DIR/current points at (use --run-id auto); read-only, no --project")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-report")
     parser.add_argument("--kit-root")
@@ -1046,8 +1094,11 @@ def main(argv=None):
     try:
         check_run_id(args.run_id)
         parse_as_of(args.as_of)
+        if (args.project is None) == (args.export_root is None) or (args.export_root is not None and (
+                args.run_id != "auto" or args.render or args.send_config or args.mail_drafts_config)):
+            raise PanelError("export_mode_invalid")
         try:
-            console_manual_events.check_manual_events_dir(args.manual_events, args.project)
+            console_manual_events.check_manual_events_dir(args.manual_events, args.project or args.export_root)
         except ValueError:
             raise PanelError("manual_events_dir_invalid") from None
         if args.render:
@@ -1078,7 +1129,8 @@ def main(argv=None):
                               run_report_path=args.run_report, kit_root=args.kit_root, as_of=args.as_of,
                               timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config,
                               send_config=args.send_config, public_origin=args.public_origin,
-                              access_config=access, manual_events_dir=args.manual_events, meetings_dir=args.meetings_dir)
+                              access_config=access, manual_events_dir=args.manual_events, meetings_dir=args.meetings_dir,
+                              export_root=args.export_root)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required", "_unused")) else 1

@@ -25,7 +25,7 @@ from ..meetings_manual import _read_bytes, ManualMeetingError
 
 from . import console_board as cb, console_oversight as co, followup_clock as fc, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
-from . import console_layout
+from . import console_layout, console_snapshot
 
 KINDS = {"statutory_due": "Statutory due", "extension_limit": "Extension limit", "expected_window": "Agency-stated date",
          "followup_draft_due": "Follow-up draft due", "publication_pending": "Publication step",
@@ -50,18 +50,19 @@ def _row_ok(r):
     return all(r.get(k) is None or isinstance(r.get(k), dict) for k in ("deadline", "promised"))
 
 
-def load(project, run_id, now=None, *, send_config=None, meetings_dir=None):
-    model = co.load(project, run_id, None, now)
+def load(project, run_id, now=None, *, send_config=None, meetings_dir=None, source=None):
+    source = source or console_snapshot.LiveSource(project)
+    model = co.load(project, run_id, None, now, source=source)
     model["deadlines"] = cb.computed_dates(project, run_id)
     model["meetings"] = _load_meetings(meetings_dir)
     model["sends"] = {"state": "ok", "rows": [], "configured": send_config is not None}
     if send_config is not None:
         try:
-            model["sends"]["rows"] = mail_send.results(project, strict=True)
+            model["sends"]["rows"] = source.send_results()
         except (mail_send.MailSendError, OSError, ValueError, KeyError, TypeError):
             model["sends"] = co._unavailable("sends_unreadable")
     try:
-        model["packets"] = {"state": "ok", "rows": public_packets.pending(project, model["now"].timestamp())}
+        model["packets"] = {"state": "ok", "rows": source.packets_pending(model["now"].timestamp())}
     except public_packets.PacketError as error:
         model["packets"] = co._unavailable(error.code)
     except (OSError, ValueError, KeyError, TypeError):
@@ -443,10 +444,10 @@ def serve(handler):
     if first is None:
         handler._fail(400)
         return True
-    options = handler.server.options
+    options = handler.options
     try:
         model = load(options["project"], options["run_id"], now, send_config=options.get("send_config"),
-                     meetings_dir=getattr(handler.server, "meetings_dir", None))
+                     meetings_dir=getattr(handler.server, "meetings_dir", None), source=options.get("source"))
     except ValueError:
         handler._fail(503)
         return True

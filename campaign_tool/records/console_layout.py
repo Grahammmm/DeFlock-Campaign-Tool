@@ -45,6 +45,9 @@ UNAVAILABLE = {
     "queue_io": "The approval queue could not be read.",
     "sends_unreadable": "The sent-mail results could not be read.",
     "packets_unreadable": "The update packets could not be read.",
+    "console_model_missing": "The export has no copy of this data (console_model_missing); export again.",
+    "console_model_invalid": "The export's copy of this data is not valid (console_model_invalid); export again.",
+    "console_model_mismatch": "The export's copy of this data is from another project (console_model_mismatch).",
 }
 
 
