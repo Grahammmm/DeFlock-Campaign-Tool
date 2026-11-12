@@ -34,16 +34,12 @@ class FlockReviewGoldenIoTest(unittest.TestCase):
         cls.keys = len(json.loads(SAMPLE.read_text()))
 
     def damage(self, path, extra):  # as if the stage itself wrote the bad bytes: the stage cache keeps the hash it recorded
-        before, recorded, was = path.read_bytes(), GOLD.fr.fhash(path), GOLD.fr.facts_tool.projection_sha256(path)
+        before, recorded = path.read_bytes(), GOLD.fr.fhash(path)
         self.addCleanup(path.write_bytes, before)
         path.write_bytes(before + extra)
         for fr in (GOLD.fr, BATCH.gold.fr):
             real = fr.fhash
             patcher = mock.patch.object(fr, "fhash", lambda p, real=real: recorded if str(p) == str(path) else real(p))
-            patcher.start()
-            self.addCleanup(patcher.stop)
-            proj = fr.facts_tool.projection_sha256  # facts-import records a status-blind projection hash of FACTS.csv (DFGL-07e)
-            patcher = mock.patch.object(fr.facts_tool, "projection_sha256", lambda p, real=proj, was=was: was if str(p) == str(path) else real(p))
             patcher.start()
             self.addCleanup(patcher.stop)
 
