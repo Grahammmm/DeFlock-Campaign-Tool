@@ -106,7 +106,7 @@ class PortProblemTests(unittest.TestCase):
         for url, row in ((None, "source_map_url: not a public https URL"),
                          ("http://example.invalid:abc/map", "source_map_url: not a public https URL"),
                          ("https://example.invalid:abc/m ap", "source_map_url: not a public https URL"),
-                         ("https://user:pw@example.invalid:abc/map", "source_map_url: not a public https URL"),
+                         ("https://user:pw@example.invalid:abc/map", "source_map_url: not a public https URL"),  # pragma: allowlist secret -- synthetic rejected URL
                          ("https://:abc/map", "source_map_url: credentials or no host in URL")):
             with self.subTest(url=url):
                 self.assertEqual(map_controller.problems(with_url(url)), [row])
