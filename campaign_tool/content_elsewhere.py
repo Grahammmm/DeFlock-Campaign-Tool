@@ -185,11 +185,17 @@ def read_elsewhere(root, today=None, problems=None):
     A JSON object that repeats a member name (identical or conflicting values) is refused as one file-level problem."""
     path = Path(root) / "content" / FILE
     try:
-        if path.is_symlink():
-            raise ContentError(f"{FILE}: symlinks are not read")
-        if not os.path.lexists(path):
+        # Preliminary leaf classification from one lstat. Only a missing leaf/parent or a non-directory parent is
+        # optional absence; any other inspection failure is a fixed read refusal (no errno, path or strerror).
+        try:
+            mode = path.lstat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
             return None
-        if not path.is_file():
+        except OSError:
+            raise ContentError(f"{FILE}: could not be read") from None
+        if stat.S_ISLNK(mode):
+            raise ContentError(f"{FILE}: symlinks are not read")
+        if not stat.S_ISREG(mode):
             raise ContentError(f"{FILE}: must be a regular file, not a symlink or folder")
         try:
             document = _read_strict(path)
