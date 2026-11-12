@@ -49,7 +49,14 @@ class LeafAdmissionTests(unittest.TestCase):
         spy.assert_not_called()
 
     def test_equal_length_regular_replacement_refuses_before_read(self):
+        held = self.file.with_name("held.json")
+        inspected = []
+
         def swap():
+            # Hold the inspected inode via a hard link so the unlinked inode cannot be
+            # recycled for the replacement; the replacement is then a different inode.
+            inspected.append(os.stat(self.file))
+            os.link(self.file, held)
             self.file.unlink()
             self.file.write_bytes(b"inside")
 
@@ -57,6 +64,9 @@ class LeafAdmissionTests(unittest.TestCase):
         with self._after_lstat(swap), patch:
             self.assertEqual(cat._read_regular(self.public, "data/f.json"), UNREADABLE)
         spy.assert_not_called()
+        replacement = os.stat(self.file)
+        self.assertNotEqual((inspected[0].st_dev, inspected[0].st_ino), (replacement.st_dev, replacement.st_ino))
+        held.unlink()
         self.assertEqual(cat._read_regular(self.public, "data/f.json"), b"inside")
 
     def test_fifo_and_directory_replacements_are_nonblocking_refusals(self):
