@@ -72,6 +72,14 @@ def _bad(reason):
     return ValueError(f"{FILE} unreadable: {reason}")
 
 
+def _close_secondary(fd):
+    """Close a descriptor once while another error is propagating; a close OSError is subordinate and dropped."""
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
 @contextlib.contextmanager
 def _open_kit(root):
     """Yield a descriptor for the campaign's kit/ directory, or None when root or kit/ does not exist.
@@ -107,16 +115,27 @@ def _open_kit(root):
         if kit_fd is not None and not stat.S_ISDIR(os.fstat(kit_fd).st_mode):
             raise _bad("file changed or could not be read")
     except BaseException:
-        if kit_fd is not None:
-            os.close(kit_fd)
+        # Each owned descriptor gets exactly one close attempt; the admission error outranks a close OSError.
+        try:
+            if kit_fd is not None:
+                _close_secondary(kit_fd)
+        finally:
+            _close_secondary(root_fd)
         raise
-    finally:
-        os.close(root_fd)
+    try:
+        os.close(root_fd)  # consumed whether it returns or raises: never retried
+    except BaseException:
+        if kit_fd is not None:
+            _close_secondary(kit_fd)  # the root-close error wins and the body never runs
+        raise
     try:
         yield kit_fd
-    finally:
+    except BaseException:
         if kit_fd is not None:
-            os.close(kit_fd)
+            _close_secondary(kit_fd)  # the body's failure wins over a close OSError
+        raise
+    if kit_fd is not None:
+        os.close(kit_fd)  # a close-only failure after a normal body is still an error
 
 
 def _read_leaf(kit_fd, bad):
