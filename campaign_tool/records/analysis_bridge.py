@@ -8,6 +8,7 @@ writes a fact and never calls a model. See docs/RECORDS-ANALYSIS-LANE.md.
 import argparse
 import csv
 import datetime
+import importlib.util
 import json
 import os
 import re
@@ -17,8 +18,10 @@ import sys
 import tarfile
 from pathlib import Path
 
+from .. import law
 from . import analysis_config as ac
 from . import analysis_export as ae
+from . import public_packets as pp
 
 MEMBER = ae.RUN.pattern + r"/(analysis-ready\.json|EXPORT\.json|TEXTS\.csv|texts/[0-9a-f]{64}\.txt)"
 MAX = 64 << 20
@@ -335,6 +338,131 @@ def _entry(root, tool, slug, path, doc, key):
             "sources": rel(c["out"] / "inputs" / "SOURCES.csv") if stage == "fact-drafts" else None}
 
 
+PACKET_SCHEMA, DAYTIME = "records-analysis-packet-v2", re.compile(r"\d{4}-\d{2}-\d{2}T\S*Z")
+
+
+def _tool(name):
+    spec = importlib.util.spec_from_file_location("_analysis_" + name, ac.REPO / "tools" / (name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _table(path):
+    try:
+        with open(path, newline="", encoding="utf-8") as handle:
+            return list(csv.DictReader(handle))
+    except (OSError, ValueError, csv.Error):
+        return []
+
+
+def _file_sha(path):
+    return ae._sha(path.read_bytes()) if path.is_file() else "missing"
+
+
+def _law_package(root, agency):
+    """-> (retained law_package ref, loaded package or None, code or None) from the newest analysis-ready.json listing the agency."""
+    for run in reversed(_runs(root)):
+        try:
+            ready = json.loads((root / ".analysis" / "runs" / run / "analysis-ready.json").read_text(encoding="utf-8"))
+            ref = next(a["law_package"] for a in ready["agencies"] if a["agency_id"] == agency)
+            package = law.load_package(ref["id"])
+        except StopIteration:
+            continue
+        except (OSError, ValueError, KeyError, TypeError):
+            return None, None, "EVIDENCE_LAW_UNAVAILABLE"
+        return ref, package, None if package["status"] == ref["status"] else "EVIDENCE_LAW_MISMATCH"
+    return None, None, "EVIDENCE_LAW_UNAVAILABLE"
+
+
+def _hold(row, code, ids):
+    return {"finding_id": row["finding_id"], "code": code, "ids": sorted(ids)}
+
+
+def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft):
+    """-> (packet entry, None) or (None, (code, ids)); every join is frozen in the spec and nothing is invented."""
+    ids = [i for i in found["fact_ids"].split(";") if i]
+    for code, bad in (("EVIDENCE_FACT_MISSING", lambda f: f is None), ("EVIDENCE_FACT_UNREVIEWED", lambda f: f["status"] == "unreviewed"),
+                      ("EVIDENCE_FACT_DISPUTED", lambda f: f["status"] == "disputed"),
+                      ("EVIDENCE_SOURCE_UNKNOWN", lambda f: f["status"] != "checked" or f["kind"] != "record" or f["source_sha256"] not in sources)):
+        if not ids or any(bad(facts.get(i)) for i in ids):
+            return None, (code, ids)
+    docs, cites = {}, []
+    for i in ids:
+        sha = facts[i]["source_sha256"]
+        first = min(sources[sha], key=lambda r: r["received_at"])
+        if not DAYTIME.fullmatch(first["received_at"]):
+            return None, ("EVIDENCE_DATE_UNAVAILABLE", ids)
+        docs[sha] = {"sha256": sha, "date_received": first["received_at"][:10], "source_request": first["request_id"], "redaction_ids": [],
+                     "use_restriction": False}
+        cites.append({"ref": "record %s page %s (%s)" % (sha[:12], facts[i]["page"], i), "verified": True})
+    rules = {r["rule_id"]: r for r in package["rules"]}
+    rule_ids = [i for i in found["rule_ids"].split(";") if i]
+    cited = [i for i in rule_ids if package["status"] == "reviewed" and rules.get(i, {}).get("review") == "verified"]
+    cites += [{"ref": rules[i]["citation"], "verified": True} for i in cited]
+    requests = {d["source_request"] for d in docs.values()}
+    packet = {"kind": "finding", "agency_key": agency, "request_id": requests.pop() if len(requests) == 1 else "",
+              "source": "fr-" + ae._sha((slug + "\x1f" + row["finding_id"]).encode())[:24], "title": found["topic"],
+              "text": found["claim"] + ("\n\n" + draft + ". The %s law package is draft and unreviewed." % ref["id"] if package["status"] == "draft" else ""),
+              "documents": sorted(docs.values(), key=lambda d: d["sha256"]), "citations": cites, "finding_state": pp.PUBLIC_STATE}
+    if "\n" in packet["title"] or len(packet["title"]) > pp.MAX_TITLE:
+        return None, ("EVIDENCE_TITLE_INVALID", ids)
+    if not isinstance(agency, str) or pp.KEY.fullmatch(agency) is None:
+        return None, ("EVIDENCE_AGENCY_INVALID", ids)
+    try:
+        pp.clean(packet)
+    except pp.PacketError as exc:
+        return None, ("EVIDENCE_REFUSED " + exc.code, ids)
+    return {"packet": packet, "provenance": {
+        "finding_id": row["finding_id"], "fact_ids": ids, "rule_ids": cited, "withheld_rule_ids": [i for i in rule_ids if i not in cited],
+        "withheld_policy_refs": [i for i in found["policy_refs"].split(";") if i],
+        "documents": [{"sha256": d["sha256"], "run_id": sources[d["sha256"]][0]["run_id"], "received_at": min(sources[d["sha256"]], key=lambda r: r["received_at"])["received_at"],
+                       "received_at_source": min(sources[d["sha256"]], key=lambda r: r["received_at"])["received_at_source"]} for d in packet["documents"]]}}, None
+
+
+def _packets(root, slug, config):
+    """-> (outcome line, ledger fields) for one DONE agency: the PUBLIC-OK findings as finding packets in the outbox (DFGL-07g)."""
+    review, facts_tool = ac._flock_review(), _tool("flock_facts")
+    out, store = Path(config["review"]["out"]), Path(config["facts_intake"]["fact_store"])
+    run = Path(config["compare"]["f3"]["store"]) / "agencies" / slug / "runs" / config["review"]["run_date"]
+    folder = store / "agencies" / slug
+    try:
+        agency = json.loads((root / "profiles" / (slug + ".json")).read_text(encoding="utf-8")).get("records_agency_id")
+    except (OSError, ValueError, AttributeError):
+        agency = None
+    ok, findings = _table(run / "PUBLIC-OK.csv"), {r["finding_id"]: r for r in _table(run / "FINDINGS.csv")}
+    rows, _, codes = facts_tool.read_reviewed(store, slug)
+    facts, sources = {r["fact_id"]: r for r in rows}, {}
+    for r in _table(out / "inputs" / "SOURCES.csv"):
+        sources.setdefault(r["original_sha256"], []).append(r)
+    ref, package, law_code = _law_package(root, agency)
+    packets, held = [], []
+    for row in ok:
+        found = findings.get(row["finding_id"])
+        if found is None:
+            held.append(_hold(row, "EVIDENCE_FINDING_MISSING", []))
+        elif codes or law_code:
+            held.append(_hold(row, "EVIDENCE_" + codes[0] if codes else law_code, found["fact_ids"].split(";")))
+        else:
+            entry, bad = _packet_one(row, found, facts, sources, ref, package, agency, slug, _tool("flock_compare").DRAFT)
+            packets.append(entry) if entry else held.append(_hold(row, *bad))
+    paths = [run / "PUBLIC-OK.csv", run / "FINDINGS.csv", folder / "FACTS.csv", folder / "FACT-REVIEWS.csv", out / "inputs" / "SOURCES.csv"]
+    inputs = dict(zip(("public_ok", "findings", "facts", "fact_reviews", "sources"), map(_file_sha, paths)))
+    inputs["law_package"] = _file_sha(law.package_path(ref["id"])) if ref else "missing"
+    body = {"schema": PACKET_SCHEMA, "agency_id": agency, "slug": slug, "inputs": inputs, "packets": packets, "held": held}
+    key = ae._sha(json.dumps(body, sort_keys=True).encode())
+    counts = {}
+    for h in held:
+        counts[h["code"]] = counts.get(h["code"], 0) + 1
+    summary = "n=%d held=%d%s" % (len(packets), len(held), "".join(" %s=%d" % kv for kv in sorted(counts.items())))
+    name = "%s-%s.json" % (slug, key[:12])
+    last = next((e.get("key") for e in reversed(_ledger(root)) if e.get("kind") == "packet" and e.get("agency") == slug and e.get("outcome") == "PACKET_STAGED"), None)
+    outcome = "PACKET_NOTHING_OK" if not ok else "PACKET_ALL_HELD" if not packets else "PACKET_UNCHANGED" if key == last else "PACKET_STAGED"
+    if outcome == "PACKET_STAGED":
+        return outcome, key, name, summary, (review, root / ".analysis" / "packet-outbox" / name, (json.dumps(dict(body, key=key), indent=1, sort_keys=True) + "\n").encode())
+    return outcome, key, name, summary, None
+
+
 def tick_main(argv=None):
     parser = argparse.ArgumentParser(prog="records analysis-tick", description="Advance every agency review DAG to its next model wait (DFGL-07f).")
     parser.add_argument("--root", required=True)
@@ -368,6 +496,13 @@ def tick_main(argv=None):
             _log(root, kind="tick", agency=slug, outcome=outcome, **key)
         state = "" if outcome != "UNCHANGED" else " DONE" if not doc["next"] else " %s%s" % ("WAITING " if waiting else "AT ", doc["next"])
         print("%s %s%s" % (slug, outcome, state))
+        if doc and not doc["next"] and outcome[:5] != "ERROR":
+            packet, pkey, name, summary, write = _packets(root, slug, json.loads(path.read_text()))
+            if write and not args.dry_run:
+                write[0].put(write[1], write[2])
+            if not args.dry_run:
+                _log(root, kind="packet", agency=slug, outcome=packet, key=pkey, summary=summary)
+            print("%s %s%s %s" % (slug, packet, " " + name if packet == "PACKET_STAGED" else "", summary))
     if review and not args.dry_run:
         body = {"schema": "records-needs-model-v1", "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "entries": sorted(entries, key=lambda e: e["agency"])}
