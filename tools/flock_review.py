@@ -203,9 +203,9 @@ def wait_files(c, sid):  # the model-authored inputs a mark covers (set config p
     values = [s.get(k) for s in ri.get("sources") or [] if isinstance(s, dict) for k in ("text", "pdf")]
     return [P(v) for v in values + [*(ri.get("law_specs") or []), *(ri.get("policy_specs") or []), ri.get("f2_law_map"),
                                     *(ri.get("extra_specs") or [])] if S(v)]
-def out_hash(c, i, rel):  # facts-import FACTS.csv outputs are status-blind projections (a review does not change them); all else fhash
+def out_ok(c, i, rel, h):  # an output holds if its bytes are as recorded; a facts-import FACTS.csv also holds when only review statuses moved (status-blind projection)
     path = root(c, i) / rel
-    return facts_tool.projection_sha256(path) if IDS[i] == "facts-import" and re.fullmatch(r"store/agencies/[^/]+/FACTS\.csv", rel) else fhash(path)
+    return fhash(path) == h or (IDS[i] == "facts-import" and re.fullmatch(r"store/agencies/[^/]+/FACTS\.csv", rel) is not None and facts_tool.projection_sha256(path) == h)
 def txn_pending(c, sid): return sid == "facts-import" and any(c["FO"].glob("store/agencies/*/.FACTS-TXN.json"))
 def evaluate(c, state, dig, i):  # -> (state, reason, fp); dig gains the stage's output digest when done or skip
     sid, kind, deps = STAGES[i]
@@ -220,7 +220,7 @@ def evaluate(c, state, dig, i):  # -> (state, reason, fp); dig gains the stage's
     later = later_outputs(c, state, i)
     if txn_pending(c, sid): return ("stale" if rec else "pending"), "review transaction pending", fp
     if rec.get("status") == "done" and rec.get("fp") == fp \
-            and all(root(c, i) / rel in later or out_hash(c, i, rel) == h for rel, h in rec.get("outputs", {}).items()):
+            and all(root(c, i) / rel in later or out_ok(c, i, rel, h) for rel, h in rec.get("outputs", {}).items()):
         return dig.update({sid: digest(rec["outputs"])}) or ("done", None, fp)
     return ("failed" if rec.get("status") == "failed" else "stale" if rec else "pending"), None, fp
 PARTS = (("review", "review changed"), ("deps", "upstream changed"), ("external", "inputs changed"), ("config", "config changed"), ("steps", "command changed"), ("capture", "command changed"), ("scripts", "scripts changed"))
@@ -232,9 +232,9 @@ def why_not_done(c, state, dig, i, word, fp):  # read-only status reason for a f
     cur = {k: digest(v) for k, v in fingerprint_parts(c, i, dig, state).items()}
     moved = list(dict.fromkeys(text for k, text in PARTS if rec["parts"].get(k) != cur.get(k)))
     base, later = root(c, i), later_outputs(c, state, i)
-    bad = sorted(rel for rel, h in rec.get("outputs", {}).items() if base / rel not in later and out_hash(c, i, rel) != h)
+    bad = sorted(rel for rel, h in rec.get("outputs", {}).items() if base / rel not in later and not out_ok(c, i, rel, h))
     if moved or not bad: return ", ".join(moved) or "inputs or outputs changed"
-    return "output %s: %s%s" % ("missing" if out_hash(c, i, bad[0]) == "missing" else "changed", bad[0], " +%d" % (len(bad) - 1) if len(bad) > 1 else "")
+    return "output %s: %s%s" % ("missing" if fhash(base / bad[0]) == "missing" else "changed", bad[0], " +%d" % (len(bad) - 1) if len(bad) > 1 else "")
 def snap(base, out):  # before/after listing of a step root; .review and the state file are excluded
     found = {}
     for dirpath, dirnames, files in os.walk(base):
