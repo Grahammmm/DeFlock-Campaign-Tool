@@ -2,7 +2,7 @@
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
-from . import console_board as cb, console_oversight as co, console_outstanding, console_standing, public_packets
+from . import console_board as cb, console_oversight as co, console_outstanding, console_standing, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
 from . import console_calendar, console_layout, console_snapshot, followup_clock
 
