@@ -15,11 +15,12 @@ from campaign_tool import kit_fee_reply, law  # noqa: E402
 from tests import test_kit_fee_reply as base  # noqa: E402  (reuses the public synthetic fixture, unmodified)
 
 A, NAME = base.A, f"{base.A}--main-fee-2026-03-10.md"
-# sha256 of the drafts written by main before RF1440-2 (rendering must stay byte-identical)
-MAIN_SHA = "d9f4b977d6e861413a74d554e9447b8d620bb89dd94b659f5cfe853c57694a57"
-NARROW_SHA = "492a76a7126556405d7bdef048882f6e0339cdc38dd347965626e4c2b7e5417f"
-REVISED_SHA = "213cb5f81ca28e8eaf9c4b069a2ac6bd5c24787d5ff2b78519546ea98457e5c6"
-CLI_SHA = "c49bf48ebe9acf8bbe8ba58f33f9e9a3ac4a3f7f945320e8d836569541922d9b"
+# Nonsecret SHA-256 pins of synthetic drafts/CLI output from main before RF1440-2.
+# Rendering must stay byte-identical; only these exact fixture lines are annotated.
+MAIN_SHA = "d9f4b977d6e861413a74d554e9447b8d620bb89dd94b659f5cfe853c57694a57"  # pragma: allowlist secret
+NARROW_SHA = "492a76a7126556405d7bdef048882f6e0339cdc38dd347965626e4c2b7e5417f"  # pragma: allowlist secret
+REVISED_SHA = "213cb5f81ca28e8eaf9c4b069a2ac6bd5c24787d5ff2b78519546ea98457e5c6"  # pragma: allowlist secret
+CLI_SHA = "c49bf48ebe9acf8bbe8ba58f33f9e9a3ac4a3f7f945320e8d836569541922d9b"  # pragma: allowlist secret
 
 
 def fds():
