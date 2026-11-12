@@ -54,7 +54,9 @@ def jurisdiction(root):
         cfg = read_config(root)
     except RecursionError:  # the JSON parser's own nesting limit; fixed text, no parser message or config value
         raise ContentError(TOO_DEEP_CONFIG) from None
-    except (OSError, ValueError) as exc:
+    except OSError:  # read-stage failure after admission (denied, I/O, vanished): fixed text, no path or system error
+        raise ContentError(UNUSABLE_CONFIG) from None
+    except ValueError as exc:
         raise ContentError(f"campaign.json: {exc}") from None
     return str(cfg.get("country", "US")).lower() + "-" + cfg["state"].lower()
 
