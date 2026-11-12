@@ -124,3 +124,26 @@ records analysis-tick --root R [--max-agencies N=20] [--dry-run]
   `verify_family` (provider of the `verify` mark, for `f4` only), `input_fp`, `wait_files` (relative to the root when inside it),
   `config`, `sources` (SOURCES.csv, for `fact-drafts` only). Slugs, stage ids, families, hashes and paths only; never record text.
   `flock_review.py mark` refuses a `verify`/`f4` mark from the author's family (exit 3), so that wait stays open.
+
+## Finding packets in the host outbox (DFGL-07g)
+
+After an agency's tick outcome leaves the DAG at `DONE` (also on an `UNCHANGED` tick), `analysis-tick` rebuilds that agency's packets every cycle
+and prints one `<slug> PACKET_*` line (and one `kind: packet` ledger line) holding ids, codes and counts only:
+
+- **Joins.** Each `PUBLIC-OK.csv` row is joined by `finding_id` to the F3 run's `FINDINGS.csv`. Facts are read once with
+  `flock_facts.read_reviewed` (shared lock): a pending journal holds every finding `EVIDENCE_REVIEW_TXN_PENDING`, an invalid or raw-edited review
+  log `EVIDENCE_REVIEW_STATE_INVALID`. A cited fact must exist (`EVIDENCE_FACT_MISSING`), be `checked` (`EVIDENCE_FACT_UNREVIEWED`,
+  `EVIDENCE_FACT_DISPUTED`) and be a `record` whose `source_sha256` is in `SOURCES.csv` (`EVIDENCE_SOURCE_UNKNOWN`).
+- **Documents.** One per cited source sha; `date_received` is the first 10 characters of the earliest `received_at` (not `YYYY-MM-DDT…Z` →
+  `EVIDENCE_DATE_UNAVAILABLE`; never a file or run time). `request_id` is the common `request_id`, else empty. Provenance `run_id`,
+  `received_at` and `received_at_source` all come from that same earliest row.
+- **Law.** The newest retained `analysis-ready.json` listing the agency names the package (a run with no `analysis-ready.json` is skipped; an unreadable one is `EVIDENCE_LAW_UNAVAILABLE`); `campaign_tool.law.load_package` must report the same
+  status (`EVIDENCE_LAW_UNAVAILABLE`, `EVIDENCE_LAW_MISMATCH`). Citations (all `verified`) are one per checked fact plus the citation of each
+  `verified` rule of a `reviewed` package; every other rule id and every policy ref goes to `provenance.withheld_*`. A draft package adds the
+  `Research draft - not legal advice. The <id> law package is draft and unreviewed.` note to the text.
+- **Pre-validation.** Each packet passes `public_packets.clean` unchanged (`EVIDENCE_REFUSED <code>`, `EVIDENCE_TITLE_INVALID`,
+  `EVIDENCE_AGENCY_INVALID`); the text is never rewritten. Nothing here approves or publishes: G's signature remains the only approval.
+- **Outbox.** `.analysis/packet-outbox/<slug>-<key[:12]>.json` (0600, atomic, schema `records-analysis-packet-v2`: `agency_id`, `slug`, `key`,
+  `inputs` hashes, `packets[]` of `{packet, provenance}`, `held[]` of `{finding_id, code, ids}`), written only when `packets` is non-empty and
+  the key is new. Outcomes: `PACKET_STAGED <file> n=<packets> held=<held> <code>=<n>…`, `PACKET_UNCHANGED`, `PACKET_NOTHING_OK`, `PACKET_ALL_HELD`.
+  `--dry-run` computes and prints but writes no file and no ledger line.
