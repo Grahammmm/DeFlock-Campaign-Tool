@@ -31,6 +31,12 @@ def _date(value):
         return None
 
 
+def _correction_day(correction):
+    """Calendar day of a loaded correction. The content loader admits dates with strptime %Y-%m-%d (so 2026-3-5 is
+    valid); compare days, never the strings. Comparison only: the stored string is what gets displayed."""
+    return datetime.strptime(correction["date"], "%Y-%m-%d").date()
+
+
 def _path(root):
     private = Path(root) / "private"
     if os.path.islink(private) or not private.is_dir():
@@ -198,7 +204,8 @@ def decide(root, request_id, decision, on, note, today=None):
             raise ValueError(f"--on {on} is before the request was received ({request['received_on']})")
         if decision == "accepted":
             finding = _published(root, request["finding_id"])
-            if not any(c["date"] >= request["received_on"] for c in finding["corrections"]):
+            received = date.fromisoformat(request["received_on"])
+            if not any(_correction_day(c) >= received for c in finding["corrections"]):
                 raise ValueError("accept only after recording the correction: finding correct "
                                  f"{request['finding_id']} --date D --note T (dated {request['received_on']} or later)")
         request.update(state=decision, decided_on=day.isoformat(), note=note)
@@ -330,8 +337,9 @@ def _render_reply(request, finding, base):
         lines += [f"We received your correction request about this finding on {request['received_on']}. "
                   "It is being reviewed, and we will write again when a decision has been recorded."]
     elif state == "accepted":
+        window = date.fromisoformat(request["received_on"]), date.fromisoformat(request["decided_on"])
         matches = [c["date"] for c in finding["corrections"]
-                   if request["received_on"] <= c["date"] <= request["decided_on"]] if finding else []
+                   if window[0] <= _correction_day(c) <= window[1]] if finding else []
         lines += ["We accepted your correction request about this finding.", "",
                   f"Received on: {request['received_on']}", f"Decision date: {request['decided_on']}",
                   "Correction date: " + (matches[0] if len(matches) == 1 else "[EDIT ME: confirm the correction date]"),

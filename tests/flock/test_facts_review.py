@@ -191,8 +191,9 @@ class FactsReviewTest(unittest.TestCase):
         self.assertEqual(self.refused([self.a]), ["agencies/alpha/FACTS.csv: is a symlink; refusing"])
 
     def test_crash_mid_write_leaves_both_files_as_before(self):
+        """An error before the journal commit leaves both files as before; one after it is rolled forward (test_facts_review_txn)."""
         self.assertEqual(self.review([self.a])[0], 0)
-        for fail_on, log_present in ((1, True), (2, True), (2, False)):
+        for fail_on, log_present in ((1, True), (1, False)):
             with self.subTest(fail_on=fail_on, log_present=log_present):
                 if not log_present:
                     self.log.unlink()
