@@ -203,8 +203,9 @@ class ReaderTests(Base):
         with self.assertRaises(ValueError) as caught:
             site_check.read_weights(fifo)
         self.assertEqual(str(caught.exception), size_error(fifo))
-        with self.assertRaises(IsADirectoryError):  # unchanged: a directory is not normalised by this repair
+        with self.assertRaises(ValueError) as caught:  # RF1651-5: a directory's post-open fdopen failure is now controlled
             site_check.read_weights(folder)
+        self.assertEqual(str(caught.exception), f"--weights-baseline {folder}: cannot be read (filesystem error)")
         for path in (link, self.tmp / "absent.json"):
             with self.assertRaises(ValueError) as caught:
                 site_check.read_weights(path)
