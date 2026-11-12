@@ -178,11 +178,16 @@ def check_reviews(log, facts):
         return []
     with open(log, encoding="utf-8-sig", newline="") as handle:
         records = list(csv.reader(handle))
+    return review_errors(records, [r for _, r in load(facts, facts.parent.name)[1]])
+
+
+def review_errors(records, rows):
+    """The check_reviews rules over parsed log records and the FACTS rows they sit beside (also run on a candidate pair)."""
     if not records or records[0] not in (REVIEW_HEAD, REVIEW_HEAD_V2):
         return ["reviews row 1: header is not FACT-REVIEWS.csv v1"]
     head = records[0]
     v2, last, errors = head == REVIEW_HEAD_V2, {}, []
-    cur = {(r["fact_id"], evidence_fp(r) if v2 else None): r for _, r in load(facts, facts.parent.name)[1]}
+    cur = {(r["fact_id"], evidence_fp(r) if v2 else None): r for r in rows}
     for n, rec in ((n, r) for n, r in enumerate(records[1:], 2) if r):
         if len(rec) != len(head):
             errors.append("reviews row %d: columns have the wrong count" % n)
@@ -744,8 +749,13 @@ def reconcile(args):
     if any(p == REPO or REPO in p.parents for p in (store, sup)):
         return fail(["store inside repository"])
     path = src / "agencies" / slug / "FACTS.csv"
-    fresh = [r for _, r in load(path, slug)[1]] if path.is_file() and not any(os.path.islink(p) for p in (src / "agencies", path.parent, path)) else None
-    if fresh is None or check_file(path, slug) or any(r["status"] != "unreviewed" for r in fresh):
+    try:  # unreadable staging (bad UTF-8, CSV error, I/O) is the staging refusal, not the generic io handler's
+        fresh = [r for _, r in load(path, slug)[1]] if path.is_file() and not any(os.path.islink(p) for p in (src / "agencies", path.parent, path)) else None
+        if fresh is None or check_file(path, slug) or any(r["status"] != "unreviewed" for r in fresh):
+            fresh = None
+    except (OSError, UnicodeDecodeError, csv.Error):
+        fresh = None
+    if fresh is None:
         return print("RECONCILE_STAGING_INVALID") or 1
     store.mkdir(mode=0o700, parents=True, exist_ok=True)  # the staging plan found no error: only now may a missing store appear
     with store_lock(store):
@@ -786,6 +796,8 @@ def reconcile_locked(store, slug, sup, fresh):
         buf = io.StringIO()
         csv.writer(buf, lineterminator="\n").writerows([REVIEW_HEAD_V2] + [[r[k] for k in REVIEW_HEAD_V2] for r in recs])
         log_bytes = buf.getvalue().encode()
+    if got and review_errors(list(csv.reader(io.StringIO(log_bytes.decode("utf-8-sig")))), rows):  # history bound anew to the merged rows must pass the full check
+        return bad()
     if have:  # keep the previous pair before replacing it
         stamp, n = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"), 0
         while True:

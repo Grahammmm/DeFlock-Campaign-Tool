@@ -209,6 +209,25 @@ class ReconcileTest(unittest.TestCase):
             os.write(release[1], b"x")
             os.waitpid(pid, 0)
 
+    def test_unreadable_staging_refuses_as_a_staging_error_with_nothing_written(self):
+        stage = self.stage()
+        path = stage / "agencies" / "alpha" / "FACTS.csv"
+        good = path.read_bytes()
+        for name, data in (("invalid utf-8", good + b"\xff\xfe\n"), ("csv error", good + b'"' + b"x" * (csv.field_size_limit() + 1) + b'"\n')):
+            with self.subTest(name):
+                path.write_bytes(data)
+                self.refused(stage, "RECONCILE_STAGING_INVALID")
+
+    def test_a_history_row_that_would_bind_to_a_reviewer_who_added_it_refuses_and_keeps_the_pair(self):
+        self.review(1)
+        stage = self.stage({**Q, 1: "a changed quote"})
+        (fp,) = [facts.evidence_fp(r) for _, r in facts.load(stage / "agencies" / "alpha" / "FACTS.csv", "alpha")[1] if r["page"] == "1"]
+        # unbound against the active rows (their evidence differs), so the active pair is still valid; bound by the merge, reviewer == added_by
+        self.log.write_text(self.log.read_text() + "%s,unreviewed,checked,ana,%s,,%s\n" % (self.ids[1], ADDED, fp))
+        self.assertEqual(self.check(self.store), (0, []))
+        self.refused(stage)
+        self.assertEqual(self.check(self.store), (0, []))
+
     def test_a_staging_projection_with_a_status_or_a_link_refuses_and_other_verbs_refuse_its_options(self):
         stage = self.stage()
         path = stage / "agencies" / "alpha" / "FACTS.csv"
