@@ -90,14 +90,23 @@ class WriteRowsRollbackTests(unittest.TestCase):
             return fd
 
         error = Boom("fstat-fault")
+        real_fstat = os.fstat
+
+        def regular_fault(fd):  # only the created CSV's identity capture fails; directory fstats stay real
+            info = real_fstat(fd)
+            if stat.S_ISREG(info.st_mode):
+                raise error
+            return info
+
         with mock.patch.object(os, "open", side_effect=tracking_open), \
-                mock.patch.object(os, "fstat", side_effect=error):
+                mock.patch.object(os, "fstat", side_effect=regular_fault):
             with self.assertRaises(Boom) as ctx:
                 kit_export.write_rows(self.target, "t.csv", ("a",), [["1"]])
         self.assertIs(ctx.exception, error)
         self.assertTrue(self.target.exists())  # ownership unknown: left in place
-        with self.assertRaises(OSError):
-            os.fstat(opened[0])  # descriptor was closed
+        for fd in opened:
+            with self.assertRaises(OSError):
+                os.fstat(fd)  # every acquired descriptor was closed
 
     def test_base_exception_unwinds_and_later_write_succeeds(self):
         class Stop(BaseException):
