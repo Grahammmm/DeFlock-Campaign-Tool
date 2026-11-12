@@ -607,3 +607,30 @@ that attended step.
   `fidelity_hold_requires_visual_comparison`, `local_ocr_timeout`,
   `local_ocr_dependency_or_output_missing`. Requeueing a refusal, repairing host permissions,
   changing evidence limits and replaying the live backlog are separate attended steps.
+
+## Analysis cycle (DFGL-20s, off by default)
+
+`run-analysis.sh` runs one bounded analysis cycle every 15 minutes (`records-analysis.timer`). It renders only when
+`render.py` gets `--analysis-root ROOT` and the `CONTAINER_USER`, `CONTAINER_ENGINE_DIR`, `CONTAINER_PYTHON` and
+`CONTAINER_PROJECT_DIR` values; without it every other rendered file is unchanged.
+
+Each cycle does nothing (logs `ANALYSIS_LANE_OFF`, no docker call) unless the operator created `ROOT/.analysis/LANE-ON`.
+LANE-ON is the operator's switch; this kit never creates it. The cycle holds its own `ROOT/.analysis/analysis.lock` and
+never takes the records run lock, so a records arrival is never stranded. With the lane on it:
+
+1. exports up to 5 settled runs after the receipt cursor (`analysis-export --after`, container, read-only) and receives them;
+2. replays every pending run x agency pair from `.analysis/runs/` (a repaired profile or config is picked up here);
+3. ticks every review DAG (`analysis-tick`), which also resumes after a model card's `flock_review mark`;
+4. imports `.analysis/packet-outbox/*.json` as pending packets (`analysis-packets-import --from-tar -`) and moves them to `sent/`.
+
+Step output goes to `ROOT/.analysis/cycle.log`; stdout is one status line. Exit codes: 0 ok, 20 export, 21 receive/sync
+(including a still-pending pair), 22 tick, 23 import, 75 docker not ready, 78 preflight. A failed step does not stop the
+later ones.
+
+Operator install lines (OP-6; nothing here installs or enables anything):
+
+    python3 deploy/records-runtime/render.py --values VALUES.json --out DIR --analysis-root ROOT --target NAME=TEMPLATE
+    install -m 0700 DIR/run-analysis.sh RUNTIME_DIR/run-analysis.sh
+    install -m 0600 DIR/records-analysis.service DIR/records-analysis.timer ~/.config/systemd/user/
+    systemctl --user daemon-reload && systemctl --user enable --now records-analysis.timer
+    touch ROOT/.analysis/LANE-ON    # only when the lane is approved to run
