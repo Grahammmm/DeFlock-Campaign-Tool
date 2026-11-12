@@ -62,9 +62,11 @@ echo "$*" >>"$STATE/calls"
 hang() {
   # Simulate an unresponsive daemon: a child that outlives a naive kill.
   [ -e "$STATE/hang-$1" ] || return 0
-  sleep 30 & echo $! >"$STATE/hang-pid"; wait; exit 0
+  secs=$(cat "$STATE/hang-$1")
+  sleep "${secs:-30}" & echo $! >"$STATE/hang-pid"; wait; exit 0
 }
 case "$1" in
+  exec) hang exec; exit 2;;
   info)
     hang info
     n=$(cat "$STATE/info-count" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" >"$STATE/info-count"
@@ -277,6 +279,67 @@ class RuntimeHarness(unittest.TestCase):
         self.assertEqual((data["kind"], data["reason"], data["run_exit_code"], data["run_id"]),
                          ("notify_failed", reason, exit_code, report["run_id"]))
         self.assertIn(f"notify: FAILED reason={reason}", self.log())
+
+
+class ConsoleExportStepTests(RuntimeHarness):
+    CE = {"CONTAINER_USER": "records", "CONTAINER_ENGINE_DIR": "/srv/engine",
+          "CONTAINER_PYTHON": "/usr/bin/python3", "CONTAINER_PROJECT_DIR": "/srv/project"}
+
+    def test_unset_renders_script_without_the_post_step(self):
+        text = self.script.read_text()
+        template = (RUNTIME / "run-records.sh.in").read_text()
+        self.assertNotIn("console", text.lower())
+        self.assertNotIn("CONSOLE-EXPORT", text)
+        self.assertEqual(len(text.splitlines()), len(template.splitlines()) - len(list(self._block(template))))
+
+    @staticmethod
+    def _block(template):
+        inside = False
+        for line in template.splitlines():
+            inside = inside or line.startswith("# CONSOLE-EXPORT-BEGIN")
+            if inside:
+                yield line
+            inside = inside and not line.startswith("# CONSOLE-EXPORT-END")
+
+    def test_failing_post_step_is_logged_and_never_changes_the_exit_status(self):
+        base = self.run_script("--target", "TEST")
+        self.render(CONSOLE_EXPORT_DIR=str(self.tmp / "missing-export-dir"), **self.CE)
+        self.assertIn("console_export_step", self.script.read_text())
+        result = self.run_script("--target", "TEST")
+        self.assertEqual(result.returncode, base.returncode, result.stderr)
+        log = (self.target_dir / "run-records.log").read_text()
+        self.assertIn("console export FAILED", log)
+        self.assertIn("previous export kept", log)
+        self.assertTrue(any(call.startswith("exec ") and "console-export" in call for call in self.calls()))
+
+    # Near-deadline regression (codex-reviewer RETURN t_b99b1f24): the post-step spends only time
+    # inside RUN_BUDGET_SECONDS, never the notify/backstop reserve that check_budget keeps inside
+    # the unchanged 47-minute unit timeout, so systemd can never kill the unit during the export.
+    def test_run_that_reaches_the_deadline_skips_the_post_step(self):
+        self.render(RUN_BUDGET_SECONDS="24", DOCKER_WAIT_DEADLINE="2",
+                    CONSOLE_EXPORT_DIR=str(self.tmp / "export"), **self.CE)
+        self.stage_spec("delta").update(sleep_seconds=60)
+        self.write_fixture()
+        result = self.run_script()
+        self.assertEqual(result.returncode, 11, result.stderr)
+        self.assertEqual(self.stage(self.report(), "delta")["error_code"], "RUN_DEADLINE_REACHED")
+        self.assertRegex(self.log(), r"console export SKIPPED: -?[0-9]+s left before the invocation deadline; "
+                                     r"previous export kept; run status unchanged")
+        self.assertFalse(any("console-export" in call for call in self.calls()))
+
+    def test_hung_post_step_ends_by_the_invocation_deadline(self):
+        base = self.run_script()
+        (self.state / "hang-exec").write_text("120\n")  # longer than the 90 s harness timeout
+        self.render(RUN_BUDGET_SECONDS="30", DOCKER_WAIT_DEADLINE="2",
+                    CONSOLE_EXPORT_DIR=str(self.tmp / "export"), **self.CE)
+        started = time.monotonic()
+        result = self.run_script()
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, base.returncode, result.stderr)
+        self.assertLess(elapsed, 30 + 2 + 5)  # RUN_BUDGET_SECONDS + KILL_AFTER + slack, not 300 s
+        self.assertRegex(self.log(), r"console export FAILED rc=[1-9][0-9]*")
+        self.assertTrue(any(call.startswith("exec ") and "console-export" in call for call in self.calls()))
+        self.assert_hang_child_gone()
 
 
 class OrchestratedRunTests(RuntimeHarness):

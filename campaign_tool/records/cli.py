@@ -5,6 +5,8 @@ import os
 import sys
 
 COMMANDS = {
+    "console-export": ("console_export", "export_main"),
+    "console-import": ("console_export", "import_main"),
     "denials": ("denial_log", "main"),
     "deadlines": ("deadline_calc", "main"),
     "followup-engine": ("followup_engine", "main"),

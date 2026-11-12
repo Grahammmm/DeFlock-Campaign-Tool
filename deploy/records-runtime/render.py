@@ -53,6 +53,8 @@ TEMPLATES = (("run-records.sh.in", "run-records.sh", 0o700),
              ("records-arrival.service.in", "records-arrival.service", 0o600),
              ("records-health.service.in", "records-health.service", 0o600),
              ("records-health.timer.in", "records-health.timer", 0o600))
+# Marker lines that bracket the optional console-export post-step in run-records.sh.in.
+CONSOLE_BLOCK = re.compile(r"^# CONSOLE-EXPORT-BEGIN.*?^# CONSOLE-EXPORT-END\n", re.MULTILINE | re.DOTALL)
 # Rendered only when BACKUP_DIR (the backup directory as mounted in the container) is given.
 BACKUP_CHECK_TEMPLATES = (("records-backup-check.service.in", "records-backup-check.service", 0o600),
                           ("records-backup-check.timer.in", "records-backup-check.timer", 0o600))
@@ -64,7 +66,7 @@ ANALYSIS_TEMPLATES = (("run-analysis.sh.in", "run-analysis.sh", 0o700),
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
 ABSOLUTE = {"ANALYSIS_ROOT", "BACKUP_DIR", "ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
-            "NOTIFY_PY", "NOTIFY_ENV_FILE", "RUN_RECORDS_SH", "STUB_FIXTURE", "RECORDS_DROP_DIR",
+            "NOTIFY_PY", "NOTIFY_ENV_FILE", "CONSOLE_EXPORT_DIR", "RUN_RECORDS_SH", "STUB_FIXTURE", "RECORDS_DROP_DIR",
             # Host path of the records root holding ledger.sqlite (health check only).
             "RECORDS_ROOT",
             # Container stage plans (targets/test-container.json.in,
@@ -300,6 +302,8 @@ def render(values, targets, out):
         extra = {"TIMER_ONCALENDAR": "\n".join("OnCalendar=" + line for line in timer.on_calendar()),
                  "HEALTH_DAYS": timer.days_spec, "HEALTH_TIMES": timer.times_spec,
                  "HEALTH_TIMEZONE": timer.timezone}
+        if "CONSOLE_EXPORT_DIR" not in values:  # the post-step exists only when its target is given
+            text = CONSOLE_BLOCK.sub("", text)
         files.append((output, substitute(text, {**values, **extra}, template), mode))
     for template, output, mode in BACKUP_CHECK_TEMPLATES if "BACKUP_DIR" in values else ():
         text = (HERE / template).read_text(encoding="utf-8")
