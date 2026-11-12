@@ -4,6 +4,7 @@ redirect points at, and validate the optional ``site.json.unlinked_assets_ok`` a
 Pure functions: no filesystem traversal (beyond the existence check of ``validate_unlinked_assets_ok``), no network, no
 writes. Nothing is deleted, moved or left uncopied; an acknowledgement is publication intent, not a privacy review.
 """
+import stat
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -47,12 +48,26 @@ def validate_unlinked_assets_ok(value, assets_dir=None):
         seen.add(entry)
         if assets_dir is None:
             continue
-        chain = [Path(assets_dir).joinpath(*parts[:depth]) for depth in range(len(parts) + 1)]
-        if any(step.is_symlink() for step in chain):
-            raise ContentError(f"{label}: is or sits under a symlink; use a regular file in content/public-assets/")
-        if not chain[-1].is_file():
-            raise ContentError(f"{label}: file not found in content/public-assets/")
+        _inspect_chain(label, Path(assets_dir), parts)
     return list(value)
+
+
+def _inspect_chain(label, assets_dir, parts):
+    """Walk assets_dir -> leaf with lstat, stopping at the first failed component. Only metadata is read: no file is
+    opened or resolved. An inspection failure other than 'absent' becomes a fixed refusal that carries no path,
+    errno text or exception context; it is not a readability policy (a regular leaf whose metadata is visible passes)."""
+    for depth in range(len(parts) + 1):
+        step = assets_dir.joinpath(*parts[:depth])
+        try:
+            mode = step.lstat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            raise ContentError(f"{label}: file not found in content/public-assets/") from None
+        except OSError:
+            raise ContentError(f"{label}: cannot inspect file in content/public-assets/") from None
+        if stat.S_ISLNK(mode):
+            raise ContentError(f"{label}: is or sits under a symlink; use a regular file in content/public-assets/")
+    if not stat.S_ISREG(mode):
+        raise ContentError(f"{label}: file not found in content/public-assets/")
 
 
 def local_path(url, page, base_url=None):
