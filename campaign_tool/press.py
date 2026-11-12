@@ -160,7 +160,10 @@ def letter_word_count(text):
 def _finding_paragraph(finding, base):
     parts = [' '.join(finding['summary'].split()), f"(finding {finding['id']})"]
     if finding['corrections']:
-        parts.append(f"Corrected {max(c['date'] for c in finding['corrections'])}.")
+        # Admitted dates may be unpadded (content parses them with strptime), so choose the latest calendar day, not
+        # the lexically greatest spelling, and show it as padded ISO text.
+        latest = max(datetime.strptime(c['date'], '%Y-%m-%d').date() for c in finding['corrections'])
+        parts.append(f'Corrected {latest.isoformat()}.')
     if base:
         parts.append(f"{base.rstrip('/')}/findings/{finding['slug']}.html")
     return ' '.join(parts)
