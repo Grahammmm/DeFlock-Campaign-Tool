@@ -53,6 +53,7 @@ COMMANDS = {
     "schedule": ("schedule", "schedule_main"),
     "analysis-config": ("analysis_config", "main"),
     "analysis-export": ("analysis_export", "main"),
+    "analysis-packets-import": ("analysis_packets", "main"),
     "analysis-sync": ("analysis_bridge", "sync_main"),
     "analysis-tick": ("analysis_bridge", "tick_main"),
     "backup": ("records_backup", "backup_main"),

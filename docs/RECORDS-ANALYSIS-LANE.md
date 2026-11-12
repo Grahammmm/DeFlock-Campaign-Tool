@@ -147,3 +147,14 @@ and prints one `<slug> PACKET_*` line (and one `kind: packet` ledger line) holdi
   `inputs` hashes, `packets[]` of `{packet, provenance}`, `held[]` of `{finding_id, code, ids}`), written only when `packets` is non-empty and
   the key is new. Outcomes: `PACKET_STAGED <file> n=<packets> held=<held> <code>=<n>…`, `PACKET_UNCHANGED`, `PACKET_NOTHING_OK`, `PACKET_ALL_HELD`.
   `--dry-run` computes and prints but writes no file and no ledger line.
+
+## Importing outbox packets (DFGL-07h, container side)
+`records analysis-packets-import --project P (--from DIR | --from-tar -)` reads DFGL-07g outbox files (regular files named `<slug>-<12 hex>.json`, ≤ 1 MiB; anything else is `IMPORT_INVALID`)
+and calls only `public_packets.propose`; it never calls `approve`, `decide`, `write_change`, `enable`, `turn_off` or `init`, so each verified finding waits as one
+`proposed` packet for G's signed approval (and G's switch).
+
+- **File checks.** Schema `records-analysis-packet-v2`, the `key` recomputed from the body and equal, the file name carrying `key[:12]`; otherwise `IMPORT_INVALID`, exit 1, nothing from that file proposed.
+- **Packet checks (before any write).** `packet.agency_key` equals the file `agency_id` and `kind` is `finding` (`IMPORT_IDENTITY_MISMATCH`); each `packet.documents[i]` matches `provenance.documents[i]`; the live project's
+  `run-outputs/<run_id>/outcomes/received-items.json` (read-only) has an item with that `original_sha256` and the packet's agency (`IMPORT_DOCUMENT_UNKNOWN`) whose `received_at[:10]` equals `date_received` (`IMPORT_DATE_MISMATCH`, also for a null time). The host's claims are never trusted.
+- **Receipt.** `<P>/analysis-packets-imported.jsonl` (0600, append-only), one `{key, source, result}` line per packet; result is `proposed r<rev>`, `duplicate`, `IMPORT_*` or `REFUSED <PacketError code>`. A `(key, source)` already there prints `ALREADY` and is skipped, so a re-sent file is a no-op and a refused packet waits for a new key.
+- **Output and exit.** Codes and counts only. Exit 0 when every file parsed (refusals are outcomes), 1 on `IMPORT_INVALID`, 75 on `journal_busy` (no receipt, retry later). DFGL-20s moves an outbox file to `packet-outbox/sent/` only after exit 0.
