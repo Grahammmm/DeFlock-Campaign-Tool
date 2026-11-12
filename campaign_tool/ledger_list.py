@@ -138,6 +138,9 @@ def list_receipts(root, source_id=None, since=None, not_in_sources=False):
             "JOIN objects o ON o.sha256 = r.object_sha256"
             + (" WHERE " + " AND ".join(clauses) if clauses else "")
             + " ORDER BY r.received_at, r.receipt_id", params).fetchall()
+    except sqlite3.Error:
+        # Decoding invalid UTF-8 stored as TEXT raises an error quoting the private value; never echo it.
+        raise ValueError("private/ledger.sqlite is not a readable ledger") from None
     finally:
         db.close()
     # SQLite lets BLOB/NULL/REAL values into these non-STRICT columns; the projected fields are emitted
