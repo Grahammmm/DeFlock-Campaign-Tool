@@ -203,7 +203,7 @@ class ReaderTests(Base):
         with self.assertRaises(ValueError) as caught:
             site_check.read_weights(fifo)
         self.assertEqual(str(caught.exception), size_error(fifo))
-        with self.assertRaises(ValueError) as caught:  # RF1651-5: a directory's post-open fdopen failure is now controlled
+        with self.assertRaises(ValueError) as caught:  # RF1651-5 (SCOPE-3: stale assertion invalidated by this PR): a directory's post-open fdopen failure is now controlled
             site_check.read_weights(folder)
         self.assertEqual(str(caught.exception), f"--weights-baseline {folder}: cannot be read (filesystem error)")
         for path in (link, self.tmp / "absent.json"):
