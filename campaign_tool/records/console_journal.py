@@ -178,7 +178,7 @@ def packet(handler, field, ident, revision, value):
         return handler._fail(403) or False
     if row is None or row["revision"] != revision or (approve and (row["status"] != "proposed" or expired)):
         return handler._fail(409) or False
-    if not approve and not (0 < len(value.strip()) <= 500 and all(ord(c) >= 32 and ord(c) != 127 for c in value)):
+    if not approve and not (0 < len(value.strip()) <= 500 and len(value) <= 500 and all(ord(c) >= 32 and ord(c) != 127 for c in value)):
         return handler._fail(400) or False
     return _record(handler, "packet_" + ("approve" if approve else "reject"), ident, revision, value)
 

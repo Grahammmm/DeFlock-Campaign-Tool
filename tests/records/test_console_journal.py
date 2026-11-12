@@ -152,6 +152,8 @@ class Decisions(Journal):
                 ("/packets/approve", {"id": self.proposed, "revision": "9", "signature": "SIG"}, 409),
                 ("/packets/approve", {"id": "0" * 16, "revision": "0", "signature": "SIG"}, 409),
                 ("/packets/reject", {"id": self.proposed, "revision": rev, "reason": "a\x07"}, 400),
+                ("/packets/reject", {"id": self.proposed, "revision": rev, "reason": " " * 501 + "x"}, 400),
+                ("/packets/reject", {"id": self.proposed, "revision": rev, "reason": "x" * 501}, 400),
                 ("/public-updates/retract", {"id": "1" * 16}, 409),
                 ("/public-updates/retract", {"id": "xyz"}, 400),
                 ("/public-updates/retract", {"id": LINE}, 303),
