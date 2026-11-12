@@ -193,3 +193,34 @@ DFGL-16A), never at `DIR/current` with `--project`. The existing journal writers
 into `console-import` after the run's report and notice, inside the run lock; a failure is logged and never changes the exit status.
 Both ends of that pipe are bounded by the invocation deadline the work stages use (at most 300 s), so the post-step never spends the
 notify/backstop reserve inside the unit timeout; a run or arrival follow-up that ends with under 10 s left skips it ("console export SKIPPED").
+
+### Serving an export (DFGL-16A)
+
+`records panel --export-root DIR --run-id auto --actor NAME` serves the export `DIR/current` points at; `--project` is not given.
+It is refused (`export_mode_invalid`, exit 2) with `--project`, `--run-id` other than `auto`, `--send-config`, `--mail-drafts-config` or
+`--render`, and when `DIR` is not absolute, not owner-only 0700 or not its own `realpath` (a symlink). `--manual-events DIR2` is allowed
+only when `DIR2` is disjoint from `DIR`; without it the manual-event POST is refused like every other POST.
+
+**One export per request.** Each request reads `current` once (it must be exactly `exports/<name>`), opens `DIR`, `exports`, `<name>`
+without following a symlink, and checks the export directory is owner-only and read-only (no group or other bits). `EXPORT.json` (schema,
+run id, `source_project_id`) and the sha256 of every listed file are verified once per `(device, inode, mtime)` of the export directory
+(exports are immutable) and the file set must match exactly. The request then runs on a new options dict pinned to that export (its path,
+its run id, a `SnapshotSource`), so a swap of `current` during a request cannot mix two exports, and the next request follows the new
+export without a restart. A pin that fails (a bad `EXPORT.json`, a hash mismatch, a broken link) logs `export_pin_failed: <code>` on stderr
+and keeps serving the last good pin; with none yet the page is 503 `export_unavailable`. Every page footer names the run, the export and
+its export time.
+
+**Snapshot readers.** Queue rows, pending payloads and history, packets (pending, status, payloads, switch), public updates, mail-draft
+placements and send results are read only through `console_snapshot.SnapshotSource`, which opens
+`<export>/console-model/<file>.json` with `O_NOFOLLOW` relative to the pinned directory (cap 64 MiB, strict JSON) and never locks, folds,
+verifies a signature, recomputes a project id or creates a file. A file that is missing (`console_model_missing`), invalid
+(`console_model_invalid`), bound to another project than `EXPORT.json` (`console_model_mismatch`) or exported unavailable raises the error
+class the live reader raises, so each page shows "unavailable" with the code and never an empty list or a zero. In particular an
+unavailable `sends.json` (`send_results_invalid`, `send_io`) is a `MailSendError`: the review page of an approved mail row answers 503
+and no status is built from an empty list. Live mode uses `LiveSource`, which calls the existing readers unchanged. Packet ages are the
+ages at export time.
+
+**Read-only.** An approved row's review page says "Approved by <principal>: signature verified on the live project (<id>) at export
+<time>" with the signed revision and the signature hash; pending rows show the exported payload (its `project:` line is the live project
+id). No approve, reject, edit, packet or oversight form or button is rendered, and every POST is answered 503 `read_only_export` before
+any handler or writer runs (DFGL-16B replaces this with journaling).

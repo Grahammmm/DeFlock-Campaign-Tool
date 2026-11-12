@@ -4,15 +4,18 @@ import urllib.parse
 
 from . import public_packets as pp
 from .console_oversight import _journal_actor
+from .console_snapshot import LiveSource
 from .outcomes.reading import BANNER, esc
 from . import console_layout
 
 ROUTES = {"/packets/approve": "signature", "/packets/reject": "reason"}
 
 
-def render(project, token):
-    rows = pp.pending(project)
-    switch = pp.status(project)["switch"]
+def render(project, token, source=None):
+    """token None (a read-only export) renders the packets and their exact payloads without any form."""
+    source = source or LiveSource(project)
+    rows = source.packets_pending()
+    switch = source.packets_status()["switch"]
     out = [console_layout.start("Update packets"), '<h1>Update packets</h1>',
            '<p>Packets switch: %s. Approve records G\'s signed decision only. '
            'Nothing is sent, published or written to site-changes. Writing remains a separate CLI step.</p>' % esc(switch)]
@@ -24,8 +27,8 @@ def render(project, token):
                 'id', 'kind', 'agency_key', 'request_id', 'source', 'revision', 'status',
                 'proposed_at', 'age_hours', 'expires_at'))))
         if row['status'] == 'proposed':
-            out.append('<h3>Exact signature payload</h3><pre>%s</pre>' % esc(pp.payload(project, row['id']).decode('utf-8')))
-        for path, field in ROUTES.items():
+            out.append('<h3>Exact signature payload</h3><pre>%s</pre>' % esc(source.packet_payload(row['id']).decode('utf-8')))
+        for path, field in ROUTES.items() if token is not None else ():
             if field == 'signature' and row['status'] != 'proposed':
                 continue
             out.append('<form method="post" action="%s">%s<label>%s<textarea name="%s" required></textarea></label>'
@@ -43,7 +46,7 @@ def serve(handler):
     if path.path != '/packets' or path.query:
         return False
     try:
-        page = render(handler.server.options['project'], handler.server.csrf_token)
+        page = render(handler.options['project'], handler.csrf_token(), handler.options['source'])
     except (pp.PacketError, OSError, ValueError, KeyError, TypeError):
         handler._fail(503)
     else:

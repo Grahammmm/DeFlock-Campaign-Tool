@@ -4,9 +4,11 @@ import urllib.parse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from . import approval_queue, console_layout, draft_templates, mail_drafts, mail_preview, mail_send
+from . import approval_queue, console_layout, console_snapshot, draft_templates, mail_drafts, mail_preview, mail_send
 from .outcomes.reading import esc
 from . import denial_log, denial_reply_check, followup_clock
+
+READ_ONLY = "Read-only export: decisions are unavailable here."
 
 RESIDUE = {"edit_placeholder": "[EDIT ME] placeholder left", "draft_heading": "Draft heading left",
            "draft_banner": "Draft banner left", "reviewer_notes": "Notes for the reviewer left",
@@ -22,10 +24,11 @@ def approval_label(row, switches):
     return "Approve - sending is off (%s). This marks it Approved, not sent." % mail_send.REASONS.get(reason, reason)
 
 
-def approval_status(project, row, switches):
+def approval_status(project, row, switches, source=None):
+    source = source or console_snapshot.LiveSource(project)
     if row["kind"] in draft_templates.NEXT_STEP_KINDS:
         return esc("Approved; records the decision only; nothing is posted or sent.")
-    result = next((r for r in reversed(mail_send.results(project, strict=True))
+    result = next((r for r in reversed(source.send_results())
                    if (r["queue_id"], r.get("revision")) == (row["id"], row["revision"])), {})
     if result.get("state") == "sent":
         when = datetime.fromisoformat(result["at"].replace("Z", "+00:00")).astimezone(ZoneInfo(mail_send.TZ))
@@ -33,7 +36,7 @@ def approval_status(project, row, switches):
             when.strftime("%Y-%m-%d %H:%M %Z"), str(result.get("message_id") or "")[:12]))
     if result.get("state") in ("attempt", "unknown"):
         return esc("Delivery unresolved; reconcile in the outbox before any retry")
-    placement = next((r for r in reversed(mail_drafts.placements(project))
+    placement = next((r for r in reversed(source.mail_drafts())
                       if (r["queue_id"], r["revision"]) == (row["id"], row["revision"])), {})
     if placement.get("state") not in ("placed", "found_existing"):
         return esc("Approved, not sent. Not in the Drafts mailbox yet: %s." % (
@@ -87,7 +90,7 @@ def refusal_panel(project, row, run_id):
     return "\n".join(out + ['</ul></section>'])
 
 
-def render_link(row, token, payload, refusal=None):
+def render_link(row, token, payload, refusal=None, *, read_only=False):
     """A message_link row: the plain question, one choice per candidate, then the usual signed approve / reject."""
     from . import admin_panel as ap
 
@@ -98,7 +101,9 @@ def render_link(row, token, payload, refusal=None):
     message, field_name, typed = refusal or (None, None, None)
     if message:
         out.append('<p role="alert" class="diag">%s. Nothing was saved or decided.</p>' % esc(message.rstrip(".")))
-    if pending:
+    if pending and read_only:
+        out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre><p>%s</p>' % (esc(payload.decode("utf-8")), READ_ONLY))
+    elif pending:
         options = "".join('<label><input type="radio" name="choice" value="%s" required> %s (agency %s)</label><br>' % (
             esc(c["request_id"]), esc(c["request_id"]), esc(c["agency_id"])) for c in row["evidence"].get("candidates", []))
         out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre>' % esc(payload.decode("utf-8")))
@@ -118,16 +123,23 @@ def render_link(row, token, payload, refusal=None):
     return console_layout.shell("Tie this message to a request", "\n".join(out), active="Approvals")
 
 
-def render(project, row, history, preview, token, payload, send_config=None, *, run_id=None, refusal=None):
+def render(project, row, history, preview, token, payload, send_config=None, *, run_id=None, refusal=None, source=None,
+           export=None):
     from . import admin_panel as ap
 
     title = "Review: %s for %s / %s" % (row["kind"].replace("-", " "), row["agency_id"], row["request_id"])
     pending = row["status"] == "pending"
     switches = mail_send.switch_state(project, send_config)
-    status = approval_status(project, row, switches) if row["status"] == "approved" else esc(
+    status = approval_status(project, row, switches, source) if row["status"] == "approved" else esc(
         "Pending" if pending else "Rejected: " + str(row.get("reason") or ""))
     message, field_name, typed = refusal or (None, None, None)
     out = ["<h1>%s</h1><p role=\"status\">%s</p>" % (esc(title), status)]
+    if export is not None and row["status"] == "approved":
+        proof = row.get("approval_evidence") or {}
+        out.append("<p>Approved by %s: signature verified on the live project (%s) at export %s (signed revision %s, "
+                   "signature sha256 %s).</p>" % (esc(row.get("approved_by")), esc(export.source_project_id),
+                                                  esc(export.exported_at), esc(proof.get("signed_revision")),
+                                                  esc(str(proof.get("signature_sha256"))[:12])))
     if message:
         out.append('<p role="alert" class="diag">%s. Nothing was saved or decided.</p>' % esc(message.rstrip(".")))
     out.append("<dl>")
@@ -147,8 +159,8 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
         out.append("<h2>Warnings</h2><ul>" + "".join("<li>%s</li>" % esc(w) for w in warnings) + "</ul>")
     # The initial newline prevents HTML's textarea newline stripping from losing a body newline.
     field = '<label for="body">Draft text</label><textarea id="body" name="body" rows="28"%s>\n%s</textarea>' % (
-        " required" if pending else " readonly", esc(typed if field_name == "body" else row["body"]))
-    if pending:
+        " required" if pending and export is None else " readonly", esc(typed if field_name == "body" else row["body"]))
+    if pending and export is None:
         out.append(ap._form("/approvals/edit", token, row["id"], "", ap.revision_field(row) + field, "Save edit",
                             back="review"))
     else:
@@ -173,7 +185,9 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
     limits = evidence.get("limits") or []
     for limit in limits if isinstance(limits, list) else [limits]:
         out.append("<p>%s</p>" % esc(limit))
-    if pending:
+    if pending and export is not None:
+        out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre><p>%s</p>' % (esc(payload.decode("utf-8")), READ_ONLY))
+    elif pending:
         out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre>' % esc(payload.decode("utf-8")))
         out.append("<p>Sign this text with your approval key "
                    "(<code>ssh-keygen -Y sign -n deflock-approval</code>) and paste the signature. "
@@ -215,24 +229,24 @@ def refuse(handler, ident, message, typed):
 
 
 def _show(handler, ident, status, refusal):
-    project = handler.server.options["project"]
+    options = handler.options
+    project, source, pin = options["project"], options["source"], handler.pin
     try:
-        rows = {r["id"]: r for r in approval_queue.load_queue(project)}
+        rows = {r["id"]: r for r in source.queue_rows()}
         if ident not in rows:
             handler._fail(404)
             return True
         row = rows[ident]
         ids = [ident]
         if row["kind"] == draft_templates.MESSAGE_LINK:
-            payload = approval_queue.approval_payload(project, ids[0]) if row["status"] == "pending" else None
-            handler._send(status, render_link(row, handler.server.csrf_token, payload, refusal))
+            payload = source.queue_payload(ids[0]) if row["status"] == "pending" else None
+            handler._send(status, render_link(row, handler.csrf_token(), payload, refusal, read_only=pin is not None))
             return True
-        history = approval_queue.history(project, ids[0])
+        history = source.queue_history(ids[0])
         preview = mail_preview.preview(project, row, handler.server.mail_drafts_config)
-        payload = approval_queue.approval_payload(project, ids[0]) if row["status"] == "pending" else None
-        page = render(project, row, history, preview, handler.server.csrf_token, payload,
-                      handler.server.options.get("send_config"), run_id=handler.server.options["run_id"],
-                      refusal=refusal)
+        payload = source.queue_payload(ids[0]) if row["status"] == "pending" else None
+        page = render(project, row, history, preview, handler.csrf_token(), payload,
+                      options.get("send_config"), run_id=options["run_id"], refusal=refusal, source=source, export=pin)
     except (approval_queue.ApprovalQueueError, mail_send.MailSendError, mail_drafts.MailDraftError,
             OSError, ValueError, KeyError, TypeError):
         handler._fail(503)

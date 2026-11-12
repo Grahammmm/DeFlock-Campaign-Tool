@@ -490,7 +490,7 @@ class Calendar(unittest.TestCase):
         with admin_panel.build_server(str(self.project), RUN, actor="operator", system=False,
                                       meetings_dir=campaign) as server:
             self.assertEqual(server.meetings_dir, campaign)
-            handler = mock.Mock(path="/calendar", server=server, command="GET", wfile=BytesIO())
+            handler = mock.Mock(path="/calendar", server=server, options=server.options, command="GET", wfile=BytesIO())
             self.assertTrue(cc.serve(handler))
             self.assertIn("keyword lead", handler._send.call_args.args[1])
             handler.path = "/calendar.ics"

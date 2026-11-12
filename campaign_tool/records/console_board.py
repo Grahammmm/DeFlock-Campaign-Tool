@@ -499,7 +499,7 @@ def serve(handler):
             agency is None or not 0 < len(agency) <= 256 or not agency.isprintable())):
         handler._fail(400)
         return True
-    options = handler.server.options
+    options = handler.options
     try:
         model = load(options["project"], options["run_id"])
     except ValueError:

@@ -185,7 +185,7 @@ def serve(handler):
         args = urllib.parse.parse_qs(parts.query, keep_blank_values=True)
         _require(set(args) == {"agency", "request"} and all(len(v) == 1 for v in args.values()))
         agency, request = args["agency"][0], args["request"][0]
-        options = handler.server.options
+        options = handler.options
         ident = secrets.token_hex(16)
         signed = ticket(options["project"], options["run_id"], agency, request, handler.server.manual_event_key, ident)
         back = "/agency?" + urllib.parse.urlencode({"agency": agency})
@@ -211,7 +211,7 @@ def serve(handler):
 
 def post(handler, fields):
     try:
-        options = handler.server.options
+        options = handler.options
         event = append(options["project"], options["run_id"], handler.server.actor, handler.server.manual_event_key, fields,
                        manual_events_dir=getattr(handler.server, "manual_events_dir", None))
         # Refresh only the derived timeline, never the tracker or coordinator ledger.
