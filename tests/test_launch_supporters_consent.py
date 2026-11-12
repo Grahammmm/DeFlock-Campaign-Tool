@@ -23,7 +23,6 @@ from tests import test_meeting_cosign as cosign
 REPO = Path(__file__).resolve().parents[1]
 TODAY = cosign.TODAY
 NAME = "Zed Alpha Alliance"
-SECRET = "Private How Note"
 
 
 def fixture(test):
