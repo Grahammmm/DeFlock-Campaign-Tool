@@ -13,7 +13,8 @@ import unittest
 
 from campaign_tool.records import public_packets as pp, run_stages
 from campaign_tool.records.ledger import store
-from tests.records import test_analysis_bridge as tb, test_analysis_packet_outbox as to, test_analysis_packets as tap
+from tests.flock import test_review as tr
+from tests.records import test_analysis_bridge as tb, test_analysis_packet_outbox as to, test_analysis_packets as tap, test_analysis_tick as tt
 from tests.records import test_outcome_received_items as tri
 
 REPO = tb.REPO
@@ -81,6 +82,28 @@ class ReviewPersistenceTests(unittest.TestCase):
         self.assertEqual(code, 0, out)
         self.assertIn("ALREADY=1", out)
         self.assertEqual((self.journal.read_bytes(), len(pp.pending(self.project))), (journal, 1))
+        # (4) the F3 card edits the finding's claim; the real tools re-finish verify; the new key imports to the same packet id, revision 1
+        claim = tr.FIX / "findings-sample.csv"
+        claim.write_text(claim.read_text().replace("The sample search log has no search-purpose field.", "The sample search log lacks a purpose field."))
+        (o.out / "compare" / "F3-FINDINGS.yaml").write_text("f3 input edited\n")
+        self.assertIn(" WAITING f3-findings", o.t.tick(process=True)[1])
+        self.assertEqual(o.t.mark("f3-findings", "anthropic"), 0)
+        self.assertIn(" WAITING f4", o.t.tick(process=True)[1])
+        run = o.out / "compare" / "store" / "agencies" / tt.SLUG / "runs" / json.loads(o.t.config().read_text())["review"]["run_date"]
+        (run / "VERIFY.csv").write_bytes((tr.FIX / "verify-sample.csv").read_bytes())
+        self.assertEqual(o.t.mark("f4", "openai"), 0)
+        code, text = o.t.tick(process=True)
+        self.assertEqual(code, 0, text)
+        self.assertIn(" PACKET_STAGED", text)
+        self.assertEqual(len(o.outbox()), 2)
+        (again,) = [p for p in o.outbox() if p != path]
+        self.assertIn("lacks a purpose field", again.read_text())
+        self.assertEqual(o.facts.read_bytes(), checked)  # the review rode through the F3 rewrite
+        code, out = self.imported(again)
+        self.assertEqual(code, 0, out)
+        self.assertIn("r1", out)
+        (row2,) = pp.pending(self.project)
+        self.assertEqual((row2["id"], row2["revision"], row2["status"], row2["signed_by"]), (row["id"], 1, "proposed", None))
         blob = "\n".join(o.t.seen) + (o.root / ".analysis" / "analysis-ledger.jsonl").read_text()
         for private in tb.PAGES + ["search log", "The ALPR vendor"]:
             self.assertNotIn(private, blob)
