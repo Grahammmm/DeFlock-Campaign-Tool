@@ -956,7 +956,7 @@ _MODULES = {
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
         records.analysis_export records.outcomes.analysis_ready records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register records.outcomes.timeline
         records.outcomes.textstate records.outcomes.unmatched records.pipeline_health records.project_init records.portal.download records.portal.engine records.portal.ledger_adapter
-        records.portal.store records.console_manual_events records.public_packets records.public_updates records.publish records.queue_runtime records.recovery.backup
+        records.portal.store records.console_journal records.console_manual_events records.public_packets records.public_updates records.publish records.queue_runtime records.recovery.backup
         records.recovery.backup_v2 records.recovery.publication records.quiescence_audit records.records_backup records.review_bundle records.review_retirement
         records.run records.run_orchestrator records.run_stages records.runner.canonical_mail records.runner.core
         records.runner.export_proof records.runtime records.schedule records.systemd_control records.unattended
@@ -1133,6 +1133,7 @@ MODULE_FUNCTIONS = {
     'records.portal.engine': ('_download',),
     'records.portal.ledger_adapter': ('WP1LedgerAdapter._copy_cas',),
     'records.portal.store': ('Queue.__init__', 'Queue.lock', 'Queue.promote',),
+    'records.console_journal': ('append',),  # DFGL-16B decision journal outside the export: one 0600 O_APPEND line per validated console decision under flock; no live-project or export write, no signature check; sends nothing
     'records.console_manual_events': ('append_events', 'post',),  # actor-bearing local-console manual events: append-only journal line and timeline refresh; nothing sent or published
     'records.public_packets': (
         '_Locked.__enter__', '_Locked.append', '_replace', 'main',
