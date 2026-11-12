@@ -132,6 +132,7 @@ def main(argv=None):
                     done[entry["entry_id"]] = result
             print("decisions-apply: %s %s %s" % (entry["entry_id"][:12], str(entry.get("action"))[:20], result))
     except (cj.JournalError, aq.ApprovalQueueError, OSError) as error:
-        print("decisions-apply: refused (%s)" % (getattr(error, "code", None) or type(error).__name__), file=sys.stderr)
+        code = getattr(error, "code", None) or (str(error) if isinstance(error, cj.JournalError) else type(error).__name__)
+        print("decisions-apply: refused (%s)" % code, file=sys.stderr)
         return 1
     return 0
