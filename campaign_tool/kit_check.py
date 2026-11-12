@@ -16,7 +16,8 @@ from pathlib import Path
 
 from . import kit
 
-PLACEHOLDER = re.compile(r"\[[^\]\n]{1,160}\](?!\()")
+# Substitution-compatible form of the grammar; production recognition uses the linear _spans scanner below.
+PLACEHOLDER = re.compile(r"\[[^\]\n]+\](?!\()")
 HIT_CHARS, HITS_MAX = 160, 50
 MAX_DRAFT_BYTES = 1 << 20
 MISSING = "draft missing or not a regular file"
@@ -29,10 +30,46 @@ NOT_REGULAR = "suggestion is not a regular file"
 UNREADABLE = "suggestion unreadable"
 
 
+def _spans(text):
+    """Yield (1-based line, full span) for every unfilled bracket placeholder; one pass, linear in the text length.
+
+    A span is a nonempty ``[...]`` on one LF-delimited line, ended by the next ``]`` and not followed by ``(``; an
+    opener before that ``]`` is interior. A closed segment (empty or link) is consumed; an unclosed tail yields nothing.
+    """
+    size, start, number = len(text), 0, 0
+    while start <= size:
+        number += 1
+        end = text.find("\n", start)
+        if end < 0:
+            end = size
+        pos = text.find("[", start, end)
+        while pos >= 0:
+            close = text.find("]", pos + 1, end)
+            if close < 0:
+                break
+            if close > pos + 1 and text[close + 1:close + 2] != "(":
+                yield number, text[pos:close + 1]
+            pos = text.find("[", close + 1, end)
+        start = end + 1
+
+
+class _Hits(list):
+    """draft_problems' list of {"line", "placeholder"}; also records, from the full unclipped spans, whether any
+    span names a fee cap or a date range."""
+    fee_cap = date_range = False
+
+
 def draft_problems(text):
-    """Every unfilled bracket placeholder in ``text`` as {"line", "placeholder"} (1-based line numbers)."""
-    return [{"line": number, "placeholder": match.group(0)[:HIT_CHARS]}
-            for number, line in enumerate(text.split("\n"), 1) for match in PLACEHOLDER.finditer(line)]
+    """Every unfilled bracket placeholder in ``text`` as {"line", "placeholder"} (1-based line numbers).
+
+    The placeholder is clipped to HIT_CHARS for display; recognition and the fee/date flags do not depend on it.
+    """
+    hits = _Hits()
+    for number, span in _spans(text):
+        hits.append({"line": number, "placeholder": span[:HIT_CHARS]})
+        word = span.lower()
+        hits.fee_cap, hits.date_range = hits.fee_cap or "cap" in word, hits.date_range or "date range" in word
+    return hits
 
 
 def _read_regular(path):
@@ -181,11 +218,9 @@ def agency_report(root, entry, *, include_suggestion=False):
         report = {**row, "draft": None, "ok": False, "error": error}
     else:
         text = primary.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-        hits = draft_problems(text)
-        words = [hit["placeholder"].lower() for hit in hits]
-        report = {**row, "draft": f"kit/requests/{agency_id}.md", "placeholders": hits[:HITS_MAX],
-                  "placeholder_count": len(hits), "fee_cap_missing": any("cap" in word for word in words),
-                  "date_range_missing": any("date range" in word for word in words),
+        hits = draft_problems(text)  # count and flags use the full spans; only the display is clipped
+        report = {**row, "draft": f"kit/requests/{agency_id}.md", "placeholders": list(hits[:HITS_MAX]),
+                  "placeholder_count": len(hits), "fee_cap_missing": hits.fee_cap, "date_range_missing": hits.date_range,
                   "ok": not hits and row["recipient_verified"]}
     differs = _suggested_differs(root, agency_id, primary) if include_suggestion else None
     if differs is not None:

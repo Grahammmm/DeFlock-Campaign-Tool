@@ -4,7 +4,8 @@ Supported: paragraphs, ``## `` headings (rendered as ``<h3>``), ``**bold**``,
 ``[text](https://...)`` links, backslash-escaped punctuation, unordered ``- `` lists, ordered ``1. `` lists
 (``<ol start="N">`` when the first number is not 1) and simple pipe tables (a
 ``|...|`` header, a ``|---|:---:|`` separator with the same 1-12 cells, then
-same-width rows; ``\\|`` is a literal pipe; colons add an ``align-*`` class).
+same-width rows; a ``|`` is a delimiter when the backslash run before it is even, so ``\\\\|`` ends a cell
+after one visible backslash while ``\\|`` is a literal pipe; colons add an ``align-*`` class).
 Everything else is plain text. A line that is exactly ``![alt](/path)`` (alt
 1-200 chars, ``/path`` a key of the ``images`` map the site passes, giving the
 file's width and height) renders as ``<p><img ... loading="lazy"></p>``; with
@@ -47,7 +48,6 @@ _TLD = re.compile(r"[A-Za-z]{2,63}")
 _PORT = re.compile(r"[1-9][0-9]{0,4}")
 _ORDERED = re.compile(r"(\d{1,3})\. (.*)")
 _SEPARATOR = re.compile(r"\|(?:\s*:?-{3,}:?\s*\|)+")
-_PIPE = re.compile(r"(?<!\\)\|")
 _ALIGN = {(False, False): "", (True, False): ' class="align-left"', (True, True): ' class="align-center"',
           (False, True): ' class="align-right"'}
 MAX_COLUMNS = 12
@@ -164,11 +164,27 @@ def render(source, images=None):
 
 
 def _cells(line):
-    """Cells of a ``|...|`` row (unescaped ``|`` splits, ``\\|`` is a literal), else None."""
-    parts = _PIPE.split(line)
-    if len(parts) < 3 or parts[0] or parts[-1]:
+    """Cells of a ``|...|`` row, else None.
+
+    One left-to-right pass tracks the run of consecutive backslashes before each ``|``: an even run (including none)
+    leaves the pipe a delimiter, an odd run makes it a literal pipe in the cell and consumes that one escaping
+    backslash. Paired backslashes stay raw for ``inline``, which turns each pair into one visible backslash.
+    """
+    fields, buf, run = [], [], 0
+    for char in line:
+        if char != "|":
+            run = run + 1 if char == "\\" else 0
+            buf.append(char)
+        elif run % 2:
+            buf[-1] = char  # odd run: the last backslash escapes this pipe
+            run = 0
+        else:
+            fields.append("".join(buf))
+            buf, run = [], 0
+    fields.append("".join(buf))
+    if len(fields) < 3 or fields[0] or fields[-1]:
         return None
-    return [part.strip().replace("\\|", "|") for part in parts[1:-1]]
+    return [field.strip() for field in fields[1:-1]]
 
 
 def _tables(lines):
