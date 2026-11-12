@@ -6,12 +6,13 @@ from a flag. The command writes one optional ``submitted_comment`` key into ``co
 build renders it. A clean lint is not privacy clearance, and the legal-claim notes are advisory.
 """
 import hashlib
+import json
 import os
 import stat
 from datetime import date
 from pathlib import Path
 
-from .content import COMMENT_MAX_BYTES, _read_json, comment_text_problems, load_meeting
+from .content import COMMENT_MAX_BYTES, MAX_JSON_BYTES, _read_json, comment_text_problems, load_meeting
 from .kit import _write_json
 from .legal_claims import legal_notes
 from .meeting_comments import MEETING_ID, MeetingCommentError, read as read_comments
@@ -80,6 +81,9 @@ def publish(root, meeting_id, file, *, signer_public=False, replace=False, today
     comment = {"on": entry["on"], "channel": entry["channel"], "text": text, "sha256": entry["letter_sha256"]}
     updated = {**document, "submitted_comment": comment}
     load_meeting(updated, f"meetings/{meeting_id}.json", today=today)  # the whole document, before any write
+    # The normal reader refuses files above MAX_JSON_BYTES: charge the exact bytes `_write_json` would write (equality fits).
+    if len((json.dumps(updated, indent=2, ensure_ascii=False) + "\n").encode("utf-8")) > MAX_JSON_BYTES:
+        raise MeetingCommentPublishError("content/meetings: submitted comment update would exceed 2 MiB; nothing was written")
     if os.path.islink(path):  # checked again right before the write
         raise MeetingCommentPublishError(f"content/meetings/{meeting_id}.json must not be a symlink")
     _write_json(path, updated)
