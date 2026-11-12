@@ -59,6 +59,36 @@ definition, and another state needs its own checked law package and citations.
 It is not legal advice, and it must not be used to skip review or to publish the
 fictional county evidence.
 
+## Records half
+
+The records pipeline needs its own private project beside the campaign. Keep it
+outside both the engine and the campaign directory, never in a repository:
+
+```sh
+python3 -m campaign_tool.records project-init --project ../humboldt-records --campaign-root ../humboldt-demo
+```
+
+`project-init` refuses an existing non-empty folder and never replaces a project.
+See `docs/RECORDS-PIPELINE.md` for the stages that run against it.
+
+Before connecting any mailbox, rehearse one synthetic message offline. The
+rehearsal builds its own throwaway sandbox under `--out`; it never reads or writes
+the project above:
+
+```sh
+python3 -m campaign_tool.records e2e-proof --campaign-root ../humboldt-demo --out ../humboldt-proof --seed SEED.json --message SYNTHETIC.eml
+```
+
+`SEED.json` (`records-e2e-seed-v1`, see `docs/RECORDS-E2E-PROOF.md`) names one
+agency id from the campaign's `content/agencies.json` and a fictional request id.
+An agency id that is not in the campaign content gets a follow-up draft but no
+social post or site update. The seed is a synthetic-sandbox tool only: a real
+project gets its agencies, requests and joins from the pipeline, never a seed.
+
+These stay G's: mailbox credentials, the portal approval file, review of the law
+package, every send, every publication and every site deploy. A rehearsal PASS
+approves none of them.
+
 ## Executable offline proof
 
 ```sh
@@ -74,3 +104,14 @@ error::ResourceWarning tests/fixtures/no_network_run.py` before those arguments.
 The wrapper runs `campaign_tool` as `__main__` and makes socket connects fatal;
 a deliberate loopback connect negative control proves the guard is active.
 No geocoder, mailbox, deployment or other live service is used.
+
+```sh
+python3 -B -m unittest tests.records.test_new_county_records
+```
+
+This records test inits fictional Cedar County, copies the example content, runs
+`records project-init` and checks its layout, then replays a synthetic message
+with a seed for one Cedar agency. It requires a strict PASS with no manual step,
+received items tied to that agency and request, a queued follow-up draft, and no
+`deflockslo` or `San Luis Obispo` text in the sandbox or project. It needs
+`pypdf` and `openpyxl` (`requirements-records-test.txt`) and skips without them.
