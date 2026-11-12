@@ -26,6 +26,7 @@ from .privacy_patterns import refusal
 
 BODY_KINDS = ("city_council", "county_board")
 NOT_RECORDED = "Not recorded"
+RELEASE_FAILED = "kit/briefs: output directory descriptor release failed"
 FOOTER = "Private meeting brief. Nothing was sent or published. Recorded facts may be incomplete; not legal advice."
 CSP = "default-src 'none'; style-src 'unsafe-inline'"
 STYLE = ("@page{margin:1in}body{margin:0;font-family:Georgia,'Times New Roman',serif;font-size:11pt;line-height:1.4;color:#000;"
@@ -476,6 +477,25 @@ def _write_file(directory, name, data, replace, expected):
         raise
 
 
+def _release(owners):
+    """Close each owned directory descriptor once, newest first, whatever an earlier close reported.
+
+    Ownership is consumed before the close: an ambiguous failed close is never retried, since the number may
+    already belong to someone else. Returns (an OSError was reported, first non-OSError raised by a close).
+    No close message is kept: it can carry private paths.
+    """
+    failed, other = False, None
+    while owners:
+        descriptor = owners.pop()
+        try:
+            os.close(descriptor)
+        except OSError:
+            failed = True
+        except BaseException as exc:
+            other = other or exc
+    return failed, other
+
+
 # --- entry points ----------------------------------------------------------------------------------------------
 
 def build_brief(root, agency_id, *, replace=False, now=None):
@@ -512,46 +532,55 @@ def build_brief(root, agency_id, *, replace=False, now=None):
         raise BriefError("kit/briefs: brief outputs cannot be encoded as UTF-8; no brief files were written") from None
     written = []
     root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    owners = [root_fd]  # every acquired directory descriptor, in acquisition order; each is closed exactly once
+    primary = None
     try:
         kit_fd = _subdir(root_fd, "kit")
-        try:
-            _flush_setup(root_fd)  # persist the kit/ entry before anything is written beneath it
-            briefs_fd = _subdir(kit_fd, "briefs")
-            try:
-                _flush_setup(kit_fd)  # persist the briefs/ entry before either twin is attempted
-                for name, data in zip(names, payloads):
-                    _write_file(briefs_fd, name, data, replace, expected[name])
-                    written.append(name)
-            finally:
-                os.close(briefs_fd)
-        finally:
-            os.close(kit_fd)
-    except (BriefError, OSError) as exc:
-        if isinstance(exc, _WriteError):
-            if exc.published:
-                written.append(exc.name)
-                message = f"kit/briefs/{exc.name} was written; {exc.phase} failed"
-                if not exc.durable:
+        owners.append(kit_fd)
+        _flush_setup(root_fd)  # persist the kit/ entry before anything is written beneath it
+        briefs_fd = _subdir(kit_fd, "briefs")
+        owners.append(briefs_fd)
+        _flush_setup(kit_fd)  # persist the briefs/ entry before either twin is attempted
+        for name, data in zip(names, payloads):
+            _write_file(briefs_fd, name, data, replace, expected[name])
+            written.append(name)
+    except BaseException as exc:  # held until every owned directory is released; never replaced by a close error
+        primary = exc
+    release_failed, release_other = _release(owners)
+    if primary is not None and not isinstance(primary, (BriefError, OSError)):
+        raise primary
+    if release_other is not None:
+        raise release_other
+    if primary is None and not release_failed:
+        return {"written": [f"kit/briefs/{name}" for name in written], "flags": flags}
+    if primary is None:
+        message = RELEASE_FAILED
+    else:
+        if isinstance(primary, _WriteError):
+            if primary.published:
+                written.append(primary.name)
+                message = f"kit/briefs/{primary.name} was written; {primary.phase} failed"
+                if not primary.durable:
                     message += "; durability could not be confirmed"
             else:
-                message = f"kit/briefs/{exc.name} could not be written ({exc.phase} failed)"
-            if exc.cleanup_failed:
-                message += f"; temporary cleanup failed for kit/briefs/.{exc.name}.{os.getpid()}.tmp; check retained temporary"
-        elif isinstance(exc, BriefError):
-            message = str(exc)
+                message = f"kit/briefs/{primary.name} could not be written ({primary.phase} failed)"
+            if primary.cleanup_failed:
+                message += (f"; temporary cleanup failed for kit/briefs/.{primary.name}.{os.getpid()}.tmp;"
+                            " check retained temporary")
+        elif isinstance(primary, BriefError):
+            message = str(primary)
         else:
             message = "kit/briefs could not be written (I/O error)"
-        if len(written) == 2:
-            message += "; both files were written: " + ", ".join(f"kit/briefs/{item}" for item in written)
-        elif written:
-            message += (f"; kit/briefs/{written[0]} was already written, so the pair is incomplete"
-                        " (or mixed with an older twin)")
-        if written:
-            message += ": check the files and run the same command again with --replace"
-        raise BriefError(message) from None
-    finally:
-        os.close(root_fd)
-    return {"written": [f"kit/briefs/{name}" for name in written], "flags": flags}
+        if release_failed:
+            message += "; output directory descriptor release failed"
+    if len(written) == 2:
+        message += "; both files were written: " + ", ".join(f"kit/briefs/{item}" for item in written)
+    elif written:
+        message += (f"; kit/briefs/{written[0]} was already written, so the pair is incomplete"
+                    " (or mixed with an older twin)")
+    if written:
+        message += ": check the files and run the same command again with --replace"
+    raise BriefError(message) from None
 
 
 def run_cli(root, agency_id, replace=False):

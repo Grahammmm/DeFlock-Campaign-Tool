@@ -477,20 +477,43 @@ def check_folders(root, findings, base_url, now=None):
     return folders
 
 
+def _visible(value):
+    """Display form of one dynamic fragment (RF1801-2): backslash doubles, every character ``str.isprintable()``
+    rejects (controls, C1, Unicode separators/bidi, lone surrogates) becomes a lowercase fixed-width ``\\xhh`` /
+    ``\\uhhhh`` / ``\\Uhhhhhhhh`` escape. Printable text and ASCII spaces pass through. Text only: callers keep the
+    original names for lookup, sorting, JSON and the API."""
+    out = []
+    for ch in str(value):
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch.isprintable():
+            out.append(ch)
+        else:
+            n = ord(ch)
+            out.append(f"\\x{n:02x}" if n <= 0xFF else f"\\u{n:04x}" if n <= 0xFFFF else f"\\U{n:08x}")
+    return "".join(out)
+
+
 def format_text(report):
-    """Plain-text report grouped by folder; ``report`` is ``check_social``'s dict."""
+    """Plain-text report grouped by folder; ``report`` is ``check_social``'s dict.
+
+    Text boundary: every dynamic string (heading, slug, state, problem, note, stale stem and reason, folder note) is
+    escaped once by ``_visible``, so a filename cannot drive the terminal or forge a report line. Only the
+    formatter's own LF terminators remain."""
+    v = _visible
     lines = [f"Checked {report['findings']} published finding(s)."]
 
     def group(heading, block):
-        lines.append(heading + ":")
+        lines.append(v(heading) + ":")
         for note in block.get("folder_problems", []):
-            lines.append(f"  folder: {note}")
+            lines.append(f"  folder: {v(note)}")
         for e in block["drafts"]:
-            lines.append(f"  {e['slug']}: {e['state']}" + (f" ({', '.join(e['problems'])})" if e["problems"] else "")
-                         + (f" - {e['note']}" if e.get("note") else ""))
+            lines.append(f"  {v(e['slug'])}: {v(e['state'])}"
+                         + (f" ({', '.join(v(p) for p in e['problems'])})" if e["problems"] else "")
+                         + (f" - {v(e['note'])}" if e.get("note") else ""))
         for stem in block["stale"]:
             reasons = block.get("stale_reasons", {}).get(stem)
-            lines.append(f"  stale {stem}" + (": " + "; ".join(reasons) if reasons else ""))
+            lines.append(f"  stale {v(stem)}" + (": " + "; ".join(v(r) for r in reasons) if reasons else ""))
 
     group("/".join(("kit", "social")), {"drafts": report["drafts"], "stale": report["stale"]})
     for rel, block in report.get("folders", {}).items():

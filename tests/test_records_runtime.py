@@ -907,6 +907,29 @@ class RendererTests(unittest.TestCase):
         for path in with_dir.glob("records-backup-check.*"):
             self.assertIsNone(re.search(r"@[A-Z_]+@", path.read_text()), path.name)
 
+    def test_analysis_kit_renders_only_with_analysis_root_and_leaves_the_rest_byte_identical(self):
+        self.do_render(out=self.tmp / "plain")
+        extra = {"ANALYSIS_ROOT": "/srv/analysis", "CONTAINER_USER": "records", "CONTAINER_ENGINE_DIR": "/srv/engine",
+                 "CONTAINER_PYTHON": "/usr/bin/python3", "CONTAINER_PROJECT_DIR": "/srv/project"}
+        written = self.do_render(values={**self.values, **extra}, out=self.tmp / "with")
+        plain, with_dir = self.tmp / "plain", self.tmp / "with"
+        self.assertFalse(list(plain.glob("*analysis*")))
+        self.assertEqual({"run-analysis.sh", "records-analysis.service", "records-analysis.timer"},
+                         set(written) - {p.relative_to(plain).as_posix() for p in plain.rglob("*") if p.is_file()})
+        for path in plain.rglob("*"):
+            if path.is_file():
+                self.assertEqual(path.read_bytes(), (with_dir / path.relative_to(plain)).read_bytes(), path.name)
+        timer = (with_dir / "records-analysis.timer").read_text().splitlines()
+        for line in ("OnBootSec=10min", "OnUnitActiveSec=15min", "Persistent=false"):
+            self.assertIn(line, timer)
+        self.assertIn("ExecStart=/bin/sh /srv/runtime/run-analysis.sh",
+                      (with_dir / "records-analysis.service").read_text().splitlines())
+        self.assertEqual(stat.S_IMODE((with_dir / "run-analysis.sh").stat().st_mode), 0o700)
+        for path in with_dir.glob("*analysis*"):
+            self.assertIsNone(re.search(r"@[A-Z_]+@", path.read_text()), path.name)
+        with self.assertRaises(self.render.RenderError):  # the container values are required with the kit
+            self.do_render(values={**self.values, "ANALYSIS_ROOT": "/srv/analysis"}, out=self.tmp / "partial")
+
     def test_render_test_and_live_container_targets(self):
         targets = [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
                    ("LIVE", str(RUNTIME / "targets" / "live-container.json.in"))]

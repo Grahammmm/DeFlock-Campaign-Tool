@@ -130,9 +130,11 @@ def plan(c, sid, state):  # -> (steps, stdout capture); a step is ("run", argv) 
     t = lambda n, *a: ("run", [sys.executable, "-B", str(TOOLS / n)] + [str(x) for x in a])  # noqa: E731
     cfg, FO, CO, slug, store = c["path"], c["FO"], c["CO"], c["slug"], c["store"]
     if sid == "facts-import":
-        return [("aside", FO / "store")] + [t("flock_facts.py", "import", f, "--store", FO / "store", "--kind", f.name[9:-4], "--added-by", c["by"],
-                                              "--status", "unreviewed", "--date", c["date"]) for f in sorted(FO.glob("FACTS-v1-*.csv"))] \
-            + [t("flock_facts.py", "--check", FO / "store")], None
+        stg = c["out"] / ".review" / "import-staging" / "store"  # DFGL-07e: import into staging, reconcile keeps the reviewed store (never moved aside)
+        return [("aside", stg.parent), ("mkdir", stg)] + [t("flock_facts.py", "import", f, "--store", stg, "--kind", f.name[9:-4], "--added-by", c["by"],
+                                                           "--status", "unreviewed", "--date", c["date"]) for f in sorted(FO.glob("FACTS-v1-*.csv"))] \
+            + [t("flock_facts.py", "--check", stg), t("flock_facts.py", "reconcile", "--store", FO / "store", "--from", stg, "--agency", slug,
+                                                     "--superseded", c["out"] / ".review" / "superseded" / "fact-reviews"), t("flock_facts.py", "--check", FO / "store")], None
     if sid == "f3-scaffold":
         mark = (state["stages"].get("f3-findings") or {}).get("mark") or {}
         return [("copy", c["facts"], store / "agencies" / slug / "FACTS.csv"), ("copy", c["law"], store / "LAW.csv"),
@@ -182,6 +184,7 @@ def fingerprint_parts(c, i, dig, state):  # stage, argv, script hashes, config b
     sid, kind, deps = STAGES[i]
     body = {"stage": sid, "deps": [dig[d] for d in deps], "external": external(c, sid),
             "config": digest([c["cfg"]["review"], c["cfg"].get("not_posted_analysis_only_ids"), c["cfg"][block(i)]])}
+    if sid == "report": body["review"] = [fhash(c["facts"]), fhash(c["facts"].with_name("FACT-REVIEWS.csv"))]  # a review re-renders the report only
     if kind == "run":
         steps, capture = plan(c, sid, state)
         body.update(capture=str(capture), steps=[s[1] if s[0] == "run" else [s[0]] + [str(x) for x in s[1:]] for s in steps],
@@ -200,6 +203,10 @@ def wait_files(c, sid):  # the model-authored inputs a mark covers (set config p
     values = [s.get(k) for s in ri.get("sources") or [] if isinstance(s, dict) for k in ("text", "pdf")]
     return [P(v) for v in values + [*(ri.get("law_specs") or []), *(ri.get("policy_specs") or []), ri.get("f2_law_map"),
                                     *(ri.get("extra_specs") or [])] if S(v)]
+def out_ok(c, i, rel, h):  # an output holds if its bytes are as recorded; a facts-import FACTS.csv also holds when only review statuses moved (status-blind projection)
+    path = root(c, i) / rel
+    return fhash(path) == h or (IDS[i] == "facts-import" and re.fullmatch(r"store/agencies/[^/]+/FACTS\.csv", rel) is not None and facts_tool.projection_sha256(path) == h)
+def txn_pending(c, sid): return sid == "facts-import" and any(c["FO"].glob("store/agencies/*/.FACTS-TXN.json"))
 def evaluate(c, state, dig, i):  # -> (state, reason, fp); dig gains the stage's output digest when done or skip
     sid, kind, deps = STAGES[i]
     if sid in c["skip"]: return dig.update({sid: SKIP}) or ("skip", None, None)
@@ -211,11 +218,12 @@ def evaluate(c, state, dig, i):  # -> (state, reason, fp); dig gains the stage's
             else "upstream changed" if mark["fp"] != fp else None
         return ("waiting", why, fp) if why else dig.update({sid: digest(mark["files"])}) or ("done", None, fp)
     later = later_outputs(c, state, i)
+    if txn_pending(c, sid): return ("stale" if rec else "pending"), "review transaction pending", fp
     if rec.get("status") == "done" and rec.get("fp") == fp \
-            and all(root(c, i) / rel in later or fhash(root(c, i) / rel) == h for rel, h in rec.get("outputs", {}).items()):
+            and all(root(c, i) / rel in later or out_ok(c, i, rel, h) for rel, h in rec.get("outputs", {}).items()):
         return dig.update({sid: digest(rec["outputs"])}) or ("done", None, fp)
     return ("failed" if rec.get("status") == "failed" else "stale" if rec else "pending"), None, fp
-PARTS = (("deps", "upstream changed"), ("external", "inputs changed"), ("config", "config changed"), ("steps", "command changed"), ("capture", "command changed"), ("scripts", "scripts changed"))
+PARTS = (("review", "review changed"), ("deps", "upstream changed"), ("external", "inputs changed"), ("config", "config changed"), ("steps", "command changed"), ("capture", "command changed"), ("scripts", "scripts changed"))
 def why_not_done(c, state, dig, i, word, fp):  # read-only status reason for a failed/pending/stale stage (wait stages keep evaluate's why)
     rec = state["stages"].get(IDS[i]) or {}
     if word == "failed": return "rc=%s" % rec.get("rc")
@@ -224,7 +232,7 @@ def why_not_done(c, state, dig, i, word, fp):  # read-only status reason for a f
     cur = {k: digest(v) for k, v in fingerprint_parts(c, i, dig, state).items()}
     moved = list(dict.fromkeys(text for k, text in PARTS if rec["parts"].get(k) != cur.get(k)))
     base, later = root(c, i), later_outputs(c, state, i)
-    bad = sorted(rel for rel, h in rec.get("outputs", {}).items() if base / rel not in later and fhash(base / rel) != h)
+    bad = sorted(rel for rel, h in rec.get("outputs", {}).items() if base / rel not in later and not out_ok(c, i, rel, h))
     if moved or not bad: return ", ".join(moved) or "inputs or outputs changed"
     return "output %s: %s%s" % ("missing" if fhash(base / bad[0]) == "missing" else "changed", bad[0], " +%d" % (len(bad) - 1) if len(bad) > 1 else "")
 def snap(base, out):  # before/after listing of a step root; .review and the state file are excluded
@@ -282,6 +290,8 @@ def execute(c, i, state):
         if rc: break
     if capture and not rc: put(capture, b"".join(stdout))
     put(log, b"".join(logged))
+    if sid == "facts-import":  # explicit outputs: status-blind projection hashes of the active FACTS.csv files (rc 0 only)
+        return rc, {} if rc else {str(p.relative_to(base)): facts_tool.projection_sha256(p) for p in sorted(base.glob("store/agencies/*/FACTS.csv"))}, log
     return rc, {str(p.relative_to(base)): fhash(p) for p, v in snap(base, c["out"]).items() if before.get(p) != v and not (sid == "f4-start" and p.name == "VERIFY.csv")}, log
 def load_state(c):
     path = c["out"] / "REVIEW-STATE.json"

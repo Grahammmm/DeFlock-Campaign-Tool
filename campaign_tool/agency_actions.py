@@ -395,6 +395,17 @@ def _install(root, data, loaded):
             current = _entry(content_fd, PARTS[1], LABEL)
             if (current is None) != (loaded is None) or (current is not None and _identity(current) != loaded[1]):
                 raise ActionError(changed)
+            # RF1801-1: the staging basename must still be the regular single-link file this call created and holds open.
+            # Metadata only (never reopened or followed). A substitution after this check and before the rename is not
+            # detected: this is not an atomic compare-and-rename.
+            try:
+                entry = os.stat(name, dir_fd=content_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                raise ActionError(changed) from None
+            held_info = os.fstat(handle.fileno())
+            for info_ in (entry, held_info):
+                if not stat.S_ISREG(info_.st_mode) or info_.st_nlink != 1 or (info_.st_dev, info_.st_ino) != created:
+                    raise ActionError(changed)
             os.replace(name, PARTS[1], src_dir_fd=content_fd, dst_dir_fd=content_fd)
             name = None
         except ActionError:

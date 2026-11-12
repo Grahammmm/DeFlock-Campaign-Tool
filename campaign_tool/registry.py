@@ -81,14 +81,31 @@ def _read_bounded(path):
         os.close(fd)
 
 
+def _unique_members(pairs):
+    """RF1550-5: a repeated decoded member name in any object is ambiguous (json.loads keeps the last); never echoed."""
+    members = {}
+    for key, value in pairs:
+        if key in members:
+            raise ValueError("the register JSON contains a repeated object member")
+        members[key] = value
+    return members
+
+
 def _load(path):
     raw = _read_bounded(path)
     if raw is None:
         return []
-    entries = json.loads(raw.decode("utf-8") or "[]")
+    text = raw.decode("utf-8") or "[]"
+    try:
+        entries = json.loads(text, object_pairs_hook=_unique_members)
+    except RecursionError:  # RF1500-24: the decoder's own exhaustion only; no depth policy, input never shown
+        raise ValueError("the register JSON is nested too deeply") from None
     if not isinstance(entries, list) or not all(
             isinstance(e, dict) and set(e) == KEYS and all(isinstance(v, str) for v in e.values()) for e in entries):
         raise ValueError("the register must hold only a list of {name, directory, added_at}")
+    # RF1900-3: two rows with one decoded (case-sensitive) name are ambiguous; refuse the whole register, never echoed
+    if len({e["name"] for e in entries}) != len(entries):
+        raise ValueError("the register contains a repeated campaign name")
     return entries
 
 

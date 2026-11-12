@@ -24,6 +24,24 @@ def _origin(value):  # host present, no user or password
     return not _https(value) or (lambda p: p.hostname and not p.username and not p.password)(urlsplit(value))
 
 
+def _port(value):
+    """True unless the authority of an otherwise admitted https URL carries an impossible port.
+
+    Pure and value-free: omitted or empty ports and numeric 0-65535 pass; urllib's own port
+    parse refuses nonnumeric, negative, fractional, multiple-colon and out-of-range ports. The
+    old type/scheme/character and host diagnostics are left to _https and _origin."""
+    if not _https(value):
+        return True
+    parts = urlsplit(value)
+    if not parts.hostname:
+        return True
+    try:
+        parts.port
+    except ValueError:
+        return False
+    return True
+
+
 _REFUSED = -1  # sentinel from _utf8_size: not a str, or not strictly encodable (e.g. a lone surrogate)
 
 
@@ -46,6 +64,7 @@ CHECKS = (  # (field, accepts value, reason); reasons never include the value
     ("initial_point_count", lambda v: type(v) is int and 0 <= v <= 10000000, "out of range"),
     ("source_map_url", _https, "not a public https URL"),
     ("source_map_url", _origin, "credentials or no host in URL"),
+    ("source_map_url", _port, "invalid port in URL"),
     ("city_boundaries_url", lambda v: isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,160}", v) and ".." not in v.split("/"), "not a local public asset path"),
     ("candidate_count_suffix", lambda v: isinstance(v, str) and 1 <= len(v) <= 200, "must be 1-200 characters"),
     # the suffix is emitted into UTF-8 JavaScript; judged only when the type/length check above passed

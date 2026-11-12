@@ -23,6 +23,9 @@ any IANA zone). Each OnCalendar line is built from those after strict validation
 `systemd-analyze` exists, checked by `systemd-analyze calendar`. Persistent=true
 stays, so a slot missed during downtime catches up.
 
+With --analysis-root ROOT (and the CONTAINER_* values) it also renders run-analysis.sh (0700), records-analysis.service
+and records-analysis.timer; without it the output is exactly as before.
+
 Output: run-records.sh (0700), records-run.service, records-run.timer,
 records-arrival.path, records-arrival.service, records-health.service,
 records-health.timer and targets/NAME.json (0600). Installing them into the private runtime and the
@@ -53,9 +56,14 @@ TEMPLATES = (("run-records.sh.in", "run-records.sh", 0o700),
 # Rendered only when BACKUP_DIR (the backup directory as mounted in the container) is given.
 BACKUP_CHECK_TEMPLATES = (("records-backup-check.service.in", "records-backup-check.service", 0o600),
                           ("records-backup-check.timer.in", "records-backup-check.timer", 0o600))
+# Rendered only when ANALYSIS_ROOT (render.py --analysis-root) is given; the container values it needs
+# (CONTAINER_USER, CONTAINER_ENGINE_DIR, CONTAINER_PYTHON, CONTAINER_PROJECT_DIR) must then be in VALUES.
+ANALYSIS_TEMPLATES = (("run-analysis.sh.in", "run-analysis.sh", 0o700),
+                      ("records-analysis.service.in", "records-analysis.service", 0o600),
+                      ("records-analysis.timer.in", "records-analysis.timer", 0o600))
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
-ABSOLUTE = {"BACKUP_DIR", "ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
+ABSOLUTE = {"ANALYSIS_ROOT", "BACKUP_DIR", "ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
             "NOTIFY_PY", "NOTIFY_ENV_FILE", "RUN_RECORDS_SH", "STUB_FIXTURE", "RECORDS_DROP_DIR",
             # Host path of the records root holding ledger.sqlite (health check only).
             "RECORDS_ROOT",
@@ -85,7 +93,7 @@ MIN_FREE_BYTES_CEILING = 1024 ** 5
 DF_PROBE_SECONDS = 10 + 2
 TARGET_NAMES = {"DEFAULT_TARGET", "SCHEDULED_TARGET"}
 # Supplied per target by the renderer, never by VALUES.json.
-RESERVED = {"TARGET_NAME", "TIMER_ONCALENDAR", "HEALTH_DAYS", "HEALTH_TIMES", "HEALTH_TIMEZONE"}
+RESERVED = {"RUN_ANALYSIS_SH", "TARGET_NAME", "TIMER_ONCALENDAR", "HEALTH_DAYS", "HEALTH_TIMES", "HEALTH_TIMEZONE"}
 # Optional timer calendar inputs; absent means the default weekday schedule.
 TIMER_KEYS = ("TIMER_DAYS", "TIMER_TIMES", "TIMER_TIMEZONE")
 # Safety placeholders a template must keep: a wrapper template that dropped
@@ -130,6 +138,8 @@ def check_values(values):
         raise RenderError("EXPECTED_IMAGE: expected sha256:<64 hex>")
     if "MIN_FREE_BYTES" in values:
         check_min_free_bytes(values["MIN_FREE_BYTES"])
+    if "ANALYSIS_ROOT" in values and os.path.normpath(values["ANALYSIS_ROOT"]) != values["ANALYSIS_ROOT"]:
+        raise RenderError("ANALYSIS_ROOT: expected a normalised absolute path")
     if "RECORDS_DROP_DIR" in values:
         check_drop_dir(values["RECORDS_DROP_DIR"], values.get("RUNTIME_DIR"))
 
@@ -295,6 +305,11 @@ def render(values, targets, out):
         text = (HERE / template).read_text(encoding="utf-8")
         used.update(PLACEHOLDER.findall(text))
         files.append((output, substitute(text, values, template), mode))
+    for template, output, mode in ANALYSIS_TEMPLATES if "ANALYSIS_ROOT" in values else ():
+        text = (HERE / template).read_text(encoding="utf-8")
+        used.update(PLACEHOLDER.findall(text))
+        sh = str(PurePosixPath(values["RUN_RECORDS_SH"]).with_name("run-analysis.sh"))
+        files.append((output, substitute(text, {**values, "RUN_ANALYSIS_SH": sh}, template), mode))
     for name, template in targets:
         if not run_orchestrator.TARGET_RE.match(name):
             raise RenderError(f"target {name!r}: expected an upper-case target name")
@@ -335,9 +350,12 @@ def main(argv=None):
     parser.add_argument("--out", required=True)
     parser.add_argument("--target", action="append", default=[], metavar="NAME=TEMPLATE",
                         required=True)
+    parser.add_argument("--analysis-root", help="also render the off-by-default analysis cycle kit for this root")
     args = parser.parse_args(argv)
     try:
         values = json.loads(Path(args.values).read_text(encoding="utf-8"))
+        if args.analysis_root is not None and isinstance(values, dict):
+            values["ANALYSIS_ROOT"] = args.analysis_root
         targets = []
         for spec in args.target:
             name, sep, template = spec.partition("=")

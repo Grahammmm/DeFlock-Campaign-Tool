@@ -95,3 +95,66 @@ records analysis-sync --root R --last-received | --pending
 - **Output and limits.** stdout carries ids, codes and counts only. `--dry-run` writes nothing (`WOULD_SYNC` for placeable pairs).
   Exit 0 when nothing is pending and no receipt was refused, 1 otherwise. A root inside the repository or shaped like a flock
   store is `ROOT_REFUSED`. The command never writes a fact and never calls `flock_facts` or a model.
+
+## Tick and model handoff (DFGL-07f, host side)
+
+```
+records analysis-tick --root R [--max-agencies N=20] [--dry-run]
+```
+
+- **Gate.** Without `R/.analysis/LANE-ON` the command prints `ANALYSIS_LANE_OFF`, exits 0 and writes nothing. The operator creates that file;
+  the command never does. A root inside the repository or shaped like a flock store is `ROOT_REFUSED` (exit 1).
+- **Advance.** For each `agencies/*/review-config.json` (sorted, at most `--max-agencies`) it reads `flock_review.py status CONFIG --json`
+  and, when the key below moved, runs `flock_review.py run CONFIG` (a subprocess of the engine checkout's own tool; a missing tool is
+  `ERROR REVIEW_TOOL_MISSING`) and reads the status again. No model runs; every wait stage stays a wait until a model card writes its
+  files and calls `flock_review.py mark`.
+- **Outcome per agency** (one line each in `.analysis/analysis-ledger.jsonl`, `kind: tick`, with `status_sha256`, `config_sha256` and
+  `review_sha256`): `WAITING <stage>` (the DAG stopped at a wait), `DONE`, `ADVANCED <from>→<to>` (stopped at a non-wait stage),
+  `UNCHANGED`, `ERROR FAILED <stage>`, `ERROR LOCKED`, `ERROR CONFIG`, `ERROR REVIEW_TOOL_MISSING`.
+- **UNCHANGED key.** The status document, the config and the review state (the bytes of `compare.facts` FACTS.csv followed by its sibling
+  FACT-REVIEWS.csv, `missing` for an absent file) all equal the agency's last non-error ledger line: only `status` runs. A human review
+  changes the review state, so the next tick runs the DAG (only `report` reruns) and the tick after is `UNCHANGED`. Errors are never
+  `UNCHANGED`: a failed stage is retried each tick, and a held `.review/LOCK` (a model card is marking) is `ERROR LOCKED` (exit 0).
+- **Output.** `<slug> <outcome>` per agency (an `UNCHANGED` line adds the wait it still sits at) and
+  `analysis: A advanced, W waiting for a model, D done, E errors`. Exit 0 unless an `ERROR` other than `ERROR LOCKED`. `--dry-run` runs
+  `status` only and writes nothing (`WOULD_RUN`).
+- **`.analysis/needs-model.json`** (`records-needs-model-v1`, `schemas/records-needs-model-v1.json`, example `docs/examples/needs-model.example.json`;
+  atomic, 0600, rewritten every tick): one entry per agency whose next stage is a wait: `agency`, `records_agency_id`, `stage`, `role`
+  (`verify` for `verify` and `f4`, else `author`), `author_family` (provider of the `f3-findings` mark, else `assess`, else null),
+  `verify_family` (provider of the `verify` mark, for `f4` only), `input_fp`, `wait_files` (relative to the root when inside it),
+  `config`, `sources` (SOURCES.csv, for `fact-drafts` only). Slugs, stage ids, families, hashes and paths only; never record text.
+  `flock_review.py mark` refuses a `verify`/`f4` mark from the author's family (exit 3), so that wait stays open.
+
+## Finding packets in the host outbox (DFGL-07g)
+
+After an agency's tick outcome leaves the DAG at `DONE` (also on an `UNCHANGED` tick), `analysis-tick` rebuilds that agency's packets every cycle
+and prints one `<slug> PACKET_*` line (and one `kind: packet` ledger line) holding ids, codes and counts only:
+
+- **Joins.** Each `PUBLIC-OK.csv` row is joined by `finding_id` to the F3 run's `FINDINGS.csv`. Facts are read once with
+  `flock_facts.read_reviewed` (shared lock): a pending journal holds every finding `EVIDENCE_REVIEW_TXN_PENDING`, an invalid or raw-edited review
+  log `EVIDENCE_REVIEW_STATE_INVALID`. A cited fact must exist (`EVIDENCE_FACT_MISSING`), be `checked` (`EVIDENCE_FACT_UNREVIEWED`,
+  `EVIDENCE_FACT_DISPUTED`) and be a `record` whose `source_sha256` is in `SOURCES.csv` (`EVIDENCE_SOURCE_UNKNOWN`).
+- **Documents.** One per cited source sha; `date_received` is the first 10 characters of the earliest `received_at` (not `YYYY-MM-DDT…Z` →
+  `EVIDENCE_DATE_UNAVAILABLE`; never a file or run time). `request_id` is the common `request_id`, else empty. Provenance `run_id`,
+  `received_at` and `received_at_source` all come from that same earliest row.
+- **Law.** The newest retained `analysis-ready.json` listing the agency names the package (a run with no `analysis-ready.json` is skipped; an unreadable one is `EVIDENCE_LAW_UNAVAILABLE`); `campaign_tool.law.load_package` must report the same
+  status (`EVIDENCE_LAW_UNAVAILABLE`, `EVIDENCE_LAW_MISMATCH`). Citations (all `verified`) are one per checked fact plus the citation of each
+  `verified` rule of a `reviewed` package; every other rule id and every policy ref goes to `provenance.withheld_*`. A draft package adds the
+  `Research draft - not legal advice. The <id> law package is draft and unreviewed.` note to the text.
+- **Pre-validation.** Each packet passes `public_packets.clean` unchanged (`EVIDENCE_REFUSED <code>`, `EVIDENCE_TITLE_INVALID`,
+  `EVIDENCE_AGENCY_INVALID`); the text is never rewritten. Nothing here approves or publishes: G's signature remains the only approval.
+- **Outbox.** `.analysis/packet-outbox/<slug>-<key[:12]>.json` (0600, atomic, schema `records-analysis-packet-v2`: `agency_id`, `slug`, `key`,
+  `inputs` hashes, `packets[]` of `{packet, provenance}`, `held[]` of `{finding_id, code, ids}`), written only when `packets` is non-empty and
+  the key is new. Outcomes: `PACKET_STAGED <file> n=<packets> held=<held> <code>=<n>…`, `PACKET_UNCHANGED`, `PACKET_NOTHING_OK`, `PACKET_ALL_HELD`.
+  `--dry-run` computes and prints but writes no file and no ledger line.
+
+## Importing outbox packets (DFGL-07h, container side)
+`records analysis-packets-import --project P (--from DIR | --from-tar -)` reads DFGL-07g outbox files (regular files named `<slug>-<12 hex>.json`, ≤ 1 MiB; anything else is `IMPORT_INVALID`)
+and calls only `public_packets.propose`; it never calls `approve`, `decide`, `write_change`, `enable`, `turn_off` or `init`, so each verified finding waits as one
+`proposed` packet for G's signed approval (and G's switch).
+
+- **File checks.** Schema `records-analysis-packet-v2`, the `key` recomputed from the body and equal, the file name carrying `key[:12]`; otherwise `IMPORT_INVALID`, exit 1, nothing from that file proposed.
+- **Packet checks (before any write).** `packet.agency_key` equals the file `agency_id` and `kind` is `finding` (`IMPORT_IDENTITY_MISMATCH`); each `packet.documents[i]` matches `provenance.documents[i]`; the live project's
+  `run-outputs/<run_id>/outcomes/received-items.json` (read-only) has an item with that `original_sha256` and the packet's agency (`IMPORT_DOCUMENT_UNKNOWN`) whose `received_at[:10]` equals `date_received` (`IMPORT_DATE_MISMATCH`, also for a null time). The host's claims are never trusted.
+- **Receipt.** `<P>/analysis-packets-imported.jsonl` (0600, append-only), one `{key, source, result}` line per packet; result is `proposed r<rev>`, `duplicate`, `IMPORT_*` or `REFUSED <PacketError code>`. A `(key, source)` already there prints `ALREADY` and is skipped, so a re-sent file is a no-op and a refused packet waits for a new key.
+- **Output and exit.** Codes and counts only. Exit 0 when every file parsed (refusals are outcomes), 1 on `IMPORT_INVALID`, 75 on `journal_busy` (no receipt, retry later). DFGL-20s moves an outbox file to `packet-outbox/sent/` only after exit 0.

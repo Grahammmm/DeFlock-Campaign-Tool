@@ -1,0 +1,12 @@
+[Unit]
+Description=Records analysis cycle every 15 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=15min
+Persistent=false
+AccuracySec=1min
+Unit=records-analysis.service
+
+[Install]
+WantedBy=timers.target

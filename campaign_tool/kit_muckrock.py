@@ -4,7 +4,9 @@ See docs/KIT-MUCKROCK-IMPORT.md for how a re-import is compared with the request
 import json
 import errno
 import os
+import re
 import stat
+from datetime import datetime
 from pathlib import Path
 
 from . import kit_track
@@ -43,7 +45,20 @@ def _open_leaf(path):  # one non-following, nonblocking descriptor, admitted by 
     return stream
 
 
-def _load(path):  # a regular, small, UTF-8 JSON object; refused before kit/sent.json is read
+class _Duplicate(Exception):  # private: carries no key, value or location, so nothing from the file can be echoed
+    pass
+
+
+def _members(pairs):  # json.loads keeps the last repeated member silently; refuse any repeated decoded name instead
+    members = {}
+    for key, value in pairs:
+        if key in members:
+            raise _Duplicate
+        members[key] = value
+    return members
+
+
+def _load(path):  # a regular, small, UTF-8 JSON object without repeated members; refused before kit/sent.json is read
     path = Path(path)
     if not os.path.lexists(path) or path.is_symlink() or not path.is_file():
         raise ValueError(f"{path}: not a regular file (symlinks are refused)")
@@ -54,7 +69,9 @@ def _load(path):  # a regular, small, UTF-8 JSON object; refused before kit/sent
     if len(raw) > MAX_BYTES:
         raise ValueError(f"{path}: larger than 1 MiB")
     try:
-        document = json.loads(raw.decode("utf-8"))
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_members)
+    except _Duplicate:  # at any object depth, equal or contradictory alike: ambiguous, never first- or last-wins
+        raise ValueError(f"{path}: duplicate JSON keys") from None
     except RecursionError:  # translate decoder exhaustion, without imposing a separate depth limit
         raise ValueError(f"{path}: JSON nesting is too deep") from None
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -64,11 +81,26 @@ def _load(path):  # a regular, small, UTF-8 JSON object; refused before kit/sent
     return document
 
 
-def _date(document, *fields):  # the date part of the first field present; refused when none or malformed
+# YYYY-MM-DD, optionally then T/t/space and HH:MM[:SS[.fraction]] with an optional Z or +/-HH:MM zone; ASCII only, whole value.
+_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[Tt ](?:[01][0-9]|2[0-3]):[0-5][0-9]"
+                   r"(?::[0-5][0-9](?:\.[0-9]+)?)?(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])?)?")
+
+
+def _complete(value):  # the whole string is an admitted date/datetime, not just its first ten characters
+    if _TIME.fullmatch(value) is None:
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _date(document, *fields):  # the written date of the first field present (no UTC conversion); refused when none or malformed
     for field in fields:
         value = document.get(field)
         if value not in (None, ""):
-            day = kit_track._day(value[:10]) if isinstance(value, str) else None
+            day = kit_track._day(value[:10]) if isinstance(value, str) and _complete(value) else None
             if day is None:
                 raise ValueError(f"{field} must be an ISO 8601 date or datetime")
             return day.isoformat()

@@ -28,7 +28,11 @@ class UpdateError(ValueError):
 
 
 def _name_like(word):
-    return len(word) >= 2 and word[0].isupper() and not word.isupper()
+    # A titlecase letter (category Lt, e.g. U+01C5) is not an uppercase letter, so ``isupper`` alone misses a word
+    # that starts with one; admit both initials. The note itself is still never case-folded or normalised.
+    initial = word[:1]
+    return (len(word) >= 2 and (initial.isupper() or unicodedata.category(initial) == "Lt")
+            and not word.isupper())
 
 
 def _has_name_pair(note):

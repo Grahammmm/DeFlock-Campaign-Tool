@@ -4,7 +4,8 @@ Supported: paragraphs, ``## `` headings (rendered as ``<h3>``), ``**bold**``,
 ``[text](https://...)`` links, backslash-escaped punctuation, unordered ``- `` lists, ordered ``1. `` lists
 (``<ol start="N">`` when the first number is not 1) and simple pipe tables (a
 ``|...|`` header, a ``|---|:---:|`` separator with the same 1-12 cells, then
-same-width rows; ``\\|`` is a literal pipe; colons add an ``align-*`` class).
+same-width rows; a ``|`` is a delimiter when the backslash run before it is even, so ``\\\\|`` ends a cell
+after one visible backslash while ``\\|`` is a literal pipe; colons add an ``align-*`` class).
 Everything else is plain text. A line that is exactly ``![alt](/path)`` (alt
 1-200 chars, ``/path`` a key of the ``images`` map the site passes, giving the
 file's width and height) renders as ``<p><img ... loading="lazy"></p>``; with
@@ -22,7 +23,8 @@ other heading levels, ``1) `` numbered lists, malformed ``|`` tables, unclosed `
 ``*x*``/``_x_`` emphasis, ``image`` for any ``![`` line render would not show as an image; with
 ``images=None`` only the image syntax is checked) as sorted ``(line_no, code, detail)`` tuples; it
 never echoes link text or targets and never changes ``render``. Link findings use the renderer's
-own escaped-punctuation protection, so ``\\[x](...)`` is literal text, not a link.
+own escaped-punctuation protection, so ``\\[x](...)`` is literal text, not a link; bold, raw-HTML
+and emphasis checks likewise treat ``\\*``, ``\\_`` and ``\\<`` as literal.
 ``python3 -m campaign_tool.markdown_lite --lint FILE...`` prints
 ``FILE:LINE: CODE: detail`` lines and ``files=N findings=M`` (exit 0 clean,
 1 findings, 2 usage error or an unreadable, non-UTF-8, oversize or missing file).
@@ -46,7 +48,6 @@ _TLD = re.compile(r"[A-Za-z]{2,63}")
 _PORT = re.compile(r"[1-9][0-9]{0,4}")
 _ORDERED = re.compile(r"(\d{1,3})\. (.*)")
 _SEPARATOR = re.compile(r"\|(?:\s*:?-{3,}:?\s*\|)+")
-_PIPE = re.compile(r"(?<!\\)\|")
 _ALIGN = {(False, False): "", (True, False): ' class="align-left"', (True, True): ' class="align-center"',
           (False, True): ' class="align-right"'}
 MAX_COLUMNS = 12
@@ -163,11 +164,27 @@ def render(source, images=None):
 
 
 def _cells(line):
-    """Cells of a ``|...|`` row (unescaped ``|`` splits, ``\\|`` is a literal), else None."""
-    parts = _PIPE.split(line)
-    if len(parts) < 3 or parts[0] or parts[-1]:
+    """Cells of a ``|...|`` row, else None.
+
+    One left-to-right pass tracks the run of consecutive backslashes before each ``|``: an even run (including none)
+    leaves the pipe a delimiter, an odd run makes it a literal pipe in the cell and consumes that one escaping
+    backslash. Paired backslashes stay raw for ``inline``, which turns each pair into one visible backslash.
+    """
+    fields, buf, run = [], [], 0
+    for char in line:
+        if char != "|":
+            run = run + 1 if char == "\\" else 0
+            buf.append(char)
+        elif run % 2:
+            buf[-1] = char  # odd run: the last backslash escapes this pipe
+            run = 0
+        else:
+            fields.append("".join(buf))
+            buf, run = [], 0
+    fields.append("".join(buf))
+    if len(fields) < 3 or fields[0] or fields[-1]:
         return None
-    return [part.strip().replace("\\|", "|") for part in parts[1:-1]]
+    return [field.strip() for field in fields[1:-1]]
 
 
 def _tables(lines):
@@ -233,16 +250,22 @@ def _line_codes(line):
     return codes + _inline_codes(body)
 
 
+def _shield_escapes(text):
+    """Detection-only view: escaped punctuation becomes the renderer's numeric reference, other text stays raw."""
+    return "".join(f"&#{ord(part)};" if index % 2 else part for index, part in enumerate(_ESCAPED.split(text)))
+
+
 def _inline_codes(body):
     codes = []
     marked = _BOLD.sub(lambda m: "<strong>" + m.group(1) + "</strong>", _protect_inline(body))
     # A "![...](...)" span is reported once as ``image`` by lint(), not again as a link.
     codes += [code for m in _LINK.finditer(marked)
               if marked[m.start() - 1:m.start()] != "!" and (code := _target_code(unescape(m.group(2))))]
-    unbolded = _BOLD.sub(lambda m: m.group(1), body)
+    shielded = _shield_escapes(body)
+    unbolded = _BOLD.sub(lambda m: m.group(1), shielded)
     if "**" in unbolded:
         codes.append("bold-unclosed")
-    if _HTML.search(body):
+    if _HTML.search(shielded):
         codes.append("raw-html")
     plain = _LINK.sub(lambda m: m.group(1), unbolded)
     codes += ["emphasis" for _ in _EMPHASIS.finditer(plain)]

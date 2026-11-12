@@ -54,14 +54,92 @@ def _target(root, out):
     return target
 
 
-def write_rows(target, out, header, rows):
-    """Write header + rows (already formula-safe cells) to the new private file ``target``: 0600, O_EXCL."""
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+_PARENT_ERROR = "csv output parent changed or cannot be opened; export not confirmed"
+
+
+def _open_parent(path):
+    """Descriptor of ``path``'s parent directory, walked component by component without following any link.
+
+    Read-only: nothing is created or changed. Every intermediate descriptor is closed (all of them, even after a
+    close error); the returned one belongs to the caller. A missing, linked or non-directory component raises
+    ValueError before anything is written."""
+    names = [part for part in os.path.abspath(path).split(os.sep) if part][:-1]
+    held = []
     try:
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    except FileExistsError:
-        raise ValueError(f"--csv {out}: exists; choose a new file name") from None
+        held.append(os.open(os.sep, _DIR_FLAGS))
+        for name in names:
+            held.append(os.open(name, _DIR_FLAGS, dir_fd=held[-1]))
+    except OSError:
+        _close_quiet(held)  # a release failure never replaces the sanitized refusal
+        raise ValueError(_PARENT_ERROR) from None
+    except BaseException:
+        _release_beside_active(held)
+        raise
+    last = held.pop()
+    try:
+        _close_all(held)
+    except OSError:
+        _close_quiet([last])
+        raise ValueError(_PARENT_ERROR) from None
+    except BaseException:
+        _release_beside_active([last])
+        raise
+    return last
+
+
+def _close_each(fds):
+    """Try to close every descriptor, whatever any single close raises; the first error seen, or None."""
+    first = None
+    for fd in fds:
+        try:
+            os.close(fd)
+        except BaseException as error:
+            first = first or error
+    return first
+
+
+def _close_all(fds):
+    """Close every descriptor; the first error is raised after all have been tried."""
+    first = _close_each(fds)
+    if first is not None:
+        raise first
+
+
+def _close_quiet(fds):
+    """Close every descriptor; release OSErrors are dropped (the caller already reports its own refusal)."""
+    first = _close_each(fds)
+    if first is not None and not isinstance(first, OSError):
+        raise first
+
+
+def _release_beside_active(fds):
+    """Close every descriptor while another exception is propagating; nothing raised here may replace it."""
+    _close_each(fds)
+
+
+def _same_dir(fd, identity):
+    info = os.fstat(fd)
+    return (info.st_dev, info.st_ino) == identity
+
+
+def write_rows(target, out, header, rows):
+    """Write header + rows (already formula-safe cells) to the new private file ``target``: 0600, O_EXCL.
+
+    The parent directory is acquired once without following links; creation, verification and cleanup are
+    anchored to that descriptor. A parent that no longer is the admitted directory at the end is refused. Bounded:
+    not a confinement sandbox (an already-open directory moved elsewhere, hardlinks, mounts are out of scope)."""
+    parent_fd = _open_parent(target)
+    name = os.path.basename(os.fspath(target))
+    fd = None
     identity = None  # (st_dev, st_ino) of the file this call created, taken from its descriptor
     try:
+        info = os.fstat(parent_fd)
+        parent_identity = (info.st_dev, info.st_ino)
+        try:
+            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+        except FileExistsError:
+            raise ValueError(f"--csv {out}: exists; choose a new file name") from None
         created = os.fstat(fd)
         identity = (created.st_dev, created.st_ino)
         os.fchmod(fd, 0o600)
@@ -72,10 +150,28 @@ def write_rows(target, out, header, rows):
             writer.writerows(rows)
             handle.flush()
             os.fsync(handle.fileno())
+        # The stream is closed. Re-walk the canonical parent (metadata only) and require the admitted directory,
+        # then confirm the name still is the regular file this call created (lstat, no follow, no read).
+        # One observation, not an atomic check-and-return, and no byte proof.
+        try:
+            check_fd = _open_parent(target)
+            try:
+                confirmed = _same_dir(check_fd, parent_identity)
+            except BaseException:
+                _release_beside_active([check_fd])  # a close failure must not replace the active error
+                raise
+            os.close(check_fd)
+            if confirmed:
+                final = os.lstat(name, dir_fd=parent_fd)
+                confirmed = stat.S_ISREG(final.st_mode) and (final.st_dev, final.st_ino) == identity
+        except (OSError, ValueError):
+            confirmed = False
+        if not confirmed:
+            raise ValueError("csv output changed or cannot be verified; export not confirmed") from None
     except BaseException:
-        # Best-effort cleanup, subordinate to the original failure. Remove the name only while it still is the
-        # regular file this call created (lstat, no follow); a replacement, symlink, directory or absent name is
-        # left alone. Not an atomic compare-and-unlink: it covers substitutions made before this check.
+        # Best-effort cleanup, subordinate to the original failure, relative to the admitted parent only. Remove the
+        # name only while it still is the regular file this call created (lstat, no follow); a replacement,
+        # symlink, directory or absent name is left alone. Not an atomic compare-and-unlink.
         try:
             if fd is not None:
                 os.close(fd)
@@ -83,12 +179,20 @@ def write_rows(target, out, header, rows):
             pass
         try:
             if identity is not None:
-                current = os.lstat(target)
+                current = os.lstat(name, dir_fd=parent_fd)
                 if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == identity:
-                    os.unlink(target)
+                    os.unlink(name, dir_fd=parent_fd)
+        except OSError:
+            pass
+        try:
+            os.close(parent_fd)
         except OSError:
             pass
         raise
+    try:
+        os.close(parent_fd)
+    except OSError:
+        raise ValueError("csv output changed or cannot be verified; export not confirmed") from None
 
 
 def status_csv(root, out, today=None, law_base=None, *, request=None, owner=None):

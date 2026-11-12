@@ -84,7 +84,8 @@ class FactsReviewTest(unittest.TestCase):
         self.assertEqual((code, err), (0, []))
         self.assertEqual(out, ["review | alpha | %s | unreviewed -> checked" % self.a,
                                "review | alpha | %s | unreviewed -> checked" % self.b, "reviewed=2 changed=2 unchanged=0"])
-        self.assertEqual(self.log_lines(), [HEAD] + ["%s,unreviewed,checked,ben,%s,%s" % (i, DAY, NOTE) for i in (self.a, self.b)])
+        self.assertEqual(self.log_lines(), [HEAD + ",evidence_fp"] + ["%s,unreviewed,checked,ben,%s,%s,%s" % (r["fact_id"], DAY, NOTE, facts.evidence_fp(r))
+                                                                 for r in self.rows[:2]])
         self.assertEqual(stat.S_IMODE(self.log.stat().st_mode), 0o600)
         after = self.facts.read_bytes().decode().split("\n")
         self.assertEqual(len(after), len(before))
@@ -128,7 +129,7 @@ class FactsReviewTest(unittest.TestCase):
         code, out, _ = self.review([self.a], "disputed", "cara")
         days.add(datetime.date.today().isoformat())
         self.assertEqual((code, out[0]), (0, "review | alpha | %s | checked -> disputed" % self.a))
-        self.assertIn(self.log_lines()[2], {"%s,checked,disputed,cara,%s," % (self.a, day) for day in days})
+        self.assertIn(self.log_lines()[2], {"%s,checked,disputed,cara,%s,,%s" % (self.a, day, facts.evidence_fp(self.rows[0])) for day in days})
         self.assertEqual(self.check(), (0, []))
         text = self.facts.read_text(encoding="utf-8")
         self.facts.write_text(text.replace(self.a + ",record,,,ana,%s,disputed" % ADDED, self.a + ",record,,,ana,%s,checked" % ADDED),
@@ -190,8 +191,9 @@ class FactsReviewTest(unittest.TestCase):
         self.assertEqual(self.refused([self.a]), ["agencies/alpha/FACTS.csv: is a symlink; refusing"])
 
     def test_crash_mid_write_leaves_both_files_as_before(self):
+        """An error before the journal commit leaves both files as before; one after it is rolled forward (test_facts_review_txn)."""
         self.assertEqual(self.review([self.a])[0], 0)
-        for fail_on, log_present in ((1, True), (2, True), (2, False)):
+        for fail_on, log_present in ((1, True), (1, False)):
             with self.subTest(fail_on=fail_on, log_present=log_present):
                 if not log_present:
                     self.log.unlink()
