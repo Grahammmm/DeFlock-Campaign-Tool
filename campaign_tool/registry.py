@@ -81,13 +81,23 @@ def _read_bounded(path):
         os.close(fd)
 
 
+def _unique_members(pairs):
+    """RF1550-5: a repeated decoded member name in any object is ambiguous (json.loads keeps the last); never echoed."""
+    members = {}
+    for key, value in pairs:
+        if key in members:
+            raise ValueError("the register JSON contains a repeated object member")
+        members[key] = value
+    return members
+
+
 def _load(path):
     raw = _read_bounded(path)
     if raw is None:
         return []
     text = raw.decode("utf-8") or "[]"
     try:
-        entries = json.loads(text)
+        entries = json.loads(text, object_pairs_hook=_unique_members)
     except RecursionError:  # RF1500-24: the decoder's own exhaustion only; no depth policy, input never shown
         raise ValueError("the register JSON is nested too deeply") from None
     if not isinstance(entries, list) or not all(
