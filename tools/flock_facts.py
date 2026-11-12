@@ -9,6 +9,7 @@ V3 = V2 + ["source_path"]  # original's absolute location recorded with the cita
 KINDS = {"record", "policy", "law", "public"}
 STATUSES = {"unreviewed", "checked", "disputed"}
 REVIEW_HEAD = ["fact_id", "from_status", "to_status", "reviewer", "reviewed_at", "note"]  # FACT-REVIEWS.csv v1
+REVIEW_HEAD_V2 = REVIEW_HEAD + ["evidence_fp"]  # v2: each row bound to the evidence it reviewed
 EVIDENCE_FIELDS = ["agency", "request", "fact_type", "value", "source_sha256", "page", "verbatim_quote", "fact_id", "kind",
                    "effective_from", "effective_to", "added_by", "added_at", "source_path"]  # every reviewed column but status
 LOCK_WAIT = 30.0
@@ -151,35 +152,68 @@ def link_errors(store, folder, rows, said=None):
     return errors
 
 
+def read_log(log):
+    """(header, records) of a regular FACT-REVIEWS.csv, or None when it is absent or unreadable as CSV."""
+    if os.path.islink(log) or not os.path.isfile(log):
+        return None
+    with open(log, encoding="utf-8-sig", newline="") as handle:
+        records = list(csv.reader(handle))
+    return (records[0], records[1:]) if records else None
+
+
 def check_reviews(log, facts):
-    """FACT-REVIEWS.csv v1 if present (DF1537-01): rows valid, ids in FACTS.csv, last logged to_status == FACTS status."""
+    """FACT-REVIEWS.csv v1 (DF1537-01) or v2 if present. v1: rows valid, ids in FACTS.csv, last logged to_status == FACTS status.
+    v2 (DFGL-07b): a row is bound to the FACTS row with the same (fact_id, evidence_fp) and keeps every v1 rule; an unbound row
+    (changed or removed evidence) is history, format-checked only, and never confers or contradicts a status."""
     if os.path.islink(log) or (os.path.lexists(log) and not log.is_file()):
         return ["FACT-REVIEWS.csv: is a symlink or not a file; refusing"]
     if not log.exists():
         return []
     with open(log, encoding="utf-8-sig", newline="") as handle:
         records = list(csv.reader(handle))
-    if not records or records[0] != REVIEW_HEAD:
+    if not records or records[0] not in (REVIEW_HEAD, REVIEW_HEAD_V2):
         return ["reviews row 1: header is not FACT-REVIEWS.csv v1"]
-    by_id, last, errors = {r["fact_id"]: r for _, r in load(facts, facts.parent.name)[1]}, {}, []
+    head = records[0]
+    v2, last, errors = head == REVIEW_HEAD_V2, {}, []
+    cur = {(r["fact_id"], evidence_fp(r) if v2 else None): r for _, r in load(facts, facts.parent.name)[1]}
     for n, rec in ((n, r) for n, r in enumerate(records[1:], 2) if r):
-        if len(rec) != len(REVIEW_HEAD):
+        if len(rec) != len(head):
             errors.append("reviews row %d: columns have the wrong count" % n)
             continue
-        r, fact = dict(zip(REVIEW_HEAD, rec)), by_id.get(rec[0])
-        who = r["reviewer"].strip().casefold()
-        checks = (("fact_id", fact),
-                  ("from_status", r["from_status"] in STATUSES and r["from_status"] == last.get(rec[0], r["from_status"])),
+        r = dict(zip(head, rec))
+        key = (r["fact_id"], r.get("evidence_fp"))
+        fact, who = cur.get(key), r["reviewer"].strip().casefold()
+        checks = (("fact_id", fact if not v2 else re.fullmatch(r"F-[0-9a-f]{12}", r["fact_id"])),
+                  ("evidence_fp", not v2 or re.fullmatch(r"E-[0-9a-f]{16}", key[1])),
+                  ("from_status", r["from_status"] in STATUSES and r["from_status"] == last.get(key, r["from_status"])),
                   ("to_status", r["to_status"] in {"checked", "disputed"} - {r["from_status"]}),
                   ("reviewer", who and not (fact and fact["added_by"].strip().casefold() == who)),
                   ("reviewed_at", valid_date(r["reviewed_at"])),
                   ("note", not re.search(r"[\r\n]|.{121}", r["note"])))
         for field, ok in checks:
             if not ok:
-                errors.append("reviews row %d: %s %s" % (n, field, "is not in FACTS.csv" if field == "fact_id" else "is invalid"))
-        last[rec[0]] = r["to_status"]
-    return errors + ["reviews: %s: FACTS status %s does not match the review log (%s)" % (i, by_id[i]["status"], s)
-                     for i, s in last.items() if i in by_id and by_id[i]["status"] != s]
+                errors.append("reviews row %d: %s %s" % (n, field, "is not in FACTS.csv" if field == "fact_id" and not v2 else "is invalid"))
+        last[key] = r["to_status"]
+    return errors + ["reviews: %s: FACTS status %s does not match the review log (%s)" % (k[0], cur[k]["status"], s)
+                     for k, s in last.items() if k in cur and cur[k]["status"] != s]
+
+
+def overlay_errors(facts_path, log_path):
+    """check_reviews plus every FACTS status other than unreviewed that no bound review chain explains (a raw edit, not a
+    review). For the DAG and packet paths; `--check` keeps check_reviews so a manually imported store stays valid."""
+    log, got = Path(log_path), read_log(log_path)
+    v2 = bool(got) and got[0] == REVIEW_HEAD_V2
+    bound = {(rec[0], rec[-1] if v2 else None) for rec in (got[1] if got and got[0] in (REVIEW_HEAD, REVIEW_HEAD_V2) else []) if len(rec) == len(got[0])}
+    return check_reviews(log, Path(facts_path)) + [
+        "%s: status %s without a bound review" % (r["fact_id"], r["status"]) for _, r in load(facts_path, Path(facts_path).parent.name)[1]
+        if r["status"] != "unreviewed" and (r["fact_id"], evidence_fp(r) if v2 else None) not in bound]
+
+
+def upgrade_v1(log_rows, facts_rows):
+    """v2 log rows (dicts) from consistent v1 log rows: each is stamped with the evidence_fp of the current FACTS row of its
+    fact_id. None when a fact_id has no current row; the caller has already required check_reviews to pass."""
+    fps = {r["fact_id"]: evidence_fp(r) for r in facts_rows}
+    return None if any(r["fact_id"] not in fps for r in log_rows) else [dict(r, evidence_fp=fps[r["fact_id"]]) for r in log_rows]
 
 
 def evidence_fp(row):
@@ -584,16 +618,21 @@ def review_locked(args):
         return fail(errors)
     lines = ["review | %s | %s | %s" % (slug, i, "unchanged" if by_id[i]["status"] == args.set else "%s -> %s" % (
         by_id[i]["status"], args.set)) for i in ids]
-    changed = [[i, by_id[i]["status"], args.set, who, date, args.note or ""] for i in ids if by_id[i]["status"] != args.set]
+    changed = [[i, by_id[i]["status"], args.set, who, date, args.note or "", evidence_fp(by_id[i])] for i in ids if by_id[i]["status"] != args.set]
     if changed:
         for i, *_ in changed:
             by_id[i]["status"] = args.set
         old, add, swapped = plain_bytes(log), io.StringIO(), False
-        csv.writer(add, lineterminator="\n").writerows(([] if old else [REVIEW_HEAD]) + changed)
+        got = read_log(log) if old else None
+        v1 = bool(got) and got[0] == REVIEW_HEAD
+        if v1:  # a consistent v1 log (checked above) is upgraded in this same write
+            up = upgrade_v1([dict(zip(REVIEW_HEAD, rec)) for rec in got[1] if rec], rows)
+            csv.writer(add, lineterminator="\n").writerows([REVIEW_HEAD_V2] + [[u[k] for k in REVIEW_HEAD_V2] for u in up])
+        csv.writer(add, lineterminator="\n").writerows(([] if old else [REVIEW_HEAD_V2]) + changed)
         fd, tmp = tempfile.mkstemp(prefix=".FACT-REVIEWS.csv.", suffix=".tmp", dir=log.parent)
         try:  # the log is replaced first; if FACTS.csv then cannot be, the old log is put back
             with os.fdopen(fd, "wb") as out:
-                out.write((old + b"\n" if old and not old.endswith(b"\n") else old or b"") + add.getvalue().encode())
+                out.write((b"" if v1 else old + b"\n" if old and not old.endswith(b"\n") else old or b"") + add.getvalue().encode())
             os.replace(tmp, log)
             swapped = True
             write_atomic(files[0], rows)
@@ -622,7 +661,8 @@ def reviews(args):
     rows = []
     if log.exists():
         with open(log, encoding="utf-8-sig", newline="") as handle:
-            rows = [dict(zip(REVIEW_HEAD, rec)) for rec in list(csv.reader(handle))[1:] if rec]
+            recs = list(csv.reader(handle))
+            rows = [dict(zip(recs[0], rec)) for rec in recs[1:] if rec]
     rows = [r for r in rows if args.fact in (None, r["fact_id"]) and r["reviewed_at"] >= (args.since or "")]
     into = {s: {r["fact_id"] for r in rows if r["to_status"] == s} for s in ("checked", "disputed")}
     for r in rows:

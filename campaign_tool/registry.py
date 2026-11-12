@@ -85,7 +85,11 @@ def _load(path):
     raw = _read_bounded(path)
     if raw is None:
         return []
-    entries = json.loads(raw.decode("utf-8") or "[]")
+    text = raw.decode("utf-8") or "[]"
+    try:
+        entries = json.loads(text)
+    except RecursionError:  # RF1500-24: the decoder's own exhaustion only; no depth policy, input never shown
+        raise ValueError("the register JSON is nested too deeply") from None
     if not isinstance(entries, list) or not all(
             isinstance(e, dict) and set(e) == KEYS and all(isinstance(v, str) for v in e.values()) for e in entries):
         raise ValueError("the register must hold only a list of {name, directory, added_at}")
