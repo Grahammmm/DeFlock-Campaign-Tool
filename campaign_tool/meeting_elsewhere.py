@@ -55,11 +55,13 @@ def load_cited_elsewhere(value, label, today=None):
 def reference_problems(meetings, elsewhere, skip_meeting_id=None):
     """``meetings``: [(file label, loaded meeting)]. One line per cited entry that is gone or whose printed facts changed."""
     problems = []
+    current = None  # RF1801-5: built once per call, at the first unskipped citation (E + C identity evaluations)
     for label, meeting in meetings:
         if meeting.get("id") == skip_meeting_id and skip_meeting_id is not None:
             continue  # meetings-stage --replace repairs exactly this meeting
-        current = {identity(e): e for e in elsewhere or []}
         for n, snap in enumerate(meeting.get("cited_elsewhere", ())):
+            if current is None:
+                current = {identity(e): e for e in elsewhere or []}
             where = f"{label}.cited_elsewhere[{n}]"
             found = current.get(identity(snap))
             if found is None:
