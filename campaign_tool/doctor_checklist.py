@@ -28,6 +28,10 @@ def _stale_contacts_next(report, d):
 
 def _stale_kits_next(report, d):
     meetings = sorted({str(entry.get("meeting")) for entry in report["stale_comment_kits"]})
+    # shlex.quote keeps shell word boundaries, not terminal display: a no-id meeting's filename stem can carry ESC or
+    # a line break. Every distinct meeting is displayed, so every one is checked; never echo, strip or rewrite it.
+    if any(_has_control(m) for m in meetings):
+        raise ValueError("checklist stale meeting identifier contains a control character; repair content/meetings/")
     return "Re-stage with corrected findings: " + "; ".join(
         f"`{TOOL} meetings-stage --directory {d} --id {shlex.quote(m)} --replace`" for m in meetings)
 
