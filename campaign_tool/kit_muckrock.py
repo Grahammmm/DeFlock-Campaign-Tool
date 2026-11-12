@@ -45,7 +45,20 @@ def _open_leaf(path):  # one non-following, nonblocking descriptor, admitted by 
     return stream
 
 
-def _load(path):  # a regular, small, UTF-8 JSON object; refused before kit/sent.json is read
+class _Duplicate(Exception):  # private: carries no key, value or location, so nothing from the file can be echoed
+    pass
+
+
+def _members(pairs):  # json.loads keeps the last repeated member silently; refuse any repeated decoded name instead
+    members = {}
+    for key, value in pairs:
+        if key in members:
+            raise _Duplicate
+        members[key] = value
+    return members
+
+
+def _load(path):  # a regular, small, UTF-8 JSON object without repeated members; refused before kit/sent.json is read
     path = Path(path)
     if not os.path.lexists(path) or path.is_symlink() or not path.is_file():
         raise ValueError(f"{path}: not a regular file (symlinks are refused)")
@@ -56,7 +69,9 @@ def _load(path):  # a regular, small, UTF-8 JSON object; refused before kit/sent
     if len(raw) > MAX_BYTES:
         raise ValueError(f"{path}: larger than 1 MiB")
     try:
-        document = json.loads(raw.decode("utf-8"))
+        document = json.loads(raw.decode("utf-8"), object_pairs_hook=_members)
+    except _Duplicate:  # at any object depth, equal or contradictory alike: ambiguous, never first- or last-wins
+        raise ValueError(f"{path}: duplicate JSON keys") from None
     except RecursionError:  # translate decoder exhaustion, without imposing a separate depth limit
         raise ValueError(f"{path}: JSON nesting is too deep") from None
     except (UnicodeDecodeError, json.JSONDecodeError):
