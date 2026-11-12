@@ -1,0 +1,167 @@
+#!/bin/sh
+# Records analysis cycle (DFGL-20s template). Render with render.py --analysis-root
+# before installing; the rendered file belongs in the private runtime.
+#
+# One bounded cycle, run by records-analysis.timer every 15 minutes. It does
+# nothing at all unless the operator created ANALYSIS_ROOT/.analysis/LANE-ON.
+# It holds its own lock (ANALYSIS_ROOT/.analysis/analysis.lock) and never opens
+# the records run lock, so a records arrival can never be stranded by it.
+#   1 export new settled runs after the receipt cursor (container, read-only)
+#   2 receive them into .analysis/runs, then replay every pending run x agency pair
+#   3 tick every agency review DAG (this also resumes after a model card's mark)
+#   4 import staged packet-outbox files as pending packets, then move them to sent/
+# A failed step logs its code and the cycle continues; the first failure code is
+# the exit status. Step output goes to ANALYSIS_ROOT/.analysis/cycle.log (0600);
+# stdout carries one status line and no record text.
+#
+# Exit codes: 0 ok (also lane off or lock busy), 20 export, 21 receive/sync
+# (including a still-pending pair), 22 tick, 23 packet import, 75 docker or the
+# records container not ready, 78 preflight refused.
+set -eu
+umask 077
+
+ENGINE_DIR=@ENGINE_DIR@
+HOST_PYTHON=@HOST_PYTHON@
+DOCKER=@DOCKER@
+TIMEOUT=@TIMEOUT@
+FLOCK=@FLOCK@
+CONTAINER=@CONTAINER@
+CONTAINER_USER=@CONTAINER_USER@
+CONTAINER_ENGINE_DIR=@CONTAINER_ENGINE_DIR@
+CONTAINER_PYTHON=@CONTAINER_PYTHON@
+CONTAINER_PROJECT_DIR=@CONTAINER_PROJECT_DIR@
+ANALYSIS_ROOT=@ANALYSIS_ROOT@
+RUN_UID=@RUN_UID@
+KILL_AFTER=2
+EXPORT_TIMEOUT=300
+RECEIVE_TIMEOUT=120
+REPLAY_TIMEOUT=600
+TICK_TIMEOUT=1200
+IMPORT_TIMEOUT=120
+PROBE_TIMEOUT=20
+
+refuse() {
+  printf '%s\n' "run-analysis: refused ($1); nothing attempted" >&2
+  exit 78
+}
+[ "$(id -u)" -eq "$RUN_UID" ] || refuse RUN_UID_MISMATCH
+[ -x "$TIMEOUT" ] || refuse TIMEOUT_MISSING
+[ -x "$FLOCK" ] || refuse FLOCK_MISSING
+[ -x "$HOST_PYTHON" ] || refuse HOST_PYTHON_MISSING
+[ -x "$DOCKER" ] || refuse DOCKER_MISSING
+[ -f "$ENGINE_DIR/campaign_tool/records/analysis_bridge.py" ] || refuse ENGINE_DIR_INVALID
+case "$ANALYSIS_ROOT" in /*) ;; *) refuse ANALYSIS_ROOT_INVALID;; esac
+[ -d "$ANALYSIS_ROOT" ] && [ ! -L "$ANALYSIS_ROOT" ] || refuse ANALYSIS_ROOT_INVALID
+[ "$(stat -c %a "$ANALYSIS_ROOT")" = 700 ] || refuse ANALYSIS_ROOT_MODE
+
+A="$ANALYSIS_ROOT/.analysis"
+if [ ! -e "$A/LANE-ON" ]; then
+  printf '%s\n' "ANALYSIS_LANE_OFF"
+  exit 0
+fi
+
+# Own lock only; held until this process exits.
+exec 8>>"$A/analysis.lock"
+if ! "$FLOCK" -n 8; then
+  printf '%s\n' "analysis-cycle: another analysis cycle holds the lock; skipped"
+  exit 0
+fi
+
+CYCLE_LOG="$A/cycle.log"
+RC=0
+fail() { [ "$RC" -ne 0 ] || RC=$1; }
+note() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$CYCLE_LOG"; }
+
+# Host verb: stdin closed, lock fd not inherited, output kept in the cycle log.
+host() {
+  limit=$1; shift
+  PYTHONPATH="$ENGINE_DIR" "$TIMEOUT" -k "$KILL_AFTER" "$limit" "$HOST_PYTHON" -B -m campaign_tool.records "$@" </dev/null 8>&-
+}
+# Container verb; DOCKER_FLAG is -i only when a tar is fed on stdin.
+cverb() {
+  limit=$1; flag=$2; shift 2
+  "$TIMEOUT" -k "$KILL_AFTER" "$limit" "$DOCKER" exec $flag -u "$CONTAINER_USER" "$CONTAINER" \
+    env PYTHONPATH="$CONTAINER_ENGINE_DIR" "$CONTAINER_PYTHON" -B -m campaign_tool.records "$@" 8>&-
+}
+
+S_EXPORT=skip; S_RECEIVE=skip; S_SYNC=skip; S_TICK=skip; S_IMPORT=skip
+
+state=$("$TIMEOUT" -k "$KILL_AFTER" "$PROBE_TIMEOUT" "$DOCKER" inspect --format '{{.State.Running}}' "$CONTAINER" 2>/dev/null </dev/null) || state=
+DOCKER_UP=0
+[ "$state" != true ] || DOCKER_UP=1
+if [ "$DOCKER_UP" -eq 0 ]; then
+  note "docker or container not ready; export and import skipped"
+  fail 75
+fi
+
+# 1 export after the receipt cursor, 2 receive.
+if [ "$DOCKER_UP" -eq 1 ]; then
+  if LAST=$(host 60 analysis-sync --root "$ANALYSIS_ROOT" --last-received 2>>"$CYCLE_LOG"); then
+    case "$LAST" in
+      ""|*[!A-Za-z0-9_-]*) LAST=; S_EXPORT=bad-cursor; fail 21;;
+    esac
+  else
+    LAST=; S_EXPORT=bad-cursor; fail 21
+  fi
+  if [ -n "$LAST" ]; then
+    TMP="$A/incoming.tar.tmp"
+    if cverb "$EXPORT_TIMEOUT" "" analysis-export --project "$CONTAINER_PROJECT_DIR" \
+        --after "$LAST" --max-runs 5 --stdout >"$TMP" 2>>"$CYCLE_LOG"; then
+      S_EXPORT=0
+      if [ -s "$TMP" ]; then
+        mv -f "$TMP" "$A/incoming.tar"
+        if host "$RECEIVE_TIMEOUT" analysis-sync --root "$ANALYSIS_ROOT" --receive --tar "$A/incoming.tar" >>"$CYCLE_LOG" 2>&1; then
+          S_RECEIVE=0
+        else
+          S_RECEIVE=$?; fail 21
+        fi
+        mkdir -p "$A/incoming-done"
+        mv -f "$A/incoming.tar" "$A/incoming-done/$(date -u +%Y%m%dT%H%M%SZ)-$$.tar"
+      else
+        rm -f "$TMP"
+      fi
+    else
+      S_EXPORT=$?; rm -f "$TMP"; fail 20
+    fi
+  fi
+fi
+
+# 2b replay every pending run x agency pair, every cycle.
+if host "$REPLAY_TIMEOUT" analysis-sync --root "$ANALYSIS_ROOT" >>"$CYCLE_LOG" 2>&1; then
+  S_SYNC=0
+else
+  S_SYNC=$?; fail 21
+fi
+
+# 3 tick every review DAG.
+if host "$TICK_TIMEOUT" analysis-tick --root "$ANALYSIS_ROOT" >>"$CYCLE_LOG" 2>&1; then
+  S_TICK=0
+else
+  S_TICK=$?; fail 22
+fi
+
+# 4 import staged packets, then move them to sent/.
+OUTBOX="$A/packet-outbox"
+HAVE=0
+for f in "$OUTBOX"/*.json; do
+  [ ! -f "$f" ] || { HAVE=1; break; }
+done
+if [ "$HAVE" -eq 1 ] && [ "$DOCKER_UP" -eq 1 ]; then
+  TAR="$A/packets.tar.tmp"
+  if (cd "$OUTBOX" && tar -cf "$TAR" -- *.json) &&
+      cverb "$IMPORT_TIMEOUT" -i analysis-packets-import --project "$CONTAINER_PROJECT_DIR" --from-tar - \
+        <"$TAR" >>"$CYCLE_LOG" 2>&1; then
+    S_IMPORT=0
+    mkdir -p "$OUTBOX/sent"
+    for f in "$OUTBOX"/*.json; do
+      [ ! -f "$f" ] || mv -f "$f" "$OUTBOX/sent/"
+    done
+  else
+    S_IMPORT=fail; fail 23
+  fi
+  rm -f "$TAR"
+fi
+
+note "cycle export=$S_EXPORT receive=$S_RECEIVE sync=$S_SYNC tick=$S_TICK import=$S_IMPORT exit=$RC"
+printf '%s\n' "analysis-cycle: export=$S_EXPORT receive=$S_RECEIVE sync=$S_SYNC tick=$S_TICK import=$S_IMPORT exit=$RC"
+exit "$RC"

@@ -77,9 +77,9 @@ class SnapshotOwnershipTests(unittest.TestCase):
         return result
 
     def assertReleased(self):
-        self.assertEqual(len(self.opened), 1)
+        self.assertEqual(len(self.opened), 2)  # admitted directory, then the ledger relative to it
         self.assertEqual(len(self.dups), 1)
-        self.assertEqual([is_open(fd) for fd in self.opened + self.dups], [False, False])
+        self.assertEqual([is_open(fd) for fd in self.opened + self.dups], [False, False, False])
         self.assertTrue(is_open(self.sentinel), "an unrelated descriptor was closed")
 
     def test_fdopen_oserror_closes_original_and_duplicate_before_fixed_refusal(self):
@@ -130,8 +130,8 @@ class SnapshotOwnershipTests(unittest.TestCase):
                 with mock.patch("os.open", lambda *a, **k: self.opened.append(real_open(*a, **k)) or self.opened[-1]):
                     ledger_list._snapshot(self.ledger)
         self.assertEqual(str(caught.exception), REFUSAL)
-        self.assertEqual(len(self.opened), 1)
-        self.assertFalse(is_open(self.opened[0]))
+        self.assertEqual(len(self.opened), 2)
+        self.assertFalse(any(is_open(fd) for fd in self.opened))
         self.assertTrue(is_open(self.sentinel))
 
     def test_successful_transfer_closes_once_without_over_close(self):

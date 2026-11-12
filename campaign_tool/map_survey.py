@@ -25,6 +25,8 @@ HEADER = ("node_url", "latitude", "longitude", "manufacturer", "operator", "dire
 FILLED = HEADER[-4:]
 MAX_CSV_BYTES = 2 * 1024 * 1024
 ROW_PROBLEM = re.compile(r"map/point-checks\.json\.checks\[(\d+)\]\.(\w+): (.*)")
+NODE_URL_PREFIX = "https://www.openstreetmap.org/node/"
+CANONICAL_NODE_URL = re.compile(re.escape(NODE_URL_PREFIX) + r"[1-9][0-9]*")  # ASCII only: no sign, padding or normalisation
 NOTE = "Private worksheet; nothing was built, imported or published."
 
 
@@ -317,6 +319,7 @@ def survey_import(root, csv_path, *, apply=False, today=None):
     path, document = _existing(root)
     table = _read_sheet(csv_path)
     nodes = content.point_nodes(cameras)
+    mapped = {f"{NODE_URL_PREFIX}{node}": node for node in nodes if node >= 1}  # canonical URL -> loaded node, built once
     problems, additions, seen = [], [], set()
     for number, cells in enumerate(table, start=2):  # the header is row 1, as in a spreadsheet
         if len(cells) != len(HEADER):
@@ -325,12 +328,11 @@ def survey_import(root, csv_path, *, apply=False, today=None):
         row = dict(zip(HEADER, cells))
         if not any(row[key].strip() for key in FILLED):
             continue
-        match = content.OSM_NODE_URL.fullmatch(row["node_url"])
-        node = int(match.group(1)) if match else None
-        if node is None or node < 1 or row["node_url"] != f"https://www.openstreetmap.org/node/{node}":
+        if not CANONICAL_NODE_URL.fullmatch(row["node_url"]):  # the cell is untrusted: never int() its digits
             problems.append(f"row {number} node_url: edited; it must be a node URL exactly as the sheet wrote it")
             continue
-        if node not in nodes:
+        node = mapped.get(row["node_url"])
+        if node is None:
             problems.append(f"row {number} node_url: not a mapped point")
             continue
         for key in FILLED[:3]:

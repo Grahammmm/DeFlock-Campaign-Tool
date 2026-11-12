@@ -168,15 +168,15 @@ class FlockReviewTest(unittest.TestCase):
         self.assertEqual((code, calls(p)[seen:]), (0, ["compare_build", "check_compare", "summarize"]), out)
         facts = p["FO"] / "store" / "agencies" / SLUG / "FACTS.csv"
         original = facts.read_bytes()
-        facts.write_bytes(original.replace(b"Vigilant", b"Vigilent"))
+        facts.write_bytes(original.replace(b"The ALPR vendor", b"The ALPR vendr"))  # evidence change (quote); the id stays valid
         seen = len(calls(p))
         code, out = tool("run", config)
         self.assertEqual(code, 0, out)
         self.assertEqual([line.split()[1] for line in out.splitlines() if "rc=" in line], ["facts-import"])
         self.assertEqual((facts.read_bytes(), calls(p)[seen:]), (original, []))
-        moved = list(p["out"].glob(".review/superseded/facts-import-*/store/agencies/%s/FACTS.csv" % SLUG))
+        moved = list(p["out"].glob(".review/superseded/fact-reviews/*/FACTS.csv"))  # DFGL-07e: the pre-reconcile pair is copied, the store never moved
         self.assertEqual(len(moved), 1)
-        self.assertIn(b"Vigilent", moved[0].read_bytes())
+        self.assertIn(b"vendr", moved[0].read_bytes())
 
     def test_f2_only_change_invalidates_rules_and_downstream(self):
         engine = self.tmp / "engine"
@@ -342,7 +342,7 @@ class FlockReviewTest(unittest.TestCase):
         code, out = tool("run", config)
         self.assertEqual((code, out.count(" cached\n"), out.count("rc="), state_path.read_bytes()), (0, 14, 0, legacy), out)
         facts = p["FO"] / "store" / "agencies" / SLUG / "FACTS.csv"
-        facts.write_bytes(facts.read_bytes() + b"\n")
+        facts.write_bytes(facts.read_bytes().replace(b"The ALPR vendor", b"The ALPR vendr"))
         listing = tree(p["out"])
         self.assertIn("\n7 facts-import run stale (inputs or outputs changed)\n", self.status(config))
         self.assertEqual(tree(p["out"]), listing)

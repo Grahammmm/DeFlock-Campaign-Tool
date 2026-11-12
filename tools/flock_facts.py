@@ -178,11 +178,16 @@ def check_reviews(log, facts):
         return []
     with open(log, encoding="utf-8-sig", newline="") as handle:
         records = list(csv.reader(handle))
+    return review_errors(records, [r for _, r in load(facts, facts.parent.name)[1]])
+
+
+def review_errors(records, rows):
+    """The check_reviews rules over parsed log records and the FACTS rows they sit beside (also run on a candidate pair)."""
     if not records or records[0] not in (REVIEW_HEAD, REVIEW_HEAD_V2):
         return ["reviews row 1: header is not FACT-REVIEWS.csv v1"]
     head = records[0]
     v2, last, errors = head == REVIEW_HEAD_V2, {}, []
-    cur = {(r["fact_id"], evidence_fp(r) if v2 else None): r for _, r in load(facts, facts.parent.name)[1]}
+    cur = {(r["fact_id"], evidence_fp(r) if v2 else None): r for r in rows}
     for n, rec in ((n, r) for n, r in enumerate(records[1:], 2) if r):
         if len(rec) != len(head):
             errors.append("reviews row %d: columns have the wrong count" % n)
@@ -288,9 +293,10 @@ def txn_write(store, slug, facts_rows, log_bytes):
     folder, new = store / "agencies" / slug, {"facts": serialize(facts_rows), "log": log_bytes}
     names, doc = {"facts": "FACTS.csv", "log": "FACT-REVIEWS.csv"}, {"schema": "flock-facts-txn-v1", "agency": slug}
     try:
-        for key, name in names.items():
-            _put(folder / STAGED[key == "log"], new[key])
-            doc[key] = {"old": _digest(folder / name), "new": hashlib.sha256(new[key]).hexdigest()}
+        for key, name in names.items():  # log None (reconcile, no log yet): nothing staged, recover sees "missing" == "missing"
+            if new[key] is not None:
+                _put(folder / STAGED[key == "log"], new[key])
+            doc[key] = {"old": _digest(folder / name), "new": "missing" if new[key] is None else hashlib.sha256(new[key]).hexdigest()}
         _put(folder / STAGED[2], json.dumps(doc).encode())
         os.replace(folder / STAGED[2], folder / JOURNAL)  # commit point
     except BaseException:  # not committed: the old pair stands, drop this writer's temps
@@ -298,7 +304,8 @@ def txn_write(store, slug, facts_rows, log_bytes):
             with contextlib.suppress(OSError): os.unlink(folder / name)
         raise
     _sync_dir(folder)
-    os.replace(folder / STAGED[1], folder / names["log"])
+    if log_bytes is not None:
+        os.replace(folder / STAGED[1], folder / names["log"])
     os.replace(folder / STAGED[0], folder / names["facts"])
     _sync_dir(folder)
     os.unlink(folder / JOURNAL)
@@ -735,6 +742,80 @@ def review_locked(args):
     return 0
 
 
+def reconcile(args):
+    """DFGL-07d: install a fresh unreviewed projection (STAGING) over the active store, keeping every review still bound to
+    unchanged evidence. One lock, one transaction; the previous pair is copied to DIR/<UTC>[-n]/. Ids and counts only."""
+    store, src, slug, sup = Path(args.store).resolve(), Path(args.src_store).resolve(), slugify(args.agency), Path(args.superseded).resolve()
+    if any(p == REPO or REPO in p.parents for p in (store, sup)):
+        return fail(["store inside repository"])
+    path = src / "agencies" / slug / "FACTS.csv"
+    try:  # unreadable staging (bad UTF-8, CSV error, I/O) is the staging refusal, not the generic io handler's
+        fresh = [r for _, r in load(path, slug)[1]] if path.is_file() and not any(os.path.islink(p) for p in (src / "agencies", path.parent, path)) else None
+        if fresh is None or check_file(path, slug) or any(r["status"] != "unreviewed" for r in fresh):
+            fresh = None
+    except (OSError, UnicodeDecodeError, csv.Error):
+        fresh = None
+    if fresh is None:
+        return print("RECONCILE_STAGING_INVALID") or 1
+    store.mkdir(mode=0o700, parents=True, exist_ok=True)  # the staging plan found no error: only now may a missing store appear
+    with store_lock(store):
+        return reconcile_locked(store, slug, sup, fresh)
+
+
+def reconcile_locked(store, slug, sup, fresh):
+    folder, bad = store / "agencies" / slug, lambda: print("REVIEW_STATE_INVALID") or 1
+    if os.path.islink(store / "agencies") or os.path.islink(folder):
+        return bad()
+    recover(store, slug)
+    facts_p, log_p = folder / "FACTS.csv", folder / "FACT-REVIEWS.csv"
+    have, has_log, old, got = os.path.lexists(facts_p), os.path.lexists(log_p), [], None
+    try:
+        if has_log and not have or have and (os.path.islink(facts_p) or not facts_p.is_file() or check_file(facts_p, slug)):
+            return bad()
+        old, got = [r for _, r in load(facts_p, slug)[1]] if have else [], read_log(log_p) if has_log else None
+        v1 = bool(got) and got[0] == REVIEW_HEAD  # a stale FACTS status is the raw edit this verb heals; v1 is never lenient
+        if [e for e in check_reviews(log_p, facts_p) if v1 or "does not match the review log" not in e] if have else False:
+            return bad()
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return bad()
+    recs = [dict(zip(got[0], r)) for r in got[1] if r] if got else []
+    recs = upgrade_v1(recs, old) if v1 else recs
+    if recs is None:
+        return bad()
+    chain = {(r["fact_id"], r["evidence_fp"]): r["to_status"] for r in recs}  # last to_status of each bound chain
+    cur, rows, kept, reset, new = {r["fact_id"]: r for r in old}, [], 0, 0, 0
+    for r in fresh:
+        st, c = chain.get((r["fact_id"], evidence_fp(r)), "unreviewed"), cur.get(r["fact_id"])
+        rows.append(dict(r, status=st))
+        new += c is None
+        reset += c is not None and st == "unreviewed" and c["status"] != "unreviewed" and evidence_fp(c) != evidence_fp(r)
+        kept += c is not None and st != "unreviewed"
+    raw = sum(r["status"] != "unreviewed" and (r["fact_id"], evidence_fp(r)) not in chain for r in old)
+    log_bytes = plain_bytes(log_p) if has_log else None
+    if v1:
+        buf = io.StringIO()
+        csv.writer(buf, lineterminator="\n").writerows([REVIEW_HEAD_V2] + [[r[k] for k in REVIEW_HEAD_V2] for r in recs])
+        log_bytes = buf.getvalue().encode()
+    if got and review_errors(list(csv.reader(io.StringIO(log_bytes.decode("utf-8-sig")))), rows):  # history bound anew to the merged rows must pass the full check
+        return bad()
+    if have:  # keep the previous pair before replacing it
+        stamp, n = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ"), 0
+        while True:
+            try:
+                (dest := sup / (stamp + ("-%d" % n if n else ""))).mkdir(mode=0o700, parents=True)
+                break
+            except FileExistsError:
+                n += 1
+        for p in (facts_p, log_p):
+            if plain_bytes(p) is not None:
+                _put(dest / p.name, plain_bytes(p))
+    for sub in (store / "agencies", folder):
+        sub.mkdir(mode=0o700, exist_ok=True)
+    txn_write(store, slug, rows, log_bytes)
+    print("reconcile | %s | kept=%d reset=%d new=%d removed=%d raw_dropped=%d" % (slug, kept, reset, new, len(set(cur) - {r["fact_id"] for r in fresh}), raw))
+    return 0
+
+
 def reviews(args):
     """RF0420-9: one agency's FACT-REVIEWS.csv history after the full check `review` runs. Read-only; ids, statuses, dates
     and counts only, never a reviewer, note, value, quote or page. A reversal is a fact changed into both checked and disputed."""
@@ -784,10 +865,12 @@ def _main(argv=None):
                         " | stale --store DIR --date YYYY-MM-DD [--agency SLUG] [--findings FINDINGS.csv]"
                         " | review --store DIR --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME"
                         " [--date YYYY-MM-DD] [--note TEXT] | unreadable --store DIR --out FILE.csv [--agency SLUG]"
-                        " | reviews --store DIR --agency SLUG [--fact ID] [--since YYYY-MM-DD]")
+                        " | reviews --store DIR --agency SLUG [--fact ID] [--since YYYY-MM-DD]"
+                        " | reconcile --store ACTIVE --from STAGING --agency SLUG --superseded DIR")
     for name in ("--check", "--store", "--added-by", "--agency", "--inventory", "--list", "--text", "--findings", "--date",
-                 "--ids", "--reviewer", "--note", "--out", "--fact", "--since"):
+                 "--ids", "--reviewer", "--note", "--out", "--fact", "--since", "--superseded"):
         parser.add_argument(name)
+    parser.add_argument("--from", dest="src_store")
     parser.add_argument("--kind", default="record", choices=sorted(KINDS))
     parser.add_argument("--status", default="checked", choices=sorted(STATUSES))
     parser.add_argument("--set", choices=["checked", "disputed"])
@@ -802,6 +885,15 @@ def _main(argv=None):
         parser.error("--out belongs to unreadable only")
     if (args.fact is not None or args.since is not None) and args.command[:1] != ["reviews"]:
         parser.error("--fact and --since belong to reviews only")
+    if (args.src_store is not None or args.superseded is not None) and args.command[:1] != ["reconcile"]:
+        parser.error("--from and --superseded belong to reconcile only")
+    if args.command[:1] == ["reconcile"]:
+        if len(args.command) != 1 or args.check or not args.store or not args.src_store or not args.superseded \
+                or not slugify(args.agency or "") or any(v is not None for v in (
+                    args.inventory, args.list, args.added_by, args.date, args.findings, args.text, args.ids, args.set,
+                    args.reviewer, args.note)):
+            parser.error("usage: reconcile --store ACTIVE --from STAGING --agency SLUG --superseded DIR")
+        return reconcile(args)
     if args.command[:1] == ["reviews"]:
         if len(args.command) != 1 or args.check or not args.store or not slugify(args.agency or "") or any(v is not None for v in (
                 args.inventory, args.list, args.added_by, args.date, args.findings, args.text, args.ids, args.set, args.reviewer,
