@@ -178,3 +178,5 @@ DFGL-16A), never at `DIR/current` with `--project`. The existing journal writers
 `run-records.sh` gets an optional post-step when `CONSOLE_EXPORT_DIR` is in the render values (it also needs `CONTAINER_USER`,
 `CONTAINER_ENGINE_DIR`, `CONTAINER_PYTHON` and `CONTAINER_PROJECT_DIR`). It pipes `console-export --latest --stdout` from the container
 into `console-import` after the run's report and notice, inside the run lock; a failure is logged and never changes the exit status.
+Both ends of that pipe are bounded by the invocation deadline the work stages use (at most 300 s), so the post-step never spends the
+notify/backstop reserve inside the unit timeout; a run or arrival follow-up that ends with under 10 s left skips it ("console export SKIPPED").

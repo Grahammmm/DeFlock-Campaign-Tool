@@ -429,13 +429,25 @@ CONSOLE_EXPORT_DIR=@CONSOLE_EXPORT_DIR@
 # container into the host's read-only export tree. The pipe ends in the host import,
 # which verifies every hash, so a failed or truncated export changes nothing. A
 # failure is logged with its code and NEVER changes this run's exit status.
+# Time: the whole pipe (both ends) ends by the invocation deadline the work stages
+# use, so it spends only RUN_BUDGET_SECONDS time, never the backstop/notify reserve
+# render.py check_budget keeps inside the unit timeout. A run (or arrival follow-up)
+# that ends with less than CONSOLE_EXPORT_MIN_SECONDS left skips the export.
+CONSOLE_EXPORT_TIMEOUT=300
+CONSOLE_EXPORT_MIN_SECONDS=10
 console_export_step() {
+  ce_secs=$((INVOCATION_DEADLINE_USE - $(date +%s) - KILL_AFTER))
+  [ "$ce_secs" -le "$CONSOLE_EXPORT_TIMEOUT" ] || ce_secs=$CONSOLE_EXPORT_TIMEOUT
+  if [ "$ce_secs" -lt "$CONSOLE_EXPORT_MIN_SECONDS" ]; then
+    log "console export SKIPPED: ${ce_secs}s left before the invocation deadline; previous export kept; run status unchanged"
+    return 0
+  fi
   set +e
-  err=$("$TIMEOUT" -k "$KILL_AFTER" 300 "$DOCKER" exec -u @CONTAINER_USER@ "$CONTAINER" \
+  err=$("$TIMEOUT" -k "$KILL_AFTER" "$ce_secs" "$DOCKER" exec -u @CONTAINER_USER@ "$CONTAINER" \
     env PYTHONPATH=@CONTAINER_ENGINE_DIR@ @CONTAINER_PYTHON@ -B -m campaign_tool.records \
     console-export --project @CONTAINER_PROJECT_DIR@ --latest --stdout </dev/null 9>&- |
-    PYTHONPATH="$ENGINE_DIR" "$HOST_PYTHON" -B -m campaign_tool.records console-import \
-      --out "$CONSOLE_EXPORT_DIR" --from-tar - 2>&1 >/dev/null 9>&-)
+    PYTHONPATH="$ENGINE_DIR" "$TIMEOUT" -k "$KILL_AFTER" "$ce_secs" "$HOST_PYTHON" -B -m campaign_tool.records \
+      console-import --out "$CONSOLE_EXPORT_DIR" --from-tar - 2>&1 >/dev/null 9>&-)
   crc=$?
   if [ "$crc" -eq 0 ]; then
     log "console export installed"
