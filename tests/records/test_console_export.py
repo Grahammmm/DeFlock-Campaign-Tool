@@ -57,7 +57,7 @@ class ConsoleExportTests(unittest.TestCase):
         (self.project / "agency-retention.csv").write_text("agency,days\n")
         for journal in ("approvals/queue.jsonl", "public-packets.jsonl", "public-updates.jsonl", "mail/outbox.json"):
             path = self.project / journal
-            path.parent.mkdir(exist_ok=True)
+            path.parent.mkdir(mode=0o700, exist_ok=True)  # the live approvals dir is private (decisions-apply receipts are read from it)
             path.write_text('{"entry": "journal"}\n')
         self.dest = self.tmp / "dest"
         self.dest.mkdir(mode=0o700)

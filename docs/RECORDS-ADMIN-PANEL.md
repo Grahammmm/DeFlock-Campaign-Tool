@@ -253,3 +253,26 @@ on its row (review, dashboard and next steps, packets, public updates); a later 
 entry stays in the journal. An entry in `EXPORT.json.apply_outcomes` as `{"refusal": "<code>"}` shows `not applied: <code>`. This survives
 export swaps because the journal lives outside the export. OFF and kill add that they take effect at the next apply (records run); for an
 immediate stop run `records public-updates off|kill --project <live project> --actor NAME` on the host that owns the project.
+
+### Applying the journal (DFGL-16C)
+
+`records decisions-apply --project P --from-journal FILE|-` runs in the container, inside the records run's lock. Each entry, in order, goes
+through the one existing function its organizer action calls on the live console: `approval_queue.approve|reject|edit` (an edit passes
+`revision_seen` as `expected_revision`; an approve is verified by the existing code against the exported live payload, so G's signature is
+checked on the live project and nothing is verified or trusted anew), `public_packets.approve|decide` with `revision_seen`, and
+`public_updates.retract|turn_off|kill`. A message-link approve also appends its link as the console does. No mail-draft placement and no send runs.
+Outcomes print one line per entry and, when final, are appended to `P/approvals/decisions-applied.jsonl` (0600, `{entry_id, outcome, at}`):
+`APPLIED`, `STALE_REVISION`, `SIGNATURE_REFUSED`, `INVALID_TRANSITION` or `REFUSED <code>`. A receipted entry is never retried (`ALREADY`, no event);
+the organizer decides again on the next export. Each unreceipted entry first gets a write-ahead `INTENT` line (`{entry_id, outcome: "INTENT", at, base}`;
+`base` is the target's queue revision or its packet / public-updates journal length, and an INTENT is never an outcome nor listed in the export). If a run dies after the
+live mutation but before its outcome line (queue busy, disk full, timeout), the replay finds the INTENT, looks for that entry's own mutation after `base` (same target,
+revision, actor and recorded value) and receipts `APPLIED` instead of running it again against a revision it has itself moved past; when nothing landed it applies the
+entry as normal; a retry that finds the target has moved on (a deferred attempt, then another organizer's change) writes a fresh INTENT with the new `base` first, so the
+latest INTENT always bounds the attempt that may have landed. If the INTENT cannot be written, nothing is mutated (`DEFERRED`).
+`PROJECT_MISMATCH` (the entry's `source_project_id` is another project's) applies nothing and writes no
+receipt; a transient lock or I/O failure prints `DEFERRED` and is tried again at the next run. A damaged journal or receipt file exits 1 before anything is applied.
+
+`console-export` then writes `applied_journal_ids` (the `APPLIED` entries) and `apply_outcomes` (`{"outcome": code}`, plus `"refusal": code` when not
+applied) into `EXPORT.json`, so the panel's pending overlay clears or shows `not applied: <code>`. `run-records.sh` runs the apply just before the
+export when `DECISIONS_DIR` (the host directory of `records panel --decisions-dir`) is also in the render values; the render refuses it without
+`CONSOLE_EXPORT_DIR`, and without it the rendered script is unchanged. A failure is logged (`decisions apply rc=N ...`) and never changes the run's exit status.

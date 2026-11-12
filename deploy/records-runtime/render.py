@@ -55,6 +55,8 @@ TEMPLATES = (("run-records.sh.in", "run-records.sh", 0o700),
              ("records-health.timer.in", "records-health.timer", 0o600))
 # Marker lines that bracket the optional console-export post-step in run-records.sh.in.
 CONSOLE_BLOCK = re.compile(r"^# CONSOLE-EXPORT-BEGIN.*?^# CONSOLE-EXPORT-END\n", re.MULTILINE | re.DOTALL)
+# Nested inside it: rendered only when DECISIONS_DIR (the host journal directory of `records panel --decisions-dir`) is given too.
+DECISIONS_BLOCK = re.compile(r"^# DECISIONS-APPLY-BEGIN.*?^# DECISIONS-APPLY-END\n", re.MULTILINE | re.DOTALL)
 # Rendered only when BACKUP_DIR (the backup directory as mounted in the container) is given.
 BACKUP_CHECK_TEMPLATES = (("records-backup-check.service.in", "records-backup-check.service", 0o600),
                           ("records-backup-check.timer.in", "records-backup-check.timer", 0o600))
@@ -66,7 +68,7 @@ ANALYSIS_TEMPLATES = (("run-analysis.sh.in", "run-analysis.sh", 0o700),
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
 ABSOLUTE = {"ANALYSIS_ROOT", "BACKUP_DIR", "ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
-            "NOTIFY_PY", "NOTIFY_ENV_FILE", "CONSOLE_EXPORT_DIR", "RUN_RECORDS_SH", "STUB_FIXTURE", "RECORDS_DROP_DIR",
+            "NOTIFY_PY", "NOTIFY_ENV_FILE", "CONSOLE_EXPORT_DIR", "DECISIONS_DIR", "RUN_RECORDS_SH", "STUB_FIXTURE", "RECORDS_DROP_DIR",
             # Host path of the records root holding ledger.sqlite (health check only).
             "RECORDS_ROOT",
             # Container stage plans (targets/test-container.json.in,
@@ -290,6 +292,8 @@ def render(values, targets, out):
 
     used = set()
     files = []
+    if "DECISIONS_DIR" in values and "CONSOLE_EXPORT_DIR" not in values:
+        raise RenderError("DECISIONS_DIR: needs CONSOLE_EXPORT_DIR (the apply step runs before the console export)")
     plans = []
     for template, output, mode in TEMPLATES:
         text = (HERE / template).read_text(encoding="utf-8")
@@ -304,6 +308,8 @@ def render(values, targets, out):
                  "HEALTH_TIMEZONE": timer.timezone}
         if "CONSOLE_EXPORT_DIR" not in values:  # the post-step exists only when its target is given
             text = CONSOLE_BLOCK.sub("", text)
+        if "DECISIONS_DIR" not in values:
+            text = DECISIONS_BLOCK.sub("", text)
         files.append((output, substitute(text, {**values, **extra}, template), mode))
     for template, output, mode in BACKUP_CHECK_TEMPLATES if "BACKUP_DIR" in values else ():
         text = (HERE / template).read_text(encoding="utf-8")

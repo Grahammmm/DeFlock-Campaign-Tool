@@ -301,6 +301,32 @@ class ConsoleExportStepTests(RuntimeHarness):
                 yield line
             inside = inside and not line.startswith("# CONSOLE-EXPORT-END")
 
+    # DFGL-16C: the journal replay runs inside the container before the export, only when DECISIONS_DIR is rendered.
+    def test_decisions_apply_is_rendered_and_run_only_with_a_decisions_dir_and_a_journal(self):
+        self.render(CONSOLE_EXPORT_DIR=str(self.tmp / "export"), **self.CE)
+        text = self.script.read_text()
+        template = (RUNTIME / "run-records.sh.in").read_text()
+        self.assertNotIn("decisions", text.lower())
+        marks = [n for n, line in enumerate(template.splitlines()) if line.startswith("# DECISIONS-APPLY-")]
+        inside = sum(b - a + 1 for a, b in zip(marks[::2], marks[1::2]))
+        self.assertEqual(len(text.splitlines()), len(template.splitlines()) - inside)
+        base = self.run_script("--target", "TEST")
+        journal = self.tmp / "journal"
+        journal.mkdir()
+        self.render(CONSOLE_EXPORT_DIR=str(self.tmp / "export"), DECISIONS_DIR=str(journal), **self.CE)
+        (self.state / "calls").unlink(missing_ok=True)
+        result = self.run_script("--target", "TEST")  # no journal file yet: nothing to replay
+        self.assertEqual(result.returncode, base.returncode, result.stderr)
+        self.assertFalse(any("decisions-apply" in call for call in self.calls()))
+        (journal / "decisions.jsonl").write_text("{}\n")
+        result = self.run_script("--target", "TEST")
+        self.assertEqual(result.returncode, base.returncode, result.stderr)  # a failing apply never changes the status
+        calls = [call for call in self.calls() if call.startswith("exec ")]
+        order = ["decisions-apply" if "decisions-apply" in c else "console-export" for c in calls[-2:]]
+        self.assertEqual(order, ["decisions-apply", "console-export"])
+        self.assertIn("--from-journal -", calls[-2])
+        self.assertRegex(self.log(), r"decisions apply rc=[1-9][0-9]*")
+
     def test_failing_post_step_is_logged_and_never_changes_the_exit_status(self):
         base = self.run_script("--target", "TEST")
         self.render(CONSOLE_EXPORT_DIR=str(self.tmp / "missing-export-dir"), **self.CE)
@@ -1246,6 +1272,7 @@ class RendererTests(unittest.TestCase):
         self.assert_refused("shell-safe", values={**self.values, "CONTAINER": "x;rm"})
         self.assert_refused("absolute path", values={**self.values, "DOCKER": "docker"})
         self.assert_refused("reserved", values={**self.values, "TARGET_NAME": "LIVE"})
+        self.assert_refused("needs CONSOLE_EXPORT_DIR", values={**self.values, "DECISIONS_DIR": "/srv/journal"})  # DFGL-16C
 
     def test_refuses_budget_beyond_unit_timeout(self):
         self.assert_refused("exceeds", values={**self.values, "RUN_BUDGET_SECONDS": "2760"})
