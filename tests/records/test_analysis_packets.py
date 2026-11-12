@@ -171,6 +171,24 @@ class AnalysisPacketImportTests(unittest.TestCase):
         code, out = self.run_main((self.name, tampered), (self.name, self.data))  # the valid member still imports; the run still fails
         self.assertEqual((code, len(pp.pending(self.project))), (1, 1))
 
+    def test_malformed_packet_collections_are_import_invalid_and_later_valid_members_still_import(self):
+        for field, value in (("citations", 1), ("citations", True), ("documents", 1), ("documents", {"sha256": "a"}), ("documents", "x")):
+            body = json.loads(self.data)
+            body.pop("key")
+            packet, prov = body["packets"][0]["packet"], body["packets"][0]["provenance"]
+            packet[field] = value
+            if field == "documents":
+                prov["documents"] = value
+            bad = rekey(body)
+            code, out = self.run_main(bad, (self.name, self.data))
+            self.assertEqual(code, 1, (field, value, out))
+            self.assertIn("IMPORT_INVALID", out)
+            self.assertIn("proposed=1", out)
+            self.assertEqual((len(pp.pending(self.project)), len(self.receipts())), (1, 1))
+            self.assertNotIn("Traceback", out)
+            for path in (self.project / ap.RECEIPT, self.journal):  # reset so the next case starts clean
+                path.unlink()
+
     def test_a_busy_journal_exits_75_and_leaves_no_receipt(self):
         with patch.object(pp, "propose", side_effect=pp.PacketError("journal_busy")):
             code, out = self.run_main((self.name, self.data))

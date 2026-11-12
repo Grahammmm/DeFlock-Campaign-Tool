@@ -36,8 +36,8 @@ def _body(name, data):
         good = (body["schema"] == SCHEMA and isinstance(key, str) and name == "%s-%s.json" % (body["slug"], key[:12])
                 and key == hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest() and isinstance(body["agency_id"], str))
         for entry in body["packets"]:
-            docs, prov = entry["packet"]["documents"], entry["provenance"]["documents"]
-            good = good and isinstance(entry["packet"]["source"], str) and len(docs) == len(prov) and all(
+            docs, prov, cites = entry["packet"]["documents"], entry["provenance"]["documents"], entry["packet"].get("citations") or []
+            good = good and isinstance(entry["packet"]["source"], str) and isinstance(cites, list) and isinstance(docs, list) and isinstance(prov, list) and len(docs) == len(prov) and all(
                 isinstance(d, dict) and isinstance(d.get("sha256"), str) for d in docs + prov) and all(isinstance(d.get("run_id"), str) for d in prov)
     except (ValueError, UnicodeError, KeyError, TypeError, AttributeError):
         return None
