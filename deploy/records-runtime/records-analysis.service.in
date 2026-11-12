@@ -1,0 +1,12 @@
+[Unit]
+Description=Records analysis cycle (export, sync, review tick, packet import)
+# Off by default: the script does nothing unless ANALYSIS_ROOT/.analysis/LANE-ON exists.
+
+[Service]
+Type=oneshot
+UMask=0077
+ExecStart=/bin/sh @RUN_ANALYSIS_SH@
+# Step timeouts in the script add up to 39 minutes.
+TimeoutStartSec=45min
+StandardOutput=journal
+StandardError=journal
