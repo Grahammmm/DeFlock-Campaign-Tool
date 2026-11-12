@@ -36,15 +36,26 @@ def _crosses(x, y, edges):
     """Even-odd ray cast, half-open on edges: a point on a shared edge is inside exactly one neighbour."""
     inside = False
     for x1, y1, x2, y2 in edges:
-        if (y1 > y) != (y2 > y):
-            dy, dx = y - y1, x2 - x1
-            product = dy * dx
-            if dy and dx and abs(product) < _MIN_NORMAL:  # the product underflowed: compare exactly
-                if _exact_left_of_crossing(x, y, x1, y1, x2, y2):
-                    inside = not inside
-            elif x < x1 + product / (y2 - y1):
-                inside = not inside
+        if (y1 > y) != (y2 > y) and _left_of_crossing(x, y, x1, y1, x2, y2):
+            inside = not inside
     return inside
+
+
+def _left_of_crossing(x, y, x1, y1, x2, y2):
+    """``x < x1 + (y - y1) * (x2 - x1) / (y2 - y1)``; floats while every step is finite, exact otherwise."""
+    dy, dx, dn = y - y1, x2 - x1, y2 - y1  # finite inputs can still overflow here (or exceed float range as ints)
+    if not (_number(dy) and _number(dx) and _number(dn) and dn):  # dn == 0: mixed int/float operands rounded together
+        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
+    product = dy * dx
+    if not _number(product) or (dy and dx and abs(product) < _MIN_NORMAL):  # overflowed or underflowed product
+        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
+    try:
+        crossing = x1 + product / dn
+    except OverflowError:  # integer quotient too large for a float
+        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
+    if not _number(crossing):  # never compare against infinity or NaN
+        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
+    return x < crossing
 
 
 def _exact_left_of_crossing(x, y, x1, y1, x2, y2):
@@ -68,9 +79,9 @@ class _Ring:
     def __init__(self, ring):
         edges, ys = _edges(ring), [p[1] for p in ring]
         self.low, self.high = min(ys), max(ys)
-        span = self.high - self.low  # finite inputs can still overflow; one band then
-        self.count = max(1, int(len(edges) ** 0.5)) if math.isfinite(span) else 1
-        self.step = span / self.count or 1.0
+        span = self.high - self.low  # finite inputs can still overflow (even as an int too big for a float): one band then
+        self.count = max(1, int(len(edges) ** 0.5)) if _number(span) else 1
+        self.step = (span / self.count or 1.0) if _number(span) else 1.0
         self.bands = [[] for _ in range(self.count)]
         for edge in edges:
             for band in range(self._band(min(edge[1], edge[3])), self._band(max(edge[1], edge[3])) + 1):
