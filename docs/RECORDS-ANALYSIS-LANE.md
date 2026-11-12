@@ -95,3 +95,32 @@ records analysis-sync --root R --last-received | --pending
 - **Output and limits.** stdout carries ids, codes and counts only. `--dry-run` writes nothing (`WOULD_SYNC` for placeable pairs).
   Exit 0 when nothing is pending and no receipt was refused, 1 otherwise. A root inside the repository or shaped like a flock
   store is `ROOT_REFUSED`. The command never writes a fact and never calls `flock_facts` or a model.
+
+## Tick and model handoff (DFGL-07f, host side)
+
+```
+records analysis-tick --root R [--max-agencies N=20] [--dry-run]
+```
+
+- **Gate.** Without `R/.analysis/LANE-ON` the command prints `ANALYSIS_LANE_OFF`, exits 0 and writes nothing. The operator creates that file;
+  the command never does. A root inside the repository or shaped like a flock store is `ROOT_REFUSED` (exit 1).
+- **Advance.** For each `agencies/*/review-config.json` (sorted, at most `--max-agencies`) it reads `flock_review.py status CONFIG --json`
+  and, when the key below moved, runs `flock_review.py run CONFIG` (a subprocess of the engine checkout's own tool; a missing tool is
+  `ERROR REVIEW_TOOL_MISSING`) and reads the status again. No model runs; every wait stage stays a wait until a model card writes its
+  files and calls `flock_review.py mark`.
+- **Outcome per agency** (one line each in `.analysis/analysis-ledger.jsonl`, `kind: tick`, with `status_sha256`, `config_sha256` and
+  `review_sha256`): `WAITING <stage>` (the DAG stopped at a wait), `DONE`, `ADVANCED <from>→<to>` (stopped at a non-wait stage),
+  `UNCHANGED`, `ERROR FAILED <stage>`, `ERROR LOCKED`, `ERROR CONFIG`, `ERROR REVIEW_TOOL_MISSING`.
+- **UNCHANGED key.** The status document, the config and the review state (the bytes of `compare.facts` FACTS.csv followed by its sibling
+  FACT-REVIEWS.csv, `missing` for an absent file) all equal the agency's last non-error ledger line: only `status` runs. A human review
+  changes the review state, so the next tick runs the DAG (only `report` reruns) and the tick after is `UNCHANGED`. Errors are never
+  `UNCHANGED`: a failed stage is retried each tick, and a held `.review/LOCK` (a model card is marking) is `ERROR LOCKED` (exit 0).
+- **Output.** `<slug> <outcome>` per agency (an `UNCHANGED` line adds the wait it still sits at) and
+  `analysis: A advanced, W waiting for a model, D done, E errors`. Exit 0 unless an `ERROR` other than `ERROR LOCKED`. `--dry-run` runs
+  `status` only and writes nothing (`WOULD_RUN`).
+- **`.analysis/needs-model.json`** (`records-needs-model-v1`, `schemas/records-needs-model-v1.json`, example `docs/examples/needs-model.example.json`;
+  atomic, 0600, rewritten every tick): one entry per agency whose next stage is a wait: `agency`, `records_agency_id`, `stage`, `role`
+  (`verify` for `verify` and `f4`, else `author`), `author_family` (provider of the `f3-findings` mark, else `assess`, else null),
+  `verify_family` (provider of the `verify` mark, for `f4` only), `input_fp`, `wait_files` (relative to the root when inside it),
+  `config`, `sources` (SOURCES.csv, for `fact-drafts` only). Slugs, stage ids, families, hashes and paths only; never record text.
+  `flock_review.py mark` refuses a `verify`/`f4` mark from the author's family (exit 3), so that wait stays open.
