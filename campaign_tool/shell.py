@@ -80,7 +80,11 @@ def main():
         raw = sys.stdin.buffer.read(MAX_INPUT + 1)
         if len(raw) > MAX_INPUT:
             raise ValueError("Shell input too large")
-        result = render(json.loads(raw))
+        try:
+            decoded = json.loads(raw)
+        except RecursionError:
+            raise ValueError("JSON nesting is too deep") from None
+        result = render(decoded)
         sys.stdout.write(json.dumps(result, ensure_ascii=True))
     except (ValueError, TypeError, OSError) as exc:
         print("Shell build stopped: " + str(exc), file=sys.stderr)
