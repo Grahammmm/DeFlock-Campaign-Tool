@@ -507,6 +507,9 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
         stages.append(stage_entry(name, status, counts, seconds, code))
         if result and result.get("outcomes") and dict(result["counts"]) == counts:
             stages[-1]["outcomes"] = [dict(item) for item in result["outcomes"]]
+        if result and code == "STAGE_INTERNAL_ERROR" == result.get("error_code") and "internal" in result:
+            # Schema-valid class and function names only; never exception text, args, paths or lines.
+            stages[-1]["internal"] = {k: result["internal"][k] for k in ("type", "where")}
         if result:
             if name == "extract":
                 extract_blocks = {k: result[k] for k in ("ocr", "refusals") if k in result}
