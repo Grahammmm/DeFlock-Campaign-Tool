@@ -171,6 +171,8 @@ class PrimaryStateThroughCloseTests(CloseCase):
             self.replace = layout == "replace"
             expected = self.healthy_pair()
             for kind in ("file1", "file2", "link1", "link2"):
+                if kind.startswith("link") and layout == "replace":
+                    continue  # replacement publishes with os.replace, not os.link
                 with self.subTest(layout=layout, kind=kind):
                     briefs = self.layout(layout)
                     twin = 1 if kind.endswith("1") else 2
