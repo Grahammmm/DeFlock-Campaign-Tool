@@ -19,7 +19,7 @@ from tests.test_site_budget import run_main
 
 RECORD = {"schema": "page-weights-v1", "budget_kb": 1,
           "pages": [{"page": "index.html", "html_bytes": 1, "total": 1, "assets": []}]}
-SECRET = "SYNTHETIC-PRIVATE-PAYLOAD"
+SECRET = "SYNTHETIC-PRIVATE-PAYLOAD"  # pragma: allowlist secret
 SECOND = "/SYNTHETIC-SECOND-PATH"
 
 
