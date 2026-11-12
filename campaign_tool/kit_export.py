@@ -72,6 +72,15 @@ def write_rows(target, out, header, rows):
             writer.writerows(rows)
             handle.flush()
             os.fsync(handle.fileno())
+        # The stream is closed. Confirm the name still is the regular file this call created (lstat, no follow,
+        # no read of whatever is there now). One observation, not an atomic check-and-return, and no byte proof.
+        try:
+            final = os.lstat(target)
+            confirmed = stat.S_ISREG(final.st_mode) and (final.st_dev, final.st_ino) == identity
+        except OSError:
+            confirmed = False
+        if not confirmed:
+            raise ValueError("csv output changed or cannot be verified; export not confirmed") from None
     except BaseException:
         # Best-effort cleanup, subordinate to the original failure. Remove the name only while it still is the
         # regular file this call created (lstat, no follow); a replacement, symlink, directory or absent name is
