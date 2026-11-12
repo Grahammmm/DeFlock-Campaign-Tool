@@ -185,7 +185,12 @@ def import_sent(root, csv_path, *, apply=False, today=None):
     for key in accepted:
         requests[key] = {**requests[key], "recorded_at": stamp, "steps": []}
     document = {"schema_version": 1, "requests": dict(sorted(requests.items()))}
-    if len((json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")) > kit_track.MAX_BYTES:
+    text = json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+    try:  # a retained extension field may hold a lone surrogate the reader admitted from an ASCII escape
+        encoded = text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise SentImportError("kit/sent.json: import cannot be encoded as UTF-8; nothing was written") from None
+    if len(encoded) > kit_track.MAX_BYTES:
         raise SentImportError("kit/sent.json would be larger than 1 MiB; nothing was written")
     if apply:
         try:
