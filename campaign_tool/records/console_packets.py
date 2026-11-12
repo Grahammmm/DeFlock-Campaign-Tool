@@ -2,7 +2,7 @@
 import hmac
 import urllib.parse
 
-from . import public_packets as pp
+from . import console_journal, public_packets as pp
 from .console_oversight import _journal_actor
 from .console_snapshot import LiveSource
 from .outcomes.reading import BANNER, esc
@@ -26,6 +26,8 @@ def render(project, token, source=None):
             '<dt>%s</dt><dd>%s</dd>' % (esc(k), esc(row[k])) for k in (
                 'id', 'kind', 'agency_key', 'request_id', 'source', 'revision', 'status',
                 'proposed_at', 'age_hours', 'expires_at'))))
+        if row.get('pending_apply'):
+            out.append('<p role="status">%s</p>' % esc(row['pending_apply']))
         if row['status'] == 'proposed':
             out.append('<h3>Exact signature payload</h3><pre>%s</pre>' % esc(source.packet_payload(row['id']).decode('utf-8')))
         for path, field in ROUTES.items() if token is not None else ():
@@ -74,6 +76,10 @@ def post(handler):
         return True
     if not pp.PACKET_ID.fullmatch(fields['id']) or not fields['revision'].isascii() or not fields['revision'].isdigit() or len(fields['revision']) > 10:
         handler._fail(400)
+        return True
+    if handler.server.decisions_dir is not None:  # journal mode: checked against the snapshot, journaled, never written
+        if console_journal.packet(handler, field, fields['id'], int(fields['revision']), fields[field].replace('\r\n', '\n')):
+            handler._send(303, '', location='/packets')
         return True
     try:
         project, revision = handler.server.options['project'], int(fields['revision'])

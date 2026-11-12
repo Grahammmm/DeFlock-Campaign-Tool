@@ -4,7 +4,7 @@ import urllib.parse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from . import approval_queue, console_layout, console_snapshot, draft_templates, mail_drafts, mail_preview, mail_send
+from . import approval_queue, console_journal, console_layout, console_snapshot, draft_templates, mail_drafts, mail_preview, mail_send
 from .outcomes.reading import esc
 from . import denial_log, denial_reply_check, followup_clock
 
@@ -90,13 +90,18 @@ def refusal_panel(project, row, run_id):
     return "\n".join(out + ['</ul></section>'])
 
 
+def pending_note(row):
+    return esc(" - %s" % row["pending_apply"]) if row.get("pending_apply") else ""
+
+
 def render_link(row, token, payload, refusal=None, *, read_only=False):
     """A message_link row: the plain question, one choice per candidate, then the usual signed approve / reject."""
     from . import admin_panel as ap
 
     pending = row["status"] == "pending"
     out = ["<h1>Tie this message to a request</h1>", "<p role=\"status\">%s</p>" % esc(
-        "Pending" if pending else row["status"].capitalize() + (": " + str(row.get("reason") or "") if row.get("reason") else "")),
+        "Pending" if pending else row["status"].capitalize() + (": " + str(row.get("reason") or "") if row.get("reason") else ""))
+           + pending_note(row),
            "<pre>%s</pre>" % esc(row["body"])]
     message, field_name, typed = refusal or (None, None, None)
     if message:
@@ -124,7 +129,7 @@ def render_link(row, token, payload, refusal=None, *, read_only=False):
 
 
 def render(project, row, history, preview, token, payload, send_config=None, *, run_id=None, refusal=None, source=None,
-           export=None):
+           export=None, journal=False):
     from . import admin_panel as ap
 
     title = "Review: %s for %s / %s" % (row["kind"].replace("-", " "), row["agency_id"], row["request_id"])
@@ -133,7 +138,8 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
     status = approval_status(project, row, switches, source) if row["status"] == "approved" else esc(
         "Pending" if pending else "Rejected: " + str(row.get("reason") or ""))
     message, field_name, typed = refusal or (None, None, None)
-    out = ["<h1>%s</h1><p role=\"status\">%s</p>" % (esc(title), status)]
+    live = export is None or journal  # a read-only export (no journal) renders no form
+    out = ["<h1>%s</h1><p role=\"status\">%s%s</p>" % (esc(title), status, pending_note(row))]
     if export is not None and row["status"] == "approved":
         proof = row.get("approval_evidence") or {}
         out.append("<p>Approved by %s: signature verified on the live project (%s) at export %s (signed revision %s, "
@@ -159,8 +165,8 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
         out.append("<h2>Warnings</h2><ul>" + "".join("<li>%s</li>" % esc(w) for w in warnings) + "</ul>")
     # The initial newline prevents HTML's textarea newline stripping from losing a body newline.
     field = '<label for="body">Draft text</label><textarea id="body" name="body" rows="28"%s>\n%s</textarea>' % (
-        " required" if pending and export is None else " readonly", esc(typed if field_name == "body" else row["body"]))
-    if pending and export is None:
+        " required" if pending and live else " readonly", esc(typed if field_name == "body" else row["body"]))
+    if pending and live:
         out.append(ap._form("/approvals/edit", token, row["id"], "", ap.revision_field(row) + field, "Save edit",
                             back="review"))
     else:
@@ -185,10 +191,12 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
     limits = evidence.get("limits") or []
     for limit in limits if isinstance(limits, list) else [limits]:
         out.append("<p>%s</p>" % esc(limit))
-    if pending and export is not None:
+    if pending and not live:
         out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre><p>%s</p>' % (esc(payload.decode("utf-8")), READ_ONLY))
     elif pending:
         out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre>' % esc(payload.decode("utf-8")))
+        if journal:
+            out.append("<p>%s</p>" % esc(console_journal.NOTE))
         out.append("<p>Sign this text with your approval key "
                    "(<code>ssh-keygen -Y sign -n deflock-approval</code>) and paste the signature. "
                    "The console holds no key and never signs. Approval does not send or publish. "
@@ -231,6 +239,7 @@ def refuse(handler, ident, message, typed):
 def _show(handler, ident, status, refusal):
     options = handler.options
     project, source, pin = options["project"], options["source"], handler.pin
+    journal = handler.server.decisions_dir is not None
     try:
         rows = {r["id"]: r for r in source.queue_rows()}
         if ident not in rows:
@@ -240,13 +249,15 @@ def _show(handler, ident, status, refusal):
         ids = [ident]
         if row["kind"] == draft_templates.MESSAGE_LINK:
             payload = source.queue_payload(ids[0]) if row["status"] == "pending" else None
-            handler._send(status, render_link(row, handler.csrf_token(), payload, refusal, read_only=pin is not None))
+            handler._send(status, render_link(row, handler.csrf_token(), payload, refusal,
+                                                   read_only=pin is not None and not journal))
             return True
         history = source.queue_history(ids[0])
         preview = mail_preview.preview(project, row, handler.server.mail_drafts_config)
         payload = source.queue_payload(ids[0]) if row["status"] == "pending" else None
         page = render(project, row, history, preview, handler.csrf_token(), payload,
-                      options.get("send_config"), run_id=options["run_id"], refusal=refusal, source=source, export=pin)
+                      options.get("send_config"), run_id=options["run_id"], refusal=refusal, source=source, export=pin,
+                      journal=journal)
     except (approval_queue.ApprovalQueueError, mail_send.MailSendError, mail_drafts.MailDraftError,
             OSError, ValueError, KeyError, TypeError):
         handler._fail(503)

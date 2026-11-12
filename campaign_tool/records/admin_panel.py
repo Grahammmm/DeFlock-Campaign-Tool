@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import approval_queue, console_board, console_calendar, console_documents, console_home, console_jobs, console_manual_events, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
 from . import console_origin
-from . import console_access, console_export, console_layout, console_review, console_settings, console_snapshot
+from . import console_access, console_export, console_journal, console_layout, console_review, console_settings, console_snapshot
 from .ledger import store
 from .outcomes import unmatched
 from .outcomes.reading import BANNER, esc
@@ -516,7 +516,8 @@ def _next_row(d, approved_word, token, project_live):
     ev = d.get("evidence") if isinstance(d.get("evidence"), dict) else {}
     out = ['<article class="draft" aria-label="Next step %s"><h3>%s, request: %s</h3>' % (i[:12], esc(d["agency_id"]), esc(request))]
     out.append("<dl><dt>Status</dt><dd>%s</dd><dt>Why recommended</dt><dd>%s</dd><dt>Wording</dt><dd>%s</dd>" % (
-        esc(_next_label(d, approved_word)), esc(_text(ev.get("why"), 400)),
+        esc(_next_label(d, approved_word)) + esc(" (%s)" % d["pending_apply"] if d.get("pending_apply") else ""),
+        esc(_text(ev.get("why"), 400)),
         esc("Template draft" if ev.get("wording") == "template" else "Draft: model-assisted wording, review required")))
     if d.get("reason"):
         out.append("<dt>Denial reason</dt><dd>%s</dd>" % esc(d["reason"]))
@@ -621,7 +622,8 @@ def _drafts_section(model, token):
             i[:12], esc(d["kind"]), esc(d["agency_id"])))
         out.append("<dl><dt>Status</dt><dd>%s (revision %s)</dd><dt>Audit</dt><dd>last action by %s at %s; created %s"
                    "</dd><dt>Item / request / run</dt><dd>%s / %s / %s</dd>" % (
-                       esc(d["status"]), esc(d["revision"]), esc(d["actor"]), esc(d["updated_at"]),
+                       esc(d["status"] + (" (%s)" % d["pending_apply"] if d.get("pending_apply") else "")),
+                       esc(d["revision"]), esc(d["actor"]), esc(d["updated_at"]),
                        esc(d["created_at"]), esc(d["item_id"]), esc(d["request_id"]), esc(d["source_run_id"])))
         if d.get("reason"):
             out.append("<dt>Rejection reason</dt><dd>%s</dd>" % esc(d["reason"]))
@@ -797,13 +799,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         except console_snapshot.SnapshotError:
             self._fail(503, "export_unavailable")
             return False
-        self.options = {**self.server.options, "project": self.pin.path, "run_id": self.pin.run_id,
-                        "source": console_snapshot.SnapshotSource(self.pin)}
+        source = console_snapshot.SnapshotSource(self.pin)
+        if self.server.decisions_dir is not None:  # journal mode: pending decisions are shown over the export
+            try:
+                source = console_journal.JournalSource(self.pin, console_journal.overlay(self.server.decisions_dir, self.pin))
+            except (console_journal.JournalError, approval_queue.ApprovalQueueError, OSError, ValueError, KeyError,
+                    TypeError):
+                self._fail(503, "journal_unavailable")
+                return False
+        self.options = {**self.server.options, "project": self.pin.path, "run_id": self.pin.run_id, "source": source}
         return True
 
     def csrf_token(self):
-        """The form token; None (no form is rendered) for a read-only export."""
-        return None if self.pin is not None else self.server.csrf_token
+        """The form token; None (no form is rendered) for a read-only export without a decision journal."""
+        return None if self.pin is not None and self.server.decisions_dir is None else self.server.csrf_token
 
     def do_GET(self):
         if not self._host_ok():
@@ -911,8 +920,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not console_origin.request_ok(self, post=True):
             return self._fail(403)
-        if self.server.pinner is not None and not (self.path == "/manual-event" and self.server.manual_events_dir):
-            return self._fail(503, "read_only_export")  # DFGL-16B replaces this with journaling; nothing runs before it
+        if self.server.pinner is not None:
+            journal = self.server.decisions_dir is not None
+            if journal and self.path == "/send":
+                return self._fail(404)  # sending stays unavailable in export mode
+            if (self.path == "/manual-event" and not self.server.manual_events_dir) or (self.path != "/manual-event" and not journal):
+                return self._fail(503, "read_only_export")  # no journal: nothing runs before this
         if not self._begin():
             return
         if console_packets.post(self):
@@ -951,7 +964,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(400)
         link = None
         try:
-            row = next((r for r in approval_queue.load_queue(self.server.options["project"]) if r["id"] == ident), None)
+            row = next((r for r in self.options["source"].queue_rows() if r["id"] == ident), None)
             if row is not None and row["kind"] == draft_templates.MESSAGE_LINK and action == "approve":
                 link = unmatched.choose(row, choice)  # not among the candidates -> 400 before anything changes
             elif choice is not None:
@@ -962,6 +975,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(503)
         if action == "edit" and not REVISION.fullmatch(fields["expected_revision"]):
             return self._fail(400)
+        if self.server.decisions_dir is not None:  # journal mode: validated against the snapshot, journaled, never written
+            if console_journal.queue(self, action, ident, value, row, fields.get("expected_revision"), choice):
+                self._send(303, "", location="/review?id=" + urllib.parse.quote(ident) if back == "review" else back)
+            return
         project, actor = self.server.options["project"], self.server.actor
         hook = False
         try:
@@ -1015,19 +1032,28 @@ def _access_cfg(public_origin, access_config):
 
 def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
                  timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None,
-                 access_config=None, access_clock=None, manual_events_dir=None, meetings_dir=None, export_root=None):
+                 access_config=None, access_clock=None, manual_events_dir=None, meetings_dir=None, export_root=None,
+                 decisions_dir=None):
     """Unstarted loopback-only server; the caller serves and closes it.
 
     export_root (DFGL-16A) with run_id "auto" serves the one real export DIR/current points at, pinned per request.
+    decisions_dir (DFGL-16B, needs export_root) journals decisions there instead of refusing every POST.
     """
     check_run_id(run_id)
     check_actor(actor)
     parse_as_of(as_of)
+    if decisions_dir is not None and export_root is None:
+        raise PanelError("journal_needs_export")
     if export_root is not None:
         try:
             console_export._check_dir(export_root)
         except console_export.ExportError:
             raise PanelError("export_mode_invalid") from None
+        try:
+            if decisions_dir is not None:
+                console_journal.check_dir(decisions_dir, export_root)
+        except ValueError:
+            raise PanelError("decisions_dir_invalid") from None
         if project is not None or run_id != "auto" or send_config or mail_drafts_config:
             raise PanelError("export_mode_invalid")
         project = export_root
@@ -1059,6 +1085,7 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
                       "kit_root": kit_root, "as_of": as_of, "timers": tuple(timers), "system": system,
                       "send_config": send_config, "source": console_snapshot.LiveSource(os.path.abspath(project))}
     server.pinner = console_snapshot.Pinner(os.path.abspath(project)) if export_root is not None else None
+    server.decisions_dir = decisions_dir
     return server
 
 
@@ -1071,6 +1098,8 @@ def main(argv=None):
     parser.add_argument("--project")
     parser.add_argument("--export-root", metavar="DIR",
                         help="serve the one real export DIR/current points at (use --run-id auto); read-only, no --project")
+    parser.add_argument("--decisions-dir", metavar="J",
+                        help="with --export-root: journal each decision in J (absolute, 0700, outside DIR) for the next apply")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-report")
     parser.add_argument("--kit-root")
@@ -1094,6 +1123,8 @@ def main(argv=None):
     try:
         check_run_id(args.run_id)
         parse_as_of(args.as_of)
+        if args.decisions_dir is not None and args.export_root is None:
+            raise PanelError("journal_needs_export")
         if (args.project is None) == (args.export_root is None) or (args.export_root is not None and (
                 args.run_id != "auto" or args.render or args.send_config or args.mail_drafts_config)):
             raise PanelError("export_mode_invalid")
@@ -1130,10 +1161,10 @@ def main(argv=None):
                               timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config,
                               send_config=args.send_config, public_origin=args.public_origin,
                               access_config=access, manual_events_dir=args.manual_events, meetings_dir=args.meetings_dir,
-                              export_root=args.export_root)
+                              export_root=args.export_root, decisions_dir=args.decisions_dir)
     except PanelError as error:
         print(error.code, file=sys.stderr)
-        return 2 if error.code.endswith(("_invalid", "_required", "_unused")) else 1
+        return 2 if error.code.endswith(("_invalid", "_required", "_unused", "_needs_export")) else 1
     except OSError:
         print("panel_start_failed", file=sys.stderr)
         return 1
