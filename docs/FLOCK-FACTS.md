@@ -37,9 +37,16 @@ expired, superseded or disputed fact is listed; exit 3 when any does (without it
 **Review log** (`review --store DIR --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME [--date D] [--note T]`):
 the only way to change `status` after import. A reviewer equal to the fact's `added_by` (case and spaces ignored), an unknown or
 duplicate id, a date after today or before `added_at`, or any `--check` error refuses the whole call. Each change appends a
-row to the private `<store>/agencies/<slug>/FACT-REVIEWS.csv` (v1: `fact_id,from_status,to_status,reviewer,reviewed_at,note`,
+row to the private `<store>/agencies/<slug>/FACT-REVIEWS.csv` (v2: `fact_id,from_status,to_status,reviewer,reviewed_at,note,evidence_fp`,
 mode 0600); a fact already at the target is `unchanged` and not logged. `--check` validates the log and names a fact whose
 FACTS status differs from its last logged `to_status` (a hand edit). Ids and counts only; the note is never printed.
+
+**FACT-REVIEWS v2** binds each row to the evidence it reviewed: a row is *bound* to the FACTS row with the same `fact_id` and
+`evidence_fp`, and the status of a row is the last `to_status` of its bound chain. A row whose evidence changed (for example a new
+quote under the same id) or was removed is *unbound* history: kept verbatim, format-checked only, never rebound and never conferring
+status. A status other than `unreviewed` with no bound chain is a raw edit, not a review (`overlay_errors`; `--check` still accepts
+a manually imported store). v1 logs stay readable; `review` upgrades a v1 log that passes the v1 check, stamping each row with the
+fp of the current row of its `fact_id`, in the same write as the new rows. An inconsistent v1 log is refused and never upgraded.
 
 **Review history** (`reviews --store DIR --agency SLUG [--fact ID] [--since YYYY-MM-DD]`, read-only): after the same full check as
 `review`, one `reviews | slug | fact_id | from -> to | reviewed_at` line per log row (file order, `--since` inclusive), then counts
