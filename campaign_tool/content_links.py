@@ -14,12 +14,13 @@ import socket
 import stat
 import urllib.error
 import urllib.request
+from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urldefrag, urljoin, urlsplit
 
 from . import agency_actions, body_schedules, markdown_lite
-from .content import MAX_JSON_BYTES, ContentError, _read_json, load_content, load_glossary
+from .content import MAX_JSON_BYTES, ContentError, _read_json, load_content, load_glossary, load_officials
 
 USER_AGENT = "DeFlock-Campaign-Tool/link-check"
 TIMEOUT = 15
@@ -153,6 +154,24 @@ def _stored_schedule_positions(content_dir, schedules, today):
         raise LinkCheckError("content/body-schedules.json: cannot resolve stored citation locations") from None
 
 
+def _stored_official_positions(content_dir, agencies, officials, today):
+    """``{agency_id: stored bodies index}`` of officials.json (the loader returns a mapping and drops the index).
+
+    Nothing is read for an empty ``officials``. Otherwise the file is re-read through the bounded ``_read_metadata``
+    and must validate to exactly the loaded roster; anything else is refused with one content-free message."""
+    if not officials:
+        return {}
+    try:
+        if content_dir.is_symlink() or not content_dir.is_dir():
+            raise ValueError("unsafe folder")
+        document = _read_metadata(content_dir, "officials.json")
+        if load_officials(document, agencies, today) != officials:
+            raise ValueError("differs from the loaded roster")
+        return {body["agency_id"]: number for number, body in enumerate(document["bodies"])}
+    except (OSError, ValueError, RecursionError, TypeError, KeyError):
+        raise LinkCheckError("content/officials.json: cannot resolve stored citation locations") from None
+
+
 def _read_json_quiet(path):
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
@@ -223,6 +242,7 @@ def collect_links(root, *, today=None):
 
     Reads the validated public content model only. ``(groups, note)``; ``note`` explains the same-site classification."""
     root = Path(root)
+    today = today or date.today()  # one effective day for the load and the officials revalidation
     model = load_content(root, today=today)
     if model is None:
         raise LinkCheckError("content/ does not exist; nothing was scaffolded or fetched")
@@ -304,9 +324,10 @@ def collect_links(root, *, today=None):
         for key in ("source_url", "minutes_url", "recording_url", "direction_source", "comment_source_url"):
             cite(outcome.get(key), f"{base}:outcome.{key}")
 
-    for body_index, (agency_id, people) in enumerate(sorted(model["officials"].items())):
+    official_positions = _stored_official_positions(content_dir, model["agencies"], model["officials"], today)
+    for agency_id, people in sorted(model["officials"].items()):
         for number, person in enumerate(people):
-            where = f"content/officials.json:{agency_id}.officials[{number}]"
+            where = f"content/officials.json:bodies[{official_positions[agency_id]}].officials[{number}]"
             cite(person.get("profile_url"), where + ".profile_url")
             cite(person.get("source_url"), where + ".source_url")
 
