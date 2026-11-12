@@ -217,9 +217,19 @@ def _check_text_agency_names(report):
                 raise AtlasError("Atlas report: an agency name contains a control or format character")
 
 
+def _check_text_identifiers(report):
+    """Refuse (never repair) a control-bearing ID in any of the three printed identifier locations."""
+    ids = [row["agency_id"] for row in report["listed_seed"]["rows"]]
+    ids += [cid for row in report["unmatched_atlas"]["rows"] for cid in row["candidate_agency_ids"]]
+    ids += [row["agency_id"] for row in report["selected_not_listed"]["rows"]]
+    if any(_has_control(agency_id) for agency_id in ids):
+        raise AtlasError("Atlas report: an agency identifier contains a control or format character")
+
+
 def render_atlas(report):
-    """Plain text: ordinary admitted values are literal; preflight both printed agency-name sources."""
+    """Plain text: ordinary admitted values are literal; preflight printed agency names, then identifiers."""
     _check_text_agency_names(report)
+    _check_text_identifiers(report)
     lines = [f"Atlas cross-check for {report['county']} County, {report['state']}"]
     for key, heading in SECTIONS:
         section = report[key]
