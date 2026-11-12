@@ -176,26 +176,27 @@ def settle(project, entry, intents):
     the mutation but before its outcome line is reconciled on replay: when the live stores show this entry's own mutation
     the outcome is APPLIED instead of re-executing it against a revision that it has itself moved past."""
     ident = entry["entry_id"]
+    known = ident in intents
+    write = True
     try:
-        if ident in intents:
-            if _landed(project, entry, intents[ident]):
-                if entry["action"] == "approve":  # the message-link step after the approve is idempotent
-                    link = _link_choice(project, entry["target_id"], entry)
-                    if link:
-                        _append_link(project, entry["target_id"], link)
-                return "APPLIED"
-            base = None
-        else:
-            base = _mark(project, entry)
+        if known and _landed(project, entry, intents[ident]):
+            if entry["action"] == "approve":  # the message-link step after the approve is idempotent
+                link = _link_choice(project, entry["target_id"], entry)
+                if link:
+                    _append_link(project, entry["target_id"], link)
+            return "APPLIED"
+        base = _mark(project, entry)  # nothing of ours landed since the old base: this attempt starts from where the target is now
     except (aq.ApprovalQueueError, pp.PacketError, pu.PublicUpdatesError) as error:
         if error.code in TRANSIENT:
             return None
         base = None  # unreadable state: outcome() below refuses with the same code
+        write = not known  # an existing INTENT keeps its base rather than losing it
     except OSError:
         return None
     except (KeyError, TypeError, AttributeError, ValueError):
         base = None  # a malformed entry: outcome() refuses it with a code
-    if ident not in intents:
+        write = not known
+    if write and not (known and base == intents[ident]):  # a retry whose target moved on gets a fresh write-ahead base
         try:
             _receipt(project, ident, INTENT, base)
         except (aq.ApprovalQueueError, OSError) as error:  # no mutation without its write-ahead line

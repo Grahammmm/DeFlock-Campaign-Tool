@@ -267,7 +267,8 @@ the organizer decides again on the next export. Each unreceipted entry first get
 `base` is the target's queue revision or its packet / public-updates journal length, and an INTENT is never an outcome nor listed in the export). If a run dies after the
 live mutation but before its outcome line (queue busy, disk full, timeout), the replay finds the INTENT, looks for that entry's own mutation after `base` (same target,
 revision, actor and recorded value) and receipts `APPLIED` instead of running it again against a revision it has itself moved past; when nothing landed it applies the
-entry as normal. If the INTENT cannot be written, nothing is mutated (`DEFERRED`).
+entry as normal; a retry that finds the target has moved on (a deferred attempt, then another organizer's change) writes a fresh INTENT with the new `base` first, so the
+latest INTENT always bounds the attempt that may have landed. If the INTENT cannot be written, nothing is mutated (`DEFERRED`).
 `PROJECT_MISMATCH` (the entry's `source_project_id` is another project's) applies nothing and writes no
 receipt; a transient lock or I/O failure prints `DEFERRED` and is tried again at the next run. A damaged journal or receipt file exits 1 before anything is applied.
 

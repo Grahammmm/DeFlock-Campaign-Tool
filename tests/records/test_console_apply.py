@@ -285,6 +285,24 @@ class Interrupted(Apply):
         self.assertEqual(self.apply(), ["APPLIED"])
         self.assertEqual(self.row(self.pending_id)["status"], "rejected")
 
+    def test_a_retry_after_a_deferred_attempt_and_an_intervening_edit_keeps_its_own_base(self):
+        self.make_export()
+        self.up()
+        self.decide("/approvals/reject", id=self.pending_id, reason="no")
+        (entry,) = self.lines()
+        ident = entry["entry_id"]
+        busy = aq.ApprovalQueueError("queue_busy")
+        with mock.patch.object(aq, "reject", side_effect=busy):
+            self.assertEqual(self.apply(), ["DEFERRED"])  # INTENT at base 0, the live writer failed before mutating
+        self.assertEqual(console_apply.ledger(self.live), ({}, {ident: 0}))
+        aq.edit(self.live, self.pending_id, "other", "someone else's edit", expected_revision=0)  # pending row -> revision 1
+        self.interrupted_run()  # the retry rejects at revision 2 and loses its outcome line
+        self.assertEqual((self.row(self.pending_id)["status"], self.row(self.pending_id)["revision"]), ("rejected", 2))
+        self.assertEqual(console_apply.ledger(self.live), ({}, {ident: 1}))  # the retry's own, refreshed base
+        self.assertEqual(self.apply(), ["APPLIED"])  # not INVALID_TRANSITION
+        self.assertEqual(console_apply.receipts(self.live), {ident: "APPLIED"})
+        self.assertEqual(self.row(self.pending_id)["revision"], 2)  # applied once
+
     def test_an_intent_is_not_an_outcome_and_a_damaged_intent_is_refused(self):
         self.make_export()
         self.up()
