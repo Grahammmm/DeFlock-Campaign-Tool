@@ -309,7 +309,7 @@ def recover(store, slug):
     """Inside store_lock(store): finish a committed transaction (per file: current == new is done; else the staged file with
     hash new is replaced in) or drop the writer's own uncommitted temps. TxnCorrupt, nothing touched, when a hash fits neither."""
     folder = store / "agencies" / slug
-    if os.path.islink(folder) or not folder.is_dir():
+    if os.path.islink(folder.parent) or os.path.islink(folder) or not folder.is_dir():  # a linked agencies folder is refused untouched
         return
     if os.path.lexists(folder / JOURNAL):
         try:
@@ -383,10 +383,9 @@ def do_import(args, store_lock_held=False):
     if not errors and not args.dry_run and not store_lock_held:  # plan found nothing wrong: create the store, then plan again under its lock
         store.mkdir(mode=0o700, parents=True, exist_ok=True)
         with store_lock(store):
-            if not os.path.islink(store / "agencies"):  # DFGL-07c: finish a crashed review before the locked re-plan reads the store
-                for folder in sorted(store.glob("agencies/*")):
-                    if any(os.path.lexists(folder / n) for n in (JOURNAL, *STAGED)):
-                        recover(store, folder.name)
+            for folder in sorted(store.glob("agencies/*")):  # DFGL-07c: finish a crashed review before the locked re-plan reads the store
+                if any(os.path.lexists(folder / n) for n in (JOURNAL, *STAGED)):
+                    recover(store, folder.name)  # recover() itself leaves a linked agencies folder alone
             return do_import(args, store_lock_held=True)
     return import_planned(args, errors, by_slug, old)
 

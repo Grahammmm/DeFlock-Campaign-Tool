@@ -182,6 +182,24 @@ class ReviewTxnTest(unittest.TestCase):
             os.write(release[1], b"x")
             os.waitpid(pid, 0)
 
+    def test_review_refuses_a_linked_agencies_folder_before_recover_touches_the_target(self):
+        for k in (None, P1):  # None: only a stray staged temp outside the store; P1: a committed journal with its staged pair
+            with self.subTest(point=k):
+                self.setUp()
+                if k:
+                    self.crash(k, [self.a])
+                else:
+                    (self.folder / STAGED[0]).write_text("stray")
+                outside = self.dir / "outside"
+                os.rename(self.store / "agencies", outside)
+                os.symlink(outside, self.store / "agencies")
+                before = snapshot(outside)
+                code, _, err = self.review([self.b], "checked", "cara")
+                self.assertEqual(code, 1)
+                self.assertEqual(err, ["agencies: is a symlink; refusing"])
+                self.assertEqual(snapshot(outside), before)
+                os.unlink(self.store / "agencies")
+
 
 if __name__ == "__main__":
     unittest.main()
