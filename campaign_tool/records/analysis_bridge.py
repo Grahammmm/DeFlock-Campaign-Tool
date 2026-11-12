@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -260,6 +261,119 @@ def sync_main(argv=None):
         os.umask(0o077)
         return 1 if sync(root, args.dry_run) else 0
     return 0
+
+
+def _review(tool, verb, config):
+    """-> (exit code, stdout) of one flock_review verb run as a subprocess (the tests count the `run` calls here)."""
+    done = subprocess.run([sys.executable, "-B", str(tool), verb, str(config)] + (["--json"] if verb == "status" else []),
+                          stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
+    return done.returncode, done.stdout
+
+
+def _status(tool, config):
+    """-> (flock-review-status-v1 document or None when refused, sha256 of its bytes)."""
+    text = _review(tool, "status", config)[1]
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return None, ""
+    return (doc if isinstance(doc, dict) and not doc.get("errors") and doc.get("stages") else None), ae._sha(text.encode())
+
+
+def _key(config, status_sha, config_sha):
+    """The UNCHANGED key: status document, config and review state (FACTS.csv then FACT-REVIEWS.csv bytes, `missing` when absent)."""
+    facts = Path(config["compare"]["facts"])
+    review = b"".join(p.read_bytes() if p.is_file() else b"missing" for p in (facts, facts.with_name("FACT-REVIEWS.csv")))
+    return {"status_sha256": status_sha, "config_sha256": config_sha, "review_sha256": ae._sha(review)}
+
+
+def _tick_one(tool, path, last, dry):
+    """-> (outcome, status document or None, key); runs the DAG to its next wait only when the key moved."""
+    if not tool.is_file():
+        return "ERROR REVIEW_TOOL_MISSING", None, {}
+    try:
+        text = path.read_bytes()
+        config, config_sha = json.loads(text), ae._sha(text)
+        doc, sha = _status(tool, path)
+        key = _key(config, sha, config_sha)
+    except (OSError, ValueError, KeyError, TypeError):
+        return "ERROR CONFIG", None, {}
+    if doc is None:
+        return "ERROR CONFIG", None, {}
+    if doc["locked"] == "yes":
+        return "ERROR LOCKED", doc, key
+    if last and last["outcome"][:5] != "ERROR" and all(last.get(k) == v for k, v in key.items()):
+        return "UNCHANGED", doc, key
+    if dry:
+        return "WOULD_RUN", doc, key
+    before = doc["next"]
+    code = _review(tool, "run", path)[0]
+    doc, sha = _status(tool, path)
+    if doc is None:
+        return "ERROR CONFIG", None, {}
+    stage, key = doc["next"], _key(config, sha, config_sha)
+    row = next((r for r in doc["stages"] if r["id"] == stage), {})
+    failed = next((r["id"] for r in doc["stages"] if r["state"] == "failed"), stage)
+    if code == 1:
+        return ("ERROR LOCKED" if doc["locked"] == "yes" else "ERROR FAILED %s" % failed), doc, key
+    return ("DONE" if stage is None else "WAITING " + stage if row.get("kind") == "wait" else "ADVANCED %s→%s" % (before, stage)), doc, key
+
+
+def _entry(root, tool, slug, path, doc, key):
+    """One needs-model.json entry for an agency whose next stage is a wait (ids, families and paths only)."""
+    c, stage, rel = tool.context(path), doc["next"], lambda p: str(Path(p).relative_to(root)) if tool.under(Path(p), root) else str(p)
+    marks = {r["id"]: (r["mark"] or {}).get("provider") for r in doc["stages"]}
+    files = [rel(p) for p in tool.wait_files(c, stage)] or [rel(c["FO"] / "drafts" / "*.yaml")] * (stage == "fact-drafts")
+    try:
+        agency = json.loads((root / "profiles" / (slug + ".json")).read_text(encoding="utf-8")).get("records_agency_id")
+    except (OSError, ValueError, AttributeError):
+        agency = None
+    row = next(r for r in doc["stages"] if r["id"] == stage)
+    return {"agency": slug, "records_agency_id": agency, "stage": stage, "role": "verify" if stage in ("verify", "f4") else "author",
+            "author_family": marks.get("f3-findings") or marks.get("assess"), "verify_family": marks.get("verify") if stage == "f4" else None,
+            "input_fp": ae._sha((json.dumps(row, sort_keys=True) + key["config_sha256"]).encode()), "wait_files": files, "config": rel(path),
+            "sources": rel(c["out"] / "inputs" / "SOURCES.csv") if stage == "fact-drafts" else None}
+
+
+def tick_main(argv=None):
+    parser = argparse.ArgumentParser(prog="records analysis-tick", description="Advance every agency review DAG to its next model wait (DFGL-07f).")
+    parser.add_argument("--root", required=True)
+    parser.add_argument("--max-agencies", type=int, default=20)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    root = Path(args.root).resolve()
+    if not (root / ".analysis" / "LANE-ON").exists():
+        print("ANALYSIS_LANE_OFF")
+        return 0
+    if not root.is_dir() or root == ac.REPO or ac.REPO in root.parents or ac._store_like(root):
+        print("ROOT_REFUSED")
+        return 1
+    os.umask(0o077)
+    tool, last, entries = ac.REPO / "tools" / "flock_review.py", {}, []
+    review = ac._flock_review() if tool.is_file() else None
+    for e in _ledger(root):
+        if e.get("kind") == "tick":
+            last[e["agency"]] = e
+    counts, hard = dict.fromkeys("AWDE", 0), False
+    for path in sorted(root.glob("agencies/*/review-config.json"))[:max(args.max_agencies, 0)]:
+        slug = path.parent.name
+        outcome, doc, key = _tick_one(tool, path, last.get(slug), args.dry_run)
+        row = next((r for r in doc["stages"] if r["id"] == doc["next"]), {}) if doc else {}
+        waiting = row.get("kind") == "wait"
+        if doc and waiting:
+            entries.append(_entry(root, review, slug, path, doc, key))
+        counts["E" if outcome[:5] == "ERROR" else "A" if outcome[:8] == "ADVANCED" else "W" if waiting else "D" if doc and not doc["next"] else "A"] += 1
+        hard = hard or (outcome[:5] == "ERROR" and outcome != "ERROR LOCKED")
+        if not args.dry_run:
+            _log(root, kind="tick", agency=slug, outcome=outcome, **key)
+        state = "" if outcome != "UNCHANGED" else " DONE" if not doc["next"] else " %s%s" % ("WAITING " if waiting else "AT ", doc["next"])
+        print("%s %s%s" % (slug, outcome, state))
+    if review and not args.dry_run:
+        body = {"schema": "records-needs-model-v1", "generated_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "entries": sorted(entries, key=lambda e: e["agency"])}
+        review.put(root / ".analysis" / "needs-model.json", (json.dumps(body, indent=1, sort_keys=True) + "\n").encode())
+    print("analysis: %(A)d advanced, %(W)d waiting for a model, %(D)d done, %(E)d errors" % counts)
+    return 1 if hard else 0
 
 
 if __name__ == "__main__":

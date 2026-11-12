@@ -1,0 +1,35 @@
+{
+ "entries": [
+  {
+   "agency": "fictional-valley-pd",
+   "author_family": null,
+   "config": "agencies/fictional-valley-pd/review-config.json",
+   "input_fp": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "records_agency_id": "fictional-valley-pd",
+   "role": "author",
+   "sources": "agencies/fictional-valley-pd/review/inputs/SOURCES.csv",
+   "stage": "fact-drafts",
+   "verify_family": null,
+   "wait_files": [
+    "agencies/fictional-valley-pd/review/facts/drafts/*.yaml"
+   ]
+  },
+  {
+   "agency": "fictional-hills-so",
+   "author_family": "anthropic",
+   "config": "agencies/fictional-hills-so/review-config.json",
+   "input_fp": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "records_agency_id": "fictional-hills-so",
+   "role": "verify",
+   "sources": null,
+   "stage": "verify",
+   "verify_family": null,
+   "wait_files": [
+    "agencies/fictional-hills-so/review/compare/VERIFY.csv",
+    "agencies/fictional-hills-so/review/compare/VERIFY.md"
+   ]
+  }
+ ],
+ "generated_at": "2026-11-10T00:00:00Z",
+ "schema": "records-needs-model-v1"
+}
