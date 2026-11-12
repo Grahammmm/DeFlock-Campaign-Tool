@@ -387,10 +387,10 @@ def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft):
                       ("EVIDENCE_SOURCE_UNKNOWN", lambda f: f["status"] != "checked" or f["kind"] != "record" or f["source_sha256"] not in sources)):
         if not ids or any(bad(facts.get(i)) for i in ids):
             return None, (code, ids)
-    docs, cites = {}, []
+    docs, cites, firsts = {}, [], {}
     for i in ids:
         sha = facts[i]["source_sha256"]
-        first = min(sources[sha], key=lambda r: r["received_at"])
+        first = firsts[sha] = min(sources[sha], key=lambda r: r["received_at"])
         if not DAYTIME.fullmatch(first["received_at"]):
             return None, ("EVIDENCE_DATE_UNAVAILABLE", ids)
         docs[sha] = {"sha256": sha, "date_received": first["received_at"][:10], "source_request": first["request_id"], "redaction_ids": [],
@@ -416,8 +416,8 @@ def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft):
     return {"packet": packet, "provenance": {
         "finding_id": row["finding_id"], "fact_ids": ids, "rule_ids": cited, "withheld_rule_ids": [i for i in rule_ids if i not in cited],
         "withheld_policy_refs": [i for i in found["policy_refs"].split(";") if i],
-        "documents": [{"sha256": d["sha256"], "run_id": sources[d["sha256"]][0]["run_id"], "received_at": min(sources[d["sha256"]], key=lambda r: r["received_at"])["received_at"],
-                       "received_at_source": min(sources[d["sha256"]], key=lambda r: r["received_at"])["received_at_source"]} for d in packet["documents"]]}}, None
+        "documents": [{"sha256": d["sha256"], "run_id": firsts[d["sha256"]]["run_id"], "received_at": firsts[d["sha256"]]["received_at"],
+                       "received_at_source": firsts[d["sha256"]]["received_at_source"]} for d in packet["documents"]]}}, None
 
 
 def _packets(root, slug, config):
@@ -431,7 +431,9 @@ def _packets(root, slug, config):
     except (OSError, ValueError, AttributeError):
         agency = None
     ok, findings = _table(run / "PUBLIC-OK.csv"), {r["finding_id"]: r for r in _table(run / "FINDINGS.csv")}
-    rows, _, codes = facts_tool.read_reviewed(store, slug)
+    with facts_tool.store_lock(store, exclusive=False):  # one shared snapshot: the validated view and the hashes recorded for it
+        rows, _, codes = facts_tool.read_reviewed(store, slug)
+        fact_hashes = (_file_sha(folder / "FACTS.csv"), _file_sha(folder / "FACT-REVIEWS.csv"))
     facts, sources = {r["fact_id"]: r for r in rows}, {}
     for r in _table(out / "inputs" / "SOURCES.csv"):
         sources.setdefault(r["original_sha256"], []).append(r)
@@ -446,8 +448,8 @@ def _packets(root, slug, config):
         else:
             entry, bad = _packet_one(row, found, facts, sources, ref, package, agency, slug, _tool("flock_compare").DRAFT)
             packets.append(entry) if entry else held.append(_hold(row, *bad))
-    paths = [run / "PUBLIC-OK.csv", run / "FINDINGS.csv", folder / "FACTS.csv", folder / "FACT-REVIEWS.csv", out / "inputs" / "SOURCES.csv"]
-    inputs = dict(zip(("public_ok", "findings", "facts", "fact_reviews", "sources"), map(_file_sha, paths)))
+    inputs = {"public_ok": _file_sha(run / "PUBLIC-OK.csv"), "findings": _file_sha(run / "FINDINGS.csv"), "facts": fact_hashes[0],
+              "fact_reviews": fact_hashes[1], "sources": _file_sha(out / "inputs" / "SOURCES.csv")}
     inputs["law_package"] = _file_sha(law.package_path(ref["id"])) if ref else "missing"
     body = {"schema": PACKET_SCHEMA, "agency_id": agency, "slug": slug, "inputs": inputs, "packets": packets, "held": held}
     key = ae._sha(json.dumps(body, sort_keys=True).encode())

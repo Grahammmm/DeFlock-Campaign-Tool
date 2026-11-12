@@ -152,6 +152,43 @@ class PacketOutboxTests(unittest.TestCase):
         self.t.tick()
         self.assertEqual(self.outbox(), [])
 
+    def test_the_view_and_its_input_hashes_are_one_shared_snapshot_a_writer_cannot_split(self):
+        self.start()
+        self.review("N1")
+        facts_tool, seen = bridge._tool("flock_facts"), []
+        _tool = bridge._tool
+        real = facts_tool.read_reviewed
+
+        def probe(store, slug):
+            got = real(store, slug)
+            try:  # still inside the caller's shared lock: a review writer must be refused here
+                with facts_tool.store_lock(Path(store), exclusive=True):
+                    seen.append("writer got in")
+            except facts_tool.Locked:
+                seen.append("writer excluded")
+            return got
+
+        with patch.object(facts_tool, "read_reviewed", probe), patch.object(facts_tool, "LOCK_WAIT", 0), \
+                patch.object(bridge, "_tool", lambda name: facts_tool if name == "flock_facts" else _tool(name)):
+            bridge._packets(self.root, tt.SLUG, json.loads(self.t.config().read_text()))
+        self.assertEqual(seen, ["writer excluded"])
+
+    def test_provenance_comes_from_the_one_earliest_received_source_row(self):
+        self.start()
+        self.review("N1")
+        path = self.out / "inputs" / "SOURCES.csv"
+        with open(path, newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        later = dict(rows[0], run_id="run-later-export", received_at="2026-11-01T09:00:00Z", received_at_source="portal_date", request_id="rq0")
+        with open(path, "a", newline="") as handle:
+            csv.DictWriter(handle, list(rows[0])).writerow(later)  # appended after, but received earlier
+        self.tick("PACKET_STAGED")
+        (entry,) = json.loads(self.outbox()[0].read_text())["packets"]
+        self.assertEqual(entry["packet"]["documents"][0]["date_received"], "2026-11-01")
+        self.assertEqual(entry["packet"]["documents"][0]["source_request"], "rq0")
+        self.assertEqual({k: entry["provenance"]["documents"][0][k] for k in ("run_id", "received_at", "received_at_source")},
+                         {"run_id": "run-later-export", "received_at": "2026-11-01T09:00:00Z", "received_at_source": "portal_date"})
+
     def test_a_dispute_after_staging_holds_the_finding_and_adds_no_file(self):
         self.start()
         self.review("N1")
