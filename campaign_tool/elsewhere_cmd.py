@@ -103,15 +103,19 @@ def _read(folder_fd, name, label, single_link=False):
     try:
         fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder_fd)
         try:  # own the raw fd until closed here, even if fdopen itself fails (closefd=False)
+            # Admit the descriptor actually opened (type, identity, link count) before any stream or payload read;
+            # the pathname stat above only vets what the name pointed to a moment earlier.
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                raise ElsewhereError(f"{label}: changed while it was being read; {UNTOUCHED}")
+            if single_link and opened.st_nlink != 1:
+                raise ElsewhereError(f"{label}: must be a regular file with a single link; {UNTOUCHED}")
             with os.fdopen(fd, "rb", closefd=False) as handle:
-                opened = os.fstat(handle.fileno())
                 data = handle.read(MAX_JSON_BYTES + 1)
         finally:
             os.close(fd)
     except OSError:
         raise ElsewhereError(f"{label}: cannot be read; {UNTOUCHED}") from None
-    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
-        raise ElsewhereError(f"{label}: changed while it was being read; {UNTOUCHED}")
     if len(data) > MAX_JSON_BYTES:
         raise ElsewhereError(f"{label}: file too large; {UNTOUCHED}")
     identity = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_nlink)
@@ -273,16 +277,24 @@ def _install(root, data, loaded, *, folder_id):
 
 
 def _remove_file(root, loaded, *, folder_id):
-    """Unlink the very file read: the commit point of removing the last entry (an empty array is never written)."""
+    """Unlink the very file read: the commit point of removing the last entry (an empty array is never written).
+    The folder is then flushed through the same descriptor; a flush failure after the unlink is reported as removed
+    with durability unconfirmed, never as a kept file, and nothing is recreated or retried."""
     folder = _content_fd(root, folder_id)
     try:
-        _verify_path(root, folder_id)
-        _unchanged(folder, loaded)
-        os.unlink(FILE, dir_fd=folder)
-    except FileExistsError:
-        raise ElsewhereError(f"{LABEL}: changed while it was being edited; {UNTOUCHED}") from None
-    except OSError:
-        raise ElsewhereError(f"{LABEL}: could not be removed; the previous file was kept") from None
+        try:
+            _verify_path(root, folder_id)
+            _unchanged(folder, loaded)
+            os.unlink(FILE, dir_fd=folder)
+        except FileExistsError:
+            raise ElsewhereError(f"{LABEL}: changed while it was being edited; {UNTOUCHED}") from None
+        except OSError:
+            raise ElsewhereError(f"{LABEL}: could not be removed; the previous file was kept") from None
+        try:  # after the commit point: nothing here may claim the previous file was kept
+            os.fsync(folder)
+        except OSError:
+            raise ElsewhereError(f"{LABEL}: removed, but the folder could not be flushed to disk; check it with "
+                                 "content elsewhere list") from None
     finally:
         os.close(folder)
 

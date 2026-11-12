@@ -87,7 +87,38 @@ def refusal_panel(project, row, run_id):
     return "\n".join(out + ['</ul></section>'])
 
 
-def render(project, row, history, preview, token, payload, send_config=None, *, run_id=None):
+def render_link(row, token, payload, refusal=None):
+    """A message_link row: the plain question, one choice per candidate, then the usual signed approve / reject."""
+    from . import admin_panel as ap
+
+    pending = row["status"] == "pending"
+    out = ["<h1>Tie this message to a request</h1>", "<p role=\"status\">%s</p>" % esc(
+        "Pending" if pending else row["status"].capitalize() + (": " + str(row.get("reason") or "") if row.get("reason") else "")),
+           "<pre>%s</pre>" % esc(row["body"])]
+    message, field_name, typed = refusal or (None, None, None)
+    if message:
+        out.append('<p role="alert" class="diag">%s. Nothing was saved or decided.</p>' % esc(message.rstrip(".")))
+    if pending:
+        options = "".join('<label><input type="radio" name="choice" value="%s" required> %s (agency %s)</label><br>' % (
+            esc(c["request_id"]), esc(c["request_id"]), esc(c["agency_id"])) for c in row["evidence"].get("candidates", []))
+        out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre>' % esc(payload.decode("utf-8")))
+        out.append("<p>Choose the request, sign the text above with your approval key and paste the signature. "
+                   "Approval ties this message to that request from the next run on. Nothing is sent or published.</p>")
+        if options:
+            out.append(ap._form("/approvals/approve", token, row["id"], "", options +
+                                '<label for="signature">Detached SSH signature</label>'
+                                '<textarea id="signature" name="signature" required>%s</textarea>' % esc(
+                                    typed if field_name == "signature" else ""),
+                                "Approve: tie to the chosen request", back="review"))
+        out.append(ap._form("/approvals/reject", token, row["id"], "",
+                            '<label for="reason">Why is it not a response?</label>'
+                            '<input id="reason" name="reason" required maxlength="2000" value="%s">' % esc(
+                                typed if field_name == "reason" else ""), "Not a response", back="review"))
+    out.append('<p><a href="/">Back</a></p>')
+    return console_layout.shell("Tie this message to a request", "\n".join(out), active="Approvals")
+
+
+def render(project, row, history, preview, token, payload, send_config=None, *, run_id=None, refusal=None):
     from . import admin_panel as ap
 
     title = "Review: %s for %s / %s" % (row["kind"].replace("-", " "), row["agency_id"], row["request_id"])
@@ -95,7 +126,11 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
     switches = mail_send.switch_state(project, send_config)
     status = approval_status(project, row, switches) if row["status"] == "approved" else esc(
         "Pending" if pending else "Rejected: " + str(row.get("reason") or ""))
-    out = ["<h1>%s</h1><p role=\"status\">%s</p>" % (esc(title), status), "<dl>"]
+    message, field_name, typed = refusal or (None, None, None)
+    out = ["<h1>%s</h1><p role=\"status\">%s</p>" % (esc(title), status)]
+    if message:
+        out.append('<p role="alert" class="diag">%s. Nothing was saved or decided.</p>' % esc(message.rstrip(".")))
+    out.append("<dl>")
     for label, value in (("To", preview["to"] or "Unknown"), ("To note", preview["to_note"]),
                          ("From", preview["from"] or "Unknown"), ("From note", preview["from_note"]),
                          ("Subject", preview["subject"]),
@@ -112,7 +147,7 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
         out.append("<h2>Warnings</h2><ul>" + "".join("<li>%s</li>" % esc(w) for w in warnings) + "</ul>")
     # The initial newline prevents HTML's textarea newline stripping from losing a body newline.
     field = '<label for="body">Draft text</label><textarea id="body" name="body" rows="28"%s>\n%s</textarea>' % (
-        " required" if pending else " readonly", esc(row["body"]))
+        " required" if pending else " readonly", esc(typed if field_name == "body" else row["body"]))
     if pending:
         out.append(ap._form("/approvals/edit", token, row["id"], "", ap.revision_field(row) + field, "Save edit",
                             back="review"))
@@ -146,11 +181,13 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
                    "For mail, continue to the separate send check after approval.</p>")
         out.append(ap._form("/approvals/approve", token, row["id"], "",
                             '<label for="signature">Detached SSH signature</label>'
-                            '<textarea id="signature" name="signature" required></textarea>',
+                            '<textarea id="signature" name="signature" required>%s</textarea>' % esc(
+                                typed if field_name == "signature" else ""),
                             approval_label(row, switches), back="review"))
         out.append(ap._form("/approvals/reject", token, row["id"], "",
                             '<label for="reason">Rejection reason</label>'
-                            '<input id="reason" name="reason" required maxlength="2000">',
+                            '<input id="reason" name="reason" required maxlength="2000" value="%s">' % esc(
+                                typed if field_name == "reason" else ""),
                             "Reject with reason", back="review"))
     out.append('<p><a href="/">Back</a></p>')
     return console_layout.shell(title, "\n".join(out), active="Approvals")
@@ -167,21 +204,38 @@ def serve(handler):
     if set(args) != {"id"} or len(ids) != 1 or not ap.DRAFT_ID.fullmatch(ids[0]):
         handler._fail(400)
         return True
+    return _show(handler, ids[0], 200, None)
+
+
+def refuse(handler, ident, message, typed):
+    """A refused review form: the review page again (400) with the reason; typed = (field, text) is echoed escaped."""
+    if typed is None:
+        return _show(handler, ident, 400, (message, None, None))
+    return _show(handler, ident, 400, (message,) + typed)
+
+
+def _show(handler, ident, status, refusal):
     project = handler.server.options["project"]
     try:
         rows = {r["id"]: r for r in approval_queue.load_queue(project)}
-        if ids[0] not in rows:
+        if ident not in rows:
             handler._fail(404)
             return True
-        row = rows[ids[0]]
+        row = rows[ident]
+        ids = [ident]
+        if row["kind"] == draft_templates.MESSAGE_LINK:
+            payload = approval_queue.approval_payload(project, ids[0]) if row["status"] == "pending" else None
+            handler._send(status, render_link(row, handler.server.csrf_token, payload, refusal))
+            return True
         history = approval_queue.history(project, ids[0])
         preview = mail_preview.preview(project, row, handler.server.mail_drafts_config)
         payload = approval_queue.approval_payload(project, ids[0]) if row["status"] == "pending" else None
         page = render(project, row, history, preview, handler.server.csrf_token, payload,
-                      handler.server.options.get("send_config"), run_id=handler.server.options["run_id"])
+                      handler.server.options.get("send_config"), run_id=handler.server.options["run_id"],
+                      refusal=refusal)
     except (approval_queue.ApprovalQueueError, mail_send.MailSendError, mail_drafts.MailDraftError,
             OSError, ValueError, KeyError, TypeError):
         handler._fail(503)
         return True
-    handler._send(200, page)
+    handler._send(status, page)
     return True

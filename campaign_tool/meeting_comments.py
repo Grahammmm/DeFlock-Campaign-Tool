@@ -56,6 +56,19 @@ def _entry(value, meeting_id):
     return value
 
 
+class _RepeatedKey(Exception):
+    """Private sentinel: a decoded JSON object repeated a member name (carries no key or value)."""
+
+
+def _unique_pairs(pairs):
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise _RepeatedKey
+        out[key] = value
+    return out
+
+
 def _read_receipts(path, limit=MAX_JSON_BYTES):
     """Parse the receipt store through ONE no-follow, nonblocking descriptor, reading at most ``limit + 1`` bytes.
 
@@ -83,8 +96,11 @@ def _read_receipts(path, limit=MAX_JSON_BYTES):
     if len(data) > limit:
         raise ContentError(f"{LABEL}: file too large")
     try:
-        return json.loads(data.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_unique_pairs)
+    except _RepeatedKey:
+        raise ContentError(f"{LABEL}: a JSON object repeats a key") from None
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        # RecursionError here is decoder exhaustion on overdeep nesting: same refusal as any malformed JSON.
         raise ContentError(f"{LABEL}: not valid UTF-8 JSON") from None
 
 

@@ -402,6 +402,19 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(advisory[1:], check.stdout.splitlines()[1:-1])
         self.assertIn("Private preview only; public/ was not changed and nothing was published.", result.stdout)
 
+    def test_preview_introduction_rows_match_checker(self):
+        body = "automated license plate readers (ALPR) and ALPR (automated license plate readers) and CCTV."
+        result = self.preview(summary=sentence(31), body_md=body)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        check = subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "finding", "check-plain", str(self.draft),
+                                "--directory", str(self.root)], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual(check.returncode, 3)
+        rows = check.stdout.splitlines()[1:-1]
+        self.assertEqual(len(rows), 2, check.stdout)
+        self.assertIn("CCTV", rows[1])
+        self.assertNotIn("ALPR", "".join(rows))
+        self.assertEqual(result.stdout.splitlines()[-3:][1:], rows)
+
     def test_preview_advisory_matches_title_aware_checker(self):
         sources = [{"sha256": "cafe" * 16, "locator": "page:1", "title": "ABC"}]
         result = self.preview(sources=sources, body_md="ABC " * 400 + "XYZ.")
@@ -793,6 +806,87 @@ class DenseSourceTitleCommandTests(Case):
                            sources=[{"title": "ABC"}])
         self.assertEqual(json.loads(self.cli(clean, "--json", returncode=0).stdout),
                          {"advisory": True, "finding_id": "syn-title-clean", "warnings": []})
+
+
+EXPANSION_FIRST, ABBREVIATION_FIRST = "automated license plate readers (ALPR). ", "ALPR (automated license plate readers). "
+
+
+def introduction_rows(body):
+    return [(row["abbreviation"], row["start"]) for row in check_plain(finding(title="", summary="", body_md=body))
+            if row["rule"] == "unexplained_abbreviation"]
+
+
+class IntroductionCloseTests(unittest.TestCase):
+    def test_introduction_context_copy_work_is_linear(self):
+        mixed = "automated license plate readers (ALPR). body worn cameras (BWC). ALPR (automated license plate readers). "
+        for form in (EXPANSION_FIRST, ABBREVIATION_FIRST, mixed):
+            for repeats in (1024, 2048, 4096):
+                with self.subTest(form=form, repeats=repeats):
+                    body = form * repeats
+                    CountedText.work = 0
+                    rows = plain_language.check_fields([("body_md", CountedText(body))])
+                    self.assertLessEqual(CountedText.work, 16 * len(body))
+                    self.assertEqual(rows, plain_language.check_fields([("body_md", body)]))
+                    self.assertEqual([row["rule"] for row in rows], ["long_paragraph"])
+        words = 5 * 4096
+        row = plain_language.check_fields([("body_md", EXPANSION_FIRST * 4096)])[0]
+        self.assertEqual(row, {"rule": "long_paragraph", "field": "body_md", "paragraph": 1, "sentence": 1, "word": 1,
+                               "start": 0, "end": len(EXPANSION_FIRST) * 4096 - 3, "word_count": words, "limit": 150,
+                               "abbreviation": None})
+
+    def test_positional_close_accepts_adjacent_whitespace_then_parenthesis(self):
+        for gap in ("", " ", "\t", "\r\n", "\u00a0", "\u3000", " \u2028 "):
+            with self.subTest(gap=gap):
+                self.assertEqual(introduction_rows("automated license plate readers (ALPR" + gap + ") more text."), [])
+                self.assertEqual(introduction_rows("ALPR (automated license plate readers" + gap + ") more text."), [])
+        self.assertEqual(introduction_rows("automated license plate readers (ALPR)"), [])
+        self.assertEqual(introduction_rows("ALPR (automated license plate readers)"), [])
+
+    def test_positional_close_matches_at_nonzero_unicode_offsets_and_teaches_later_uses(self):
+        prefix = "😀 e\u0301 (x) "
+        body = prefix + "automated license plate readers (ALPR) then ALPR."
+        self.assertEqual(introduction_rows(body), [])
+        body = prefix + "ALPR (automated license plate readers) then ALPR."
+        self.assertEqual(introduction_rows(body), [])
+        body = "ALPR early. " + prefix + "ALPR (automated license plate readers) then ALPR."
+        self.assertEqual(introduction_rows(body), [("ALPR", 0)])
+
+    def test_positional_close_never_searches_or_anchors_to_whole_field(self):
+        for body in ("automated license plate readers (ALPR", "automated license plate readers (ALPR   ",
+                     "automated license plate readers (ALPR, x) later ) end",
+                     "automated license plate readers (ALPR]", "automated license plate readers (ALPR x) end",
+                     "automated license plate (ALPR)", "automated license plate readers cameras (ALPR)",
+                     "automated license plate readers (ALPR.) end",
+                     "x) automated license plate readers (ALPR"):
+            with self.subTest(body=body):
+                self.assertEqual(introduction_rows(body), [("ALPR", body.index("ALPR"))])
+        for body in ("ALPR (automated license plate readers", "ALPR (automated license plate readers   ",
+                     "ALPR (automated license plate readers, x) later ) end",
+                     "ALPR (automated license plate readers]", "ALPR (automated license plate) end",
+                     "ALPR (automated license plate readers cameras)", "ALPR (automated license plate readers.) end",
+                     "x) ALPR (automated license plate readers"):
+            with self.subTest(body=body):
+                self.assertEqual(introduction_rows(body), [("ALPR", body.index("ALPR"))])
+        self.assertEqual(introduction_rows("automated license plate readers (ALPS) x"), [("ALPS", 33)])
+
+
+class DenseIntroductionCommandTests(Case):
+    def test_dense_introduction_finding_cli_is_complete_and_read_only(self):
+        for form in (EXPANSION_FIRST, ABBREVIATION_FIRST):
+            body = form * 20000
+            draft = self.draft("dense.json", id="syn-abbrev-scale", title="", summary="", body_md=body)
+            self.assertLess(draft.stat().st_size, findings.MAX_DRAFT_BYTES)
+            result = self.cli(draft, "--json", returncode=3)
+            self.assertEqual(result.stderr, "")
+            self.assertEqual(result.stdout.count("\n"), 1)
+            report = json.loads(result.stdout)
+            self.assertEqual(report, {"advisory": True, "finding_id": "syn-abbrev-scale", "warnings": [{
+                "rule": "long_paragraph", "field": "body_md", "paragraph": 1, "sentence": 1, "word": 1, "start": 0,
+                "end": 799997, "word_count": 100000, "limit": 150, "abbreviation": None}]})
+            self.assertEqual(list(report["warnings"][0]), KEYS)
+        clean = self.draft("clean.json", id="syn-abbrev-clean", title="", summary="", body_md=EXPANSION_FIRST)
+        self.assertEqual(json.loads(self.cli(clean, "--json", returncode=0).stdout),
+                         {"advisory": True, "finding_id": "syn-abbrev-clean", "warnings": []})
 
 
 if __name__ == "__main__":

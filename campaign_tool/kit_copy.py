@@ -7,6 +7,12 @@ kit/sent.json is not touched (record a send with kit-sent).
 requester block from kit/request-settings.json, today's date, the verified postal address and the sendable text.
 Nothing is printed or sent. The two files are replaced one after the other, not as a pair: if the second write
 fails the first may already be new; the command reports the failure and running it again rewrites both.
+
+Durability: before the first file is replaced the ``kit/`` directory entry is synced (also when kit/outgoing already
+exists, so a retry after an uncertain directory creation is confirmed again), and after each replacement the opened
+kit/outgoing descriptor is synced. If that last sync fails the new file IS installed but its durability is unconfirmed:
+``CopyDurabilityError`` says so, nothing is rolled back and the same command is simply run again. This is the
+operating system's fsync contract, not a pair transaction or a journal.
 """
 import errno
 import html
@@ -87,6 +93,26 @@ def _agency(root, agency_id):
     return entry
 
 
+class CopyDurabilityError(ValueError):
+    """The current output file was replaced, but syncing its directory failed: installed, durability unconfirmed."""
+
+
+def _sync_parent(out):
+    """fsync the directory that holds ``out`` (the kit/ entry) before any output file is replaced."""
+    message = ("kit/outgoing directory entry could not be synced; no copy file was replaced; directory may remain; "
+               "rerun kit-copy")
+    try:
+        fd = os.open(out.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        raise ValueError(message) from None
+    try:
+        os.fsync(fd)
+    except OSError:
+        raise ValueError(message) from None
+    finally:
+        os.close(fd)
+
+
 def _discard(directory, temporary, owned):
     """Best-effort removal of the staging file this call created: only that same regular file (device and inode)."""
     try:
@@ -124,7 +150,12 @@ def _write(out, name, data):
             stream.flush()
             os.fsync(handle)
         os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
-        owned = None
+        owned = None  # installed: never rolled back or discarded
+        try:
+            os.fsync(directory)  # the already-open directory, not a reopened pathname
+        except OSError:
+            raise CopyDurabilityError(f"UNCONFIRMED: kit/outgoing/{name} was replaced, but directory sync failed; "
+                                      "rerun the same kit-copy command before using the output") from None
     except BaseException:
         if owned is not None:
             _discard(directory, temporary, owned)  # only a stage this call created; never a colliding entry
@@ -183,9 +214,14 @@ def _mail(root, entry, part, today):
     _preflight(out, names)
     if not os.path.lexists(out):
         out.mkdir(mode=0o700)
+    _sync_parent(out)
     for index, (name, data) in enumerate(zip(names, (page, text))):
         try:
             _write(out, name, data)
+        except CopyDurabilityError as exc:
+            if index:
+                raise CopyDurabilityError(f"{exc}; kit/outgoing/{names[0]} was already replaced and synced") from None
+            raise
         except OSError as exc:
             window = f"; {names[0]} was already replaced, run the same command again" if index else ""
             raise ValueError(f"kit/outgoing/{name} could not be written ({exc.strerror or 'I/O error'}){window}") from None
@@ -224,6 +260,7 @@ def copy(root, agency_id, target, *, today=None):
     out = kit_dir / "outgoing"
     if not os.path.lexists(out):
         out.mkdir(mode=0o700)
+    _sync_parent(out)
     _write(out, name, data)
     return {"written": f"kit/outgoing/{name}", "characters": len(part["subject"]) + len(part["body"]),
             "subject": part["subject"]}

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "records-needs-model-v1",
+  "description": "Private <analysis root>/.analysis/needs-model.json (mode 0600), rewritten by every `records analysis-tick`: one entry per agency whose review DAG is blocked on a model wait. Slugs, stage ids, families, hashes and paths only; no record text. Review-required.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "generated_at", "entries"],
+  "properties": {
+    "schema": {"const": "records-needs-model-v1"},
+    "generated_at": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "entries": {"type": "array", "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agency", "records_agency_id", "stage", "role", "author_family", "verify_family", "input_fp", "wait_files", "config", "sources"],
+      "properties": {
+        "agency": {"type": "string"},
+        "records_agency_id": {"type": ["string", "null"]},
+        "stage": {"enum": ["fact-drafts", "rules-read", "assess", "f3-findings", "verify", "f4"]},
+        "role": {"enum": ["author", "verify"]},
+        "author_family": {"type": ["string", "null"]},
+        "verify_family": {"type": ["string", "null"]},
+        "input_fp": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "wait_files": {"type": "array", "items": {"type": "string"}},
+        "config": {"type": "string"},
+        "sources": {"type": ["string", "null"]}
+      }}}
+  }
+}

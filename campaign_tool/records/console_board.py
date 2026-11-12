@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import law
-from . import agency_retention, deadline_calc, denial_log, followup_clock
+from . import campaign_config, agency_retention, deadline_calc, denial_log, followup_clock
 from . import console_documents as cd
 from .outcomes import release_links as _rl
 from .outcomes import timeline as _tl
@@ -39,6 +39,9 @@ BASIS_WORD = {"recorded_receipt": "DATED", "submission_proxy": "INFERRED"}
 LABEL = "Private; review required. Overdue marks are arithmetic on our records, not a legal finding."
 COMPUTED_LEGEND = ("COMPUTED = date arithmetic from the law package (Gov. Code § 7922.535), not a legal finding. "
                    "UNVERIFIED = dates could not be verified against the law package and register.")
+# Only the California package has its citation here; any other package is named by its id.
+OTHER_LEGEND = ("COMPUTED = date arithmetic from the law package (%s), not a legal finding. "
+                "UNVERIFIED = dates could not be verified against the law package and register.")
 
 
 def _str_or_none(value):
@@ -94,7 +97,7 @@ def load(project, run_id):
     model = cd.load(project, run_id, pages=False)
     return {"run_id": run_id, "timeline": timeline, "links": model["links"], "tiers": model["tiers"],
             "refusals": denial_log.load(project, run_id), "retention": load_retention(project),
-            "deadlines": computed_dates(project, run_id),
+            "deadlines": computed_dates(project, run_id), "campaign": campaign_config.load(project),
             "received": model["received"], "aliases": model.get("aliases", {"state": "absent"})}
 
 
@@ -102,7 +105,7 @@ def load_retention(project):
     """``<project>/agency-retention.csv``: {'state': 'absent'} when missing, else {'state': 'ok', rows, problems}.
 
     The validator refuses symlinked, non-regular and oversized files as a ``file`` problem. Per-project inputs:
-    ``agency-retention.csv`` has the header of ``agency_retention.HEADER``; the SLO pilot's reviewed copy is
+    ``agency-retention.csv`` has the header of ``agency_retention.HEADER``; the pilot's reviewed copy is
     ``data/slo-pilot/agency-retention.csv`` in the repository and is not read here.
     """
     path = Path(project) / RETENTION_FILE
@@ -272,12 +275,29 @@ def agencies(model):
 
 # ---- rendering ---------------------------------------------------------------------------------------
 
+def _campaign_note(model):
+    c = model.get("campaign")
+    if c is None or c.campaign_id is None:
+        return []
+    note = "Campaign: %s (%s)." % (c.display_name, c.campaign_id)
+    if c.records_mailbox_label:
+        note += " Records mailbox: %s." % c.records_mailbox_label
+    return ["<p>%s</p>" % esc(note)]
+
+
+def _legend(model):
+    c = model.get("campaign")
+    if c is None or c.law_package == campaign_config.DEFAULT_LAW_PACKAGE:
+        return COMPUTED_LEGEND
+    return OTHER_LEGEND % c.law_package
+
+
 def _head(title, model):
-    notes = ['<p class="diag" role="status">%s: unavailable (%s).</p>' % (esc(k), esc(s.get("code")))
+    notes = ['<p class="diag" role="status">%s</p>' % esc(console_layout.unavailable_note(*console_layout.plain([k]), s.get("code")))
              for k, s in sources(model).items() if s["state"] != "ok"]
     return [console_layout.start(title, "Agencies"),
             "<h1>%s</h1>" % esc(title), "<p>Run %s. %s Nothing is fetched, sent or published.</p>" % (
-                esc(model["run_id"]), esc(LABEL))] + notes
+                esc(model["run_id"]), esc(LABEL))] + _campaign_note(model) + notes
 
 
 def _documents_href(agency):
@@ -301,6 +321,9 @@ def _ago(days):
 
 def render_board(model, today, which="all"):
     out = _head("Board: every request, every agency", model)
+    missing = console_layout.plain(k for k, s in sources(model).items() if s["state"] != "ok")
+    if missing:
+        out.insert(1, console_layout.sources_banner(missing))
     if model["timeline"]["state"] != "ok":
         return "\n".join(out + ["<p>No timeline for this run, so no requests can be listed.</p></main></body></html>"]) + "\n"
     rows = board_rows(model, today)
@@ -335,7 +358,7 @@ def render_board(model, today, which="all"):
 def render_agency(model, agency):
     views = agency_view(model, agency)
     out = _head("Agency timeline: %s" % (views[0]["agency"] if views else agency), model)
-    out.append("<p>%s</p>" % esc(COMPUTED_LEGEND))
+    out.append("<p>%s</p>" % esc(_legend(model)))
     docs_href = _documents_href(agency)
     out.append('<p><a href="%s">Documents and findings</a> <a href="/next-steps">Drafts</a></p>' % esc(docs_href))
     if model["timeline"]["state"] != "ok":

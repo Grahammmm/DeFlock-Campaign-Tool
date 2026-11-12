@@ -26,6 +26,8 @@ are newly authored regressions, not recovered historical tests. They caught a
 python3 -B -m unittest discover -v
 python3 -B tools/check_public_tree.py
 python3 -m campaign_tool.records --help
+# New county: records project for an existing campaign (private tree, campaign.json, .campaign-root, empty ledger and queue)
+python3 -m campaign_tool.records project-init --project "$PROJECT" --campaign-root "$CAMPAIGN" [--campaign-id ID]
 ```
 
 No dependency or system package installation is required for this M0a slice.
@@ -143,3 +145,12 @@ row changes because of a model answer, and nothing is sent, spent or published.
   The agreement file is the input for the shadow measurement; no override rule is evaluated or enabled here.
 - `records model-advice run --project DIR --run-id ID` records advice for one run; `records model-advice health
   --project DIR` checks the service through the same loopback rule. Neither installs or restarts anything.
+
+## Analysis-ready manifest
+
+After each run the outputs stage writes `run-outputs/<run>/outcomes/analysis-ready.json` (`records-analysis-ready-v1`,
+private, 0600): per agency and request with newly received records, only the record sha256s, text state, comparison
+finding ids and ratings, gap-proposal ids and the law package id and status; no text, quotes or names. A failure
+there gives the warn code `OUTPUTS_ANALYSIS_READY_UNAVAILABLE` and never suppresses an earlier output. Nothing reads
+it unattended until DFGL-06/07 and G-03; it starts nothing. `records analysis-export` (docs/RECORDS-ANALYSIS-LANE.md)
+reads it, read-only, to export hash-bound text per settled run.

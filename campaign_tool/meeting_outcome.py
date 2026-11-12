@@ -5,6 +5,7 @@ types it in; nothing is fetched or published. The whole meeting document is vali
 ``content.load_meeting`` before the atomic write.
 """
 import csv
+import io
 import json
 import os
 import re
@@ -36,7 +37,7 @@ def read_votes(path):
     if data is None or len(data) > 65536:
         raise MeetingOutcomeError("votes: must be a regular file of at most 65536 bytes")
     try:
-        return list(enumerate(csv.reader(data.decode("utf-8").splitlines()), 1))
+        return list(enumerate(csv.reader(io.StringIO(data.decode("utf-8"), newline=""), strict=True), 1))
     except (UnicodeDecodeError, csv.Error) as exc:
         raise MeetingOutcomeError(f"votes: not a valid UTF-8 CSV ({exc})") from None
 

@@ -293,16 +293,29 @@ def read_weights(path):
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as exc:
         raise ValueError(f"{label}: cannot be read as a regular file, not a symlink ({exc.strerror})") from None
-    with os.fdopen(fd, "rb") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > WEIGHTS_MAX_BYTES:
-            raise ValueError(f"{label}: must be a regular file of at most {WEIGHTS_MAX_BYTES} bytes")
-        raw = handle.read(WEIGHTS_MAX_BYTES + 1)
-        if len(raw) > WEIGHTS_MAX_BYTES:  # the file grew after the descriptor size check: refuse, never use a prefix
-            raise ValueError(f"{label}: must be a regular file of at most {WEIGHTS_MAX_BYTES} bytes")
+    # The raw descriptor is ours until fdopen returns; afterwards the stream owns it. Post-open OSError
+    # (construction, fstat, read, close) is refused with a fixed message: no exception payload or second path.
+    try:
+        try:
+            stream = os.fdopen(fd, "rb")
+        except BaseException:
+            try:
+                os.close(fd)  # one attempt; a failure here never replaces the primary error
+            except OSError:
+                pass
+            raise
+        with stream as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > WEIGHTS_MAX_BYTES:
+                raise ValueError(f"{label}: must be a regular file of at most {WEIGHTS_MAX_BYTES} bytes")
+            raw = handle.read(WEIGHTS_MAX_BYTES + 1)
+            if len(raw) > WEIGHTS_MAX_BYTES:  # the file grew after the descriptor size check: refuse, never use a prefix
+                raise ValueError(f"{label}: must be a regular file of at most {WEIGHTS_MAX_BYTES} bytes")
+    except OSError:
+        raise ValueError(f"{label}: cannot be read (filesystem error)") from None
     try:
         data = json.loads(raw.decode("utf-8"))
-    except ValueError:  # includes UnicodeDecodeError
+    except (ValueError, RecursionError):  # includes UnicodeDecodeError; RecursionError = decoder nesting exhaustion
         raise ValueError(f"{label}: not valid JSON") from None
     pages = data.get("pages") if isinstance(data, dict) else None
     if not isinstance(data, dict) or data.get("schema") != WEIGHTS_SCHEMA or not isinstance(pages, list):

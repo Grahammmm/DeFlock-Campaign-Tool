@@ -205,7 +205,9 @@ def _size(data, image):
     parts = _webp(data)
     _need(len(parts) > 1)
     start, end = parts[1][1:]
-    fourcc, body = data[start:start + 4], data[start + 8:end]
+    # Declared payload only: the alignment byte inside ``end`` is not part of the header.
+    declared = int.from_bytes(data[start + 4:start + 8], "little")
+    fourcc, body = data[start:start + 4], data[start + 8:start + 8 + declared]
     if fourcc == b"VP8 ":
         _need(len(body) >= 10 and body[3:6] == b"\x9d\x01\x2a")
         return int.from_bytes(body[6:8], "little") & 0x3FFF, int.from_bytes(body[8:10], "little") & 0x3FFF

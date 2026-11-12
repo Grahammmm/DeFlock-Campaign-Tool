@@ -38,10 +38,15 @@ def _read_archive(path):
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         raise ValueError("--zip must be a regular, non-symlink file") from None
-    with os.fdopen(fd, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ValueError("--zip must be a regular, non-symlink file")
-        data = handle.read(MAX_ARCHIVE_BYTES + 1)
+    # This function owns the raw descriptor and closes it exactly once below, even when building the
+    # stream fails (a directory raises IsADirectoryError there); the stream itself never closes it.
+    try:
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError("--zip must be a regular, non-symlink file")
+            data = handle.read(MAX_ARCHIVE_BYTES + 1)
+    finally:
+        os.close(fd)
     if len(data) > MAX_ARCHIVE_BYTES:
         raise ValueError("Alpha limit: 200 MiB per archive; nothing was imported")
     return data

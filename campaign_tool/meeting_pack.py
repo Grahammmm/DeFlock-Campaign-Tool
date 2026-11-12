@@ -15,6 +15,7 @@ from pathlib import Path
 from .cli import read_config
 from .content import _read_json, load_campaign_agencies, load_finding, load_meeting, load_officials, load_site, load_sources
 from .content_statements import newest_first, read_statements
+from .kit_export import formula_safe
 from .labels import DEFAULTS, MAX_LABELS_BYTES, html_text, load_labels
 from . import meeting_comments
 from .meeting_stage import stale_kits
@@ -252,9 +253,11 @@ def build(root, meeting_id, max_findings=5, today=None, *, replace=False, allow_
     extra = ['kind', 'said_on', 'source_url'] if statements else []
     writer.writerow(['title', 'record_prefix', 'received', 'locator', 'public_copy', 'cited_by'] + extra)
     for row in rows.values():
-        writer.writerow([*row[:3], '; '.join(row[3]), row[4], '; '.join(row[5])] + (['source', '', ''] if statements else []))
+        cells = [*row[:3], '; '.join(row[3]), row[4], '; '.join(row[5])] + (['source', '', ''] if statements else [])
+        writer.writerow([formula_safe(cell) for cell in cells])  # guard each completed cell once, after the joins
     for _person, row in statements:
-        writer.writerow([''] * 6 + ['statement', row['said_on'], row['source_url']])
+        cells = [''] * 6 + ['statement', row['said_on'], row['source_url']]
+        writer.writerow([formula_safe(cell) for cell in cells])
     outputs = {'handout.html': _handout(read_config(root)['name'], meeting, findings, library, site, truncated, labels, statements),
                'comment.md': raw.get('comment_kit_md', ''), 'sources.csv': sheet.getvalue()}
     if any(FULL_HASH.search(text) for text in outputs.values()):

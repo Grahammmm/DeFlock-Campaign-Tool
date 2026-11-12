@@ -944,8 +944,8 @@ FUNCTION_LEVEL_MODULES = {"findings", "kit", "kit_track", "kit_assign", "kit_und
                           "meeting_comments", "correction_requests", "supporters", "meeting_speakers"}
 _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
-        records.admin_panel records.agency_reconciliation records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links
-        records.catalog_stage records.console_calendar records.console_documents records.contained_resume records.e2e_proof records.container_host records.export_clearance
+        records.admin_panel records.agency_reconciliation records.analysis_bridge records.analysis_config records.analysis_packets records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links
+        records.catalog_stage records.console_calendar records.console_documents records.console_export records.contained_resume records.e2e_proof records.container_host records.export_clearance
         records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes records.first_request
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
         records.gates.safe_output records.gates.validate_findings records.intake.document_drop
@@ -954,10 +954,10 @@ _MODULES = {
         records.ledger.reconcile records.ledger.store records.ledger_catalog records.ledger_catalog_acceptance
         records.legacy_adoption records.mail_adoption records.mail_drafts records.mail_poll records.mail_send records.mail_resolution_census records.model_advice
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
-        records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register records.outcomes.timeline
-        records.outcomes.textstate records.pipeline_health records.portal.download records.portal.engine records.portal.ledger_adapter
+        records.analysis_export records.outcomes.analysis_ready records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register records.outcomes.timeline
+        records.outcomes.textstate records.outcomes.unmatched records.pipeline_health records.project_init records.portal.download records.portal.engine records.portal.ledger_adapter
         records.portal.store records.console_manual_events records.public_packets records.public_updates records.publish records.queue_runtime records.recovery.backup
-        records.recovery.backup_v2 records.recovery.publication records.review_bundle records.review_retirement
+        records.recovery.backup_v2 records.recovery.publication records.quiescence_audit records.records_backup records.review_bundle records.review_retirement
         records.run records.run_orchestrator records.run_stages records.runner.canonical_mail records.runner.core
         records.runner.export_proof records.runtime records.schedule records.systemd_control records.unattended
         records.understanding.cli records.understanding.digest records.worker_lifecycle""",
@@ -1048,6 +1048,8 @@ MODULE_FUNCTIONS = {
     'press': ('build_letter', 'build_press',),
     'recent': ('_write_new', 'run_cli',),
     'records.agency_reconciliation': ('run',),
+    'records.analysis_bridge': ('_log', '_merge_csv', '_place', 'receive',),  # retained 0600 run store, append-only ledger and review-input files under the operator analysis root; writes no fact, sends nothing
+    'records.analysis_config': ('main', 'write_config',),  # one 0600 review-config.json under the operator analysis root, only when flock_review --check passes; no store, sends nothing
     'records.arrival': ('consume', 'main', 'mark_pending', 'scan_drop_status', 'stamp',),
     'records.arrival_summary': ('capture_baseline',),
     'records.bounded_resume': ('_worker',),
@@ -1059,8 +1061,9 @@ MODULE_FUNCTIONS = {
         'Journal._change', 'Journal.allocate', 'PrivateDir.write', 'admit', 'build_board', 'entry',
         'postrun_entry'
     ),
-    'records.e2e_proof': ('replay', 'replay.console', 'replay.telegram_text',),  # replay writes only under a new --out proof dir (OUT_EXISTS refuses reuse); sends and publishes nothing
+    'records.e2e_proof': ('replay', 'replay.console', 'replay.telegram_text', '_apply_seed',),  # replay writes only under a new --out proof dir (OUT_EXISTS refuses reuse); _apply_seed writes only the replay sandbox ledger and its fact-sheets file (SEED_NOT_SANDBOX refuses any other project); sends and publishes nothing
     'records.export_clearance': ('clearance',),
+    'records.project_init': ('_write', 'init_project',),  # one new private records project: campaign.json, .campaign-root, empty ledger and queue; refuses an existing root; sends nothing
     'records.first_request': ('main',),  # prints a draft to stdout; --queue appends only via the approval journal
     'records.extract.ocr': (
         '_hold', '_index', '_link_new', '_page_lock', '_prune_unrecorded', '_publish_blocked_disposition',
@@ -1093,12 +1096,17 @@ MODULE_FUNCTIONS = {
     'records.ledger_catalog': ('_write_new', 'export',),
     'records.console_calendar': ('main', 'serve',),  # main --ics writes one owner-chosen 0600 file; serve answers GET only
     'records.console_documents': ('main',),  # --html writes one new owner-chosen review file (open mode x); read-only otherwise, sends nothing
+    'records.console_export': (
+        '_backup_ledger', '_copy_file', '_unpack', '_write_fd', 'build', 'export_main', 'install', 'write_tar',
+    ),  # DFGL-16 private console copy: export only reads the project and writes a new tree (a new --out dir or a temp dir streamed to stdout as tar); import writes only a new sealed 0500/0400 export and the relative current pointer under an owner-only 0700 --out root; never copies approvals, packets, public-update or mail journals; sends nothing
     'records.ledger_catalog_acceptance': ('_connect', '_locked',),
     'records.legacy_adoption': ('apply_batch', 'main', 'write_proposal',),
     'records.mail_adoption': ('_snapshot_db',),
     'records.mail_drafts': ('_Journal.append',),  # approvals/mail-drafts.jsonl placement journal, 0600 append-only; sends nothing
     'records.mail_send': ('_Dir.append', 'init',),  # approvals/mail-send.jsonl attempt log + send.json/SEND-STOP at setup; 0600, owner-only
     'records.mail_poll': ('_poll_receipt', '_write_once', 'poll',),
+    'records.records_backup': ('backup_main', 'check_main',),  # backup_main appends DIR/backup-digests.jsonl (0600) after a verified local backup set; check_main is read-only on the backup dir and writes only the pipeline-health alert files in the separate <into>-alerts dir; never off-box
+    'records.quiescence_audit': ('main',),  # writes only the 0600 evidence file --out, outside the project
     'records.mail_resolution_census': ('inventory',),
     'records.native_extract': ('_write_private', 'run', 'write_awaiting_ocr', 'write_failure_manifest', 'write_private_list',),
     'records.ocr_closure': ('load_cas_page', 'load_cas_vision',),
@@ -1109,7 +1117,11 @@ MODULE_FUNCTIONS = {
     ),
     'records.outcomes.comparison': ('_publish_pair', '_stage_file',),
     'records.outcomes.received_items': ('write_run_received_items',),
+    'records.outcomes.unmatched': ('append_link', 'write_run_unmatched',),  # private link audit (including actor) and unmatched metadata; listed unknown at runtime
     'records.outcomes.release_links': ('write_run_release_links',),
+    'records.outcomes.analysis_ready': ('write_run_analysis_ready',),
+    'records.analysis_export': ('_run_files', '_tar', '_write', 'main',),  # read-only export: stdout tar or new 0600 folders under an owner-chosen --out outside the project; sends nothing
+    'records.analysis_packets': ('main',),  # appends one 0600 receipt line per packet and calls only public_packets.propose (a pending packet needs G's signed approval); sends nothing
     'records.outcomes.timeline': ('write_run_timeline',),
     'records.outcomes.response_items': ('write_run_response_items',),
     'records.outcomes.factsheets': ('write_run_factsheets',),

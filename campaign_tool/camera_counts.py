@@ -3,8 +3,12 @@
 Coordinates are GeoJSON ``[lon, lat]``; problems name a feature index and reason, never coordinates or values.
 """
 import math
+import sys
+from fractions import Fraction
 
 from .agency_cards import text as plain_text
+
+_MIN_NORMAL = sys.float_info.min  # below this a crossing product may have lost precision
 
 
 def _number(n):
@@ -32,9 +36,32 @@ def _crosses(x, y, edges):
     """Even-odd ray cast, half-open on edges: a point on a shared edge is inside exactly one neighbour."""
     inside = False
     for x1, y1, x2, y2 in edges:
-        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+        if (y1 > y) != (y2 > y) and _left_of_crossing(x, y, x1, y1, x2, y2):
             inside = not inside
     return inside
+
+
+def _left_of_crossing(x, y, x1, y1, x2, y2):
+    """``x < x1 + (y - y1) * (x2 - x1) / (y2 - y1)``; floats while every step is finite, exact otherwise."""
+    dy, dx, dn = y - y1, x2 - x1, y2 - y1  # finite inputs can still overflow here (or exceed float range as ints)
+    if not (_number(dy) and _number(dx) and _number(dn) and dn):  # dn == 0: mixed int/float operands rounded together
+        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
+    product = dy * dx
+    if not _number(product) or (dy and dx and abs(product) < _MIN_NORMAL):  # overflowed or underflowed product
+        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
+    try:
+        crossing = x1 + product / dn
+    except OverflowError:  # integer quotient too large for a float
+        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
+    if not _number(crossing):  # never compare against infinity or NaN
+        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
+    return x < crossing
+
+
+def _exact_left_of_crossing(x, y, x1, y1, x2, y2):
+    """Exact ``x < x1 + (y - y1) * (x2 - x1) / (y2 - y1)`` from the original numbers (y2 != y1)."""
+    return Fraction(x) < Fraction(x1) + (Fraction(y) - Fraction(y1)) * (Fraction(x2) - Fraction(x1)) / (
+        Fraction(y2) - Fraction(y1))
 
 
 def point_in_ring(x, y, ring):
@@ -52,9 +79,9 @@ class _Ring:
     def __init__(self, ring):
         edges, ys = _edges(ring), [p[1] for p in ring]
         self.low, self.high = min(ys), max(ys)
-        span = self.high - self.low  # finite inputs can still overflow; one band then
-        self.count = max(1, int(len(edges) ** 0.5)) if math.isfinite(span) else 1
-        self.step = span / self.count or 1.0
+        span = self.high - self.low  # finite inputs can still overflow (even as an int too big for a float): one band then
+        self.count = max(1, int(len(edges) ** 0.5)) if _number(span) else 1
+        self.step = (span / self.count or 1.0) if _number(span) else 1.0
         self.bands = [[] for _ in range(self.count)]
         for edge in edges:
             for band in range(self._band(min(edge[1], edge[3])), self._band(max(edge[1], edge[3])) + 1):

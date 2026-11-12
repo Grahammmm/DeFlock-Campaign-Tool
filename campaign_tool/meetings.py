@@ -191,7 +191,7 @@ class CivicClerkClient(LegistarClient):
             if start[:10] < since.isoformat():
                 continue
             self._agenda[e["id"]] = e.get("agendaId")
-            aware = start.endswith("Z") or "+" in start[10:]
+            aware = start.endswith("Z") or "+" in start[10:] or "-" in start[10:]  # explicit offset; date hyphens end at [10]
             out.append({"EventId": e["id"], "EventBodyName": e.get("categoryName") or e.get("eventName"),
                         "EventStartUtc": start if aware else None, "EventDate": start,
                         "EventComment": f"{e.get('eventName') or ''} {e.get('eventNotice') or ''}",

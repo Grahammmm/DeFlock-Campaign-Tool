@@ -54,50 +54,83 @@ def _registered(root):
     return {entry["sha256"] for entry in document}
 
 
+def _same_directory(info, held):
+    return stat.S_ISDIR(info.st_mode) and (info.st_dev, info.st_ino) == (held.st_dev, held.st_ino)
+
+
+def _has_sidecar(name, dir_fd):
+    """True when any journal/wal/shm name exists beside the ledger in the HELD directory (no link followed)."""
+    for suffix in SIDECARS:
+        try:
+            os.stat(f"{name}-{suffix}", dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        return True
+    return False
+
+
 def _snapshot(path):
     """In-memory copy of the ledger; SQLite never opens the file itself.
+
+    The immediate private directory is admitted once (no-follow open, identity matched to its no-follow metadata)
+    and held; the ledger and its sidecars are inspected relative to that descriptor, so a parent swapped for a
+    symlink or another directory afterwards is never followed. The parent pathname is observed again before the
+    snapshot is returned; a substituted, moved or missing parent is refused.
 
     Even mode=ro creates -wal/-shm sidecars beside a WAL-mode database, so the bytes are read once (no link
     followed) and deserialized. A journal or WAL sidecar means the file alone may not hold the committed state:
     refused. A WAL header with no sidecar is a complete, checkpointed file and is read as a rollback database.
     A file over MAX_LEDGER_BYTES (by fstat, or by what a bounded read actually returns) is refused before any copy."""
-    if any(os.path.lexists(f"{path}-{suffix}") for suffix in SIDECARS):
-        raise ValueError(SIDECAR_ERROR)
+    name, parent = path.name, os.fspath(path.parent)
     db = None
+    dir_fd = None
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
-            info = os.fstat(fd)
-            if not stat.S_ISREG(info.st_mode):
+            before = os.lstat(parent)
+            dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            held = os.fstat(dir_fd)
+            if not _same_directory(before, held) or not _same_directory(held, held):
                 raise OSError
-            if info.st_size > MAX_LEDGER_BYTES:
-                raise ValueError(LEDGER_SIZE_ERROR)
-            dup = os.dup(fd)
+            if _has_sidecar(name, dir_fd):
+                raise ValueError(SIDECAR_ERROR)
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
             try:
-                handle = os.fdopen(dup, "rb")
-            except BaseException:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode):
+                    raise OSError
+                if info.st_size > MAX_LEDGER_BYTES:
+                    raise ValueError(LEDGER_SIZE_ERROR)
+                dup = os.dup(fd)
                 try:
-                    os.close(dup)  # fdopen failed before taking ownership of the duplicate
-                except OSError:
-                    pass  # a real constructor may already have closed it; keep the original exception
-                raise
-            with handle:  # the stream now owns (and closes) the duplicate
-                raw = handle.read(MAX_LEDGER_BYTES + 1)  # the file may have grown since fstat
-            if len(raw) > MAX_LEDGER_BYTES:
-                raise ValueError(LEDGER_SIZE_ERROR)
-            if not raw:
-                raise OSError  # deserialize(b"") raises MemoryError, not sqlite3.Error
-            data = bytearray(raw)
-            del raw
+                    handle = os.fdopen(dup, "rb")
+                except BaseException:
+                    try:
+                        os.close(dup)  # fdopen failed before taking ownership of the duplicate
+                    except OSError:
+                        pass  # a real constructor may already have closed it; keep the original exception
+                    raise
+                with handle:  # the stream now owns (and closes) the duplicate
+                    raw = handle.read(MAX_LEDGER_BYTES + 1)  # the file may have grown since fstat
+                if len(raw) > MAX_LEDGER_BYTES:
+                    raise ValueError(LEDGER_SIZE_ERROR)
+                if not raw:
+                    raise OSError  # deserialize(b"") raises MemoryError, not sqlite3.Error
+                data = bytearray(raw)
+                del raw
+            finally:
+                os.close(fd)
+            if _has_sidecar(name, dir_fd):
+                raise ValueError(SIDECAR_ERROR)  # a writer started while the bytes were read
+            if not _same_directory(os.lstat(parent), held):
+                raise OSError  # the private directory was substituted, moved or removed during the read
+            if data[:16] == b"SQLite format 3\0" and data[18:20] == b"\2\2":
+                data[18:20] = b"\1\1"
+            db = sqlite3.connect(":memory:")
+            db.deserialize(bytes(data))
+            db.execute("SELECT count(*) FROM objects JOIN receipts ON 0").fetchone()
         finally:
-            os.close(fd)
-        if any(os.path.lexists(f"{path}-{suffix}") for suffix in SIDECARS):
-            raise ValueError(SIDECAR_ERROR)  # a writer started while the bytes were read
-        if data[:16] == b"SQLite format 3\0" and data[18:20] == b"\2\2":
-            data[18:20] = b"\1\1"
-        db = sqlite3.connect(":memory:")
-        db.deserialize(bytes(data))
-        db.execute("SELECT count(*) FROM objects JOIN receipts ON 0").fetchone()
+            if dir_fd is not None:
+                os.close(dir_fd)
     except (OSError, sqlite3.Error):
         if db is not None:
             db.close()
@@ -138,8 +171,17 @@ def list_receipts(root, source_id=None, since=None, not_in_sources=False):
             "JOIN objects o ON o.sha256 = r.object_sha256"
             + (" WHERE " + " AND ".join(clauses) if clauses else "")
             + " ORDER BY r.received_at, r.receipt_id", params).fetchall()
+    except sqlite3.Error:
+        # Decoding invalid UTF-8 stored as TEXT raises an error quoting the private value; never echo it.
+        raise ValueError("private/ledger.sqlite is not a readable ledger") from None
     finally:
         db.close()
+    # SQLite lets BLOB/NULL/REAL values into these non-STRICT columns; the projected fields are emitted
+    # without conversion, so refuse the whole listing (every SQL-selected row, before registration/cap).
+    for sha, size, source, _name, received in rows:
+        if (not isinstance(sha, str) or type(size) is not int or size < 0
+                or not isinstance(source, str) or not isinstance(received, str)):
+            raise ValueError("private/ledger.sqlite is not a readable ledger")
     receipts = [{"sha256_prefix": sha[:PREFIX], "bytes": size, "source_id": source,
                  "original_name": CONTROL.sub("?", str(name or ""))[:200], "received_at": received}
                 for sha, size, source, name, received in rows if sha not in registered]

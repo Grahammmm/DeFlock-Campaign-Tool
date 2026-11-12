@@ -143,6 +143,25 @@ def read_copy(source, expected_size):
     return data
 
 
+def _admitted_sizes(by_path, rows):
+    """``{asset path: size}`` for each UNIQUE selected copy, admitted BEFORE any size shortcut: every one must be a regular,
+    non-symlink file by a nonfollowing ``lstat`` (no open, so a FIFO cannot block). Any other entry, or any OS error, is the
+    fixed ``CHANGED`` refusal without paths or OS text, so an invalid copy never hides behind an oversize skip. The later
+    ``read_copy`` re-inspects independently; this does not bind the two inspections atomically."""
+    sizes = {}
+    for _, relative in rows:
+        if relative in sizes:
+            continue
+        try:
+            info = os.lstat(by_path[relative])
+        except OSError:
+            raise ContentError(CHANGED) from None
+        if not stat.S_ISREG(info.st_mode):
+            raise ContentError(CHANGED)
+        sizes[relative] = info.st_size
+    return sizes
+
+
 def plan_bundle(sources, base_url, asset_plan, agencies_by_id, notes=None, max_bytes=None):
     """``bytes | None`` for this build: ``asset_plan`` is ``[(source file, relative Path)]``. ``None`` (with one note) when
     nothing is eligible or the archive would pass ``max_bytes``; oversize archives are refused from file sizes alone."""
@@ -152,7 +171,7 @@ def plan_bundle(sources, base_url, asset_plan, agencies_by_id, notes=None, max_b
     if not rows:
         _note(notes, NOTE_EMPTY)
         return None
-    sizes = {relative: by_path[relative].stat().st_size for _, relative in rows}
+    sizes = _admitted_sizes(by_path, rows)
     if stored_size({"files/" + path: size for path, size in sizes.items()}) > max_bytes:  # the files alone are too big: read nothing
         _note(notes, NOTE_OVERSIZE)
         return None
@@ -198,11 +217,13 @@ def check_source_bundle(public, expected):
         if not missing:
             raise ContentError(DIFFERS)
         return
-    if missing or not stat.S_ISREG(mode) or os.lstat(current).st_size != len(expected):
+    if missing or not stat.S_ISREG(mode):
         raise ContentError(DIFFERS)
+    # The final component is read through the descriptor-verified, nonfollowing, bounded ``read_copy`` (at most
+    # ``len(expected) + 1`` bytes); its fixed refusal is reported here as the checker's own ``DIFFERS``.
     try:
-        found = current.read_bytes()
-    except OSError:
+        found = read_copy(current, len(expected))
+    except (ContentError, OSError):
         raise ContentError(DIFFERS) from None
     if found != expected:
         raise ContentError(DIFFERS)

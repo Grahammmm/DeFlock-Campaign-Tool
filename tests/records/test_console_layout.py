@@ -85,7 +85,8 @@ class LayoutTests(Base):
                         status, _, html = client.send('GET', path)
                         self.assertEqual(status, 200)
                         parsed = Markup(html)
-                        self.assertEqual(parsed.links[:len(layout.LINKS + layout.MORE)], [u for _, u in layout.LINKS + layout.MORE])
+                        self.assertEqual(parsed.links[0], '#content')  # the skip link comes first
+                        self.assertEqual(parsed.links[1:1 + len(layout.LINKS + layout.MORE)], [u for _, u in layout.LINKS + layout.MORE])
                         self.assertEqual(parsed.tags.count('main'), 1)
                         self.assertEqual(parsed.ids.count('content'), 1)
                         self.assertIn(layout.STYLE, html)

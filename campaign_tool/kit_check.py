@@ -16,7 +16,8 @@ from pathlib import Path
 
 from . import kit
 
-PLACEHOLDER = re.compile(r"\[[^\]\n]{1,160}\](?!\()")
+# Substitution-compatible form of the grammar; production recognition uses the linear _spans scanner below.
+PLACEHOLDER = re.compile(r"\[[^\]\n]+\](?!\()")
 HIT_CHARS, HITS_MAX = 160, 50
 MAX_DRAFT_BYTES = 1 << 20
 MISSING = "draft missing or not a regular file"
@@ -29,10 +30,46 @@ NOT_REGULAR = "suggestion is not a regular file"
 UNREADABLE = "suggestion unreadable"
 
 
+def _spans(text):
+    """Yield (1-based line, full span) for every unfilled bracket placeholder; one pass, linear in the text length.
+
+    A span is a nonempty ``[...]`` on one LF-delimited line, ended by the next ``]`` and not followed by ``(``; an
+    opener before that ``]`` is interior. A closed segment (empty or link) is consumed; an unclosed tail yields nothing.
+    """
+    size, start, number = len(text), 0, 0
+    while start <= size:
+        number += 1
+        end = text.find("\n", start)
+        if end < 0:
+            end = size
+        pos = text.find("[", start, end)
+        while pos >= 0:
+            close = text.find("]", pos + 1, end)
+            if close < 0:
+                break
+            if close > pos + 1 and text[close + 1:close + 2] != "(":
+                yield number, text[pos:close + 1]
+            pos = text.find("[", close + 1, end)
+        start = end + 1
+
+
+class _Hits(list):
+    """draft_problems' list of {"line", "placeholder"}; also records, from the full unclipped spans, whether any
+    span names a fee cap or a date range."""
+    fee_cap = date_range = False
+
+
 def draft_problems(text):
-    """Every unfilled bracket placeholder in ``text`` as {"line", "placeholder"} (1-based line numbers)."""
-    return [{"line": number, "placeholder": match.group(0)[:HIT_CHARS]}
-            for number, line in enumerate(text.split("\n"), 1) for match in PLACEHOLDER.finditer(line)]
+    """Every unfilled bracket placeholder in ``text`` as {"line", "placeholder"} (1-based line numbers).
+
+    The placeholder is clipped to HIT_CHARS for display; recognition and the fee/date flags do not depend on it.
+    """
+    hits = _Hits()
+    for number, span in _spans(text):
+        hits.append({"line": number, "placeholder": span[:HIT_CHARS]})
+        word = span.lower()
+        hits.fee_cap, hits.date_range = hits.fee_cap or "cap" in word, hits.date_range or "date range" in word
+    return hits
 
 
 def _read_regular(path):
@@ -93,6 +130,12 @@ def _unique(items):
     return list(dict.fromkeys(items))
 
 
+def _absent_from(items, other):
+    """``items`` in order that are not in ``other``; one membership index of ``other`` per call."""
+    members = set(other)
+    return [x for x in items if x not in members]
+
+
 def _status(lines):
     """Law-status line groups of one draft, visiting each physical line at most once.
 
@@ -150,13 +193,13 @@ def _suggested_differs(root, agency_id, primary):
         return None
     mine, fresh = _summary(primary), _summary(suggested)
     return {"path": path,
-            "scopes_added": [x for x in fresh["scopes"] if x not in mine["scopes"]],
-            "scopes_removed": [x for x in mine["scopes"] if x not in fresh["scopes"]],
+            "scopes_added": _absent_from(fresh["scopes"], mine["scopes"]),
+            "scopes_removed": _absent_from(mine["scopes"], fresh["scopes"]),
             "date_range_differs": mine["date"] != fresh["date"],
             "fee_cap_differs": mine["fee"] != fresh["fee"],
             "law_package_status_differs": mine["status"] != fresh["status"],
-            "rule_citations_added": [x for x in fresh["citations"] if x not in mine["citations"]],
-            "rule_citations_removed": [x for x in mine["citations"] if x not in fresh["citations"]],
+            "rule_citations_added": _absent_from(fresh["citations"], mine["citations"]),
+            "rule_citations_removed": _absent_from(mine["citations"], fresh["citations"]),
             "compare_command": "diff -u -- " + shlex.quote(f"kit/requests/{agency_id}.md") + " " + shlex.quote(path)}
 
 
@@ -175,11 +218,9 @@ def agency_report(root, entry, *, include_suggestion=False):
         report = {**row, "draft": None, "ok": False, "error": error}
     else:
         text = primary.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
-        hits = draft_problems(text)
-        words = [hit["placeholder"].lower() for hit in hits]
-        report = {**row, "draft": f"kit/requests/{agency_id}.md", "placeholders": hits[:HITS_MAX],
-                  "placeholder_count": len(hits), "fee_cap_missing": any("cap" in word for word in words),
-                  "date_range_missing": any("date range" in word for word in words),
+        hits = draft_problems(text)  # count and flags use the full spans; only the display is clipped
+        report = {**row, "draft": f"kit/requests/{agency_id}.md", "placeholders": list(hits[:HITS_MAX]),
+                  "placeholder_count": len(hits), "fee_cap_missing": hits.fee_cap, "date_range_missing": hits.date_range,
                   "ok": not hits and row["recipient_verified"]}
     differs = _suggested_differs(root, agency_id, primary) if include_suggestion else None
     if differs is not None:

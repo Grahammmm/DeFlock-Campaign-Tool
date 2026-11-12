@@ -37,6 +37,10 @@ and later `decide --id N accepted|declined --on D --note T`; only `private/corre
 is refused until the finding has a correction dated on or after the request (`finding correct`);
 `doctor` names requests open over 14 days. Reply by hand; the tool sends and publishes nothing.
 
+The log is kept readable by `reply` and the optional counts, which read at most 4194304 bytes. An `add` or `decide`
+whose complete new file would exceed that is refused as a whole with `update exceeds the 4194304-byte reply/count
+reader limit; nothing was changed`; existing history is kept as it was, and nothing is sent or published.
+
 ### Drafting a reply (private, never sent)
 
 `correction-request reply --directory DIR --id N` writes `kit/corrections/replies/N.md` (mode 0600; missing

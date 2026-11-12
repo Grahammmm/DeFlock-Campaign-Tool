@@ -5,6 +5,8 @@ import os
 import sys
 
 COMMANDS = {
+    "console-export": ("console_export", "export_main"),
+    "console-import": ("console_export", "import_main"),
     "denials": ("denial_log", "main"),
     "deadlines": ("deadline_calc", "main"),
     "followup-engine": ("followup_engine", "main"),
@@ -28,6 +30,7 @@ COMMANDS = {
     "followups": "followup_clock",
     "next-steps": ("next_steps", "main"),
     "e2e-proof": ("e2e_proof", "main"),
+    "project-init": ("project_init", "main"),
     "mail-drafts": ("mail_drafts", "main"),
     "mail-send": ("mail_send", "main"),
     "publish": ("publish", "publish_main"),
@@ -50,6 +53,15 @@ COMMANDS = {
     "calendar": ("console_calendar", "main"),
     "documents": ("console_documents", "main"),
     "schedule": ("schedule", "schedule_main"),
+    "analysis-config": ("analysis_config", "main"),
+    "analysis-export": ("analysis_export", "main"),
+    "analysis-packets-import": ("analysis_packets", "main"),
+    "analysis-sync": ("analysis_bridge", "sync_main"),
+    "analysis-tick": ("analysis_bridge", "tick_main"),
+    "backup": ("records_backup", "backup_main"),
+    "backup-verify": ("records_backup", "verify_main"),
+    "backup-check": ("records_backup", "check_main"),
+    "quiescence-audit": ("quiescence_audit", "main"),
 }
 
 

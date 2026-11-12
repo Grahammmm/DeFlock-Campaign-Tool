@@ -118,10 +118,21 @@ def _store(root, relative, limit=MAX_JSON_BYTES):
     if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
         raise ValueError(relative)
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
-    with os.fdopen(fd, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            raise ValueError(relative)
-        data = handle.read(limit + 1)
+    # The raw fd has one owner (this function): the stream is non-owning (closefd=False) and is closed first, then
+    # the fd gets exactly one close attempt, even when stream construction fails. A propagating error wins over a
+    # close error; the close is never retried.
+    try:
+        with os.fdopen(fd, "rb", closefd=False) as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError(relative)
+            data = handle.read(limit + 1)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    os.close(fd)
     if len(data) > limit:
         raise ValueError(relative)
     return json.loads(data.decode("utf-8"))
@@ -512,10 +523,19 @@ def _write_new(target, text):
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except FileExistsError:
         raise UsageError(f"--md {ascii(str(target))} already exists; it is never overwritten") from None
-    with os.fdopen(fd, "w", encoding="utf-8") as out:
-        if hasattr(os, "fchmod"):
-            os.fchmod(out.fileno(), 0o600)
-        out.write(text)
+    # Same ownership rule as _store; a failed write leaves the created file as before (no path cleanup).
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as out:
+            if hasattr(os, "fchmod"):
+                os.fchmod(out.fileno(), 0o600)
+            out.write(text)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    os.close(fd)
 
 
 def run_cli(root, since, until=None, md=None, as_json=False, today=None, out=None, err=None):

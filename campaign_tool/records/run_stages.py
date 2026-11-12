@@ -86,6 +86,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 STAGES = ("sync", "delta", "adoption", "portal", "extract", "digest_gates", "outputs")
 GATED = ("catalog", "detect", "review", "compare", "privacy")
@@ -109,10 +110,23 @@ def result(status, counts, error_code=None, **extra):
     out = {"stage_result_version": 1, "status": status,
            "counts": {key: int(counts.get(key, 0)) for key in ("input", "output", "failed", "skipped")},
            "error_code": error_code}
-    for key in ("new_data", "review_required", "needs_g", "outcomes", "arrival_summary"):
+    for key in ("new_data", "review_required", "needs_g", "outcomes", "arrival_summary", "internal"):
         if extra.get(key):
             out[key] = extra[key]
     return out
+
+
+def internal_error(error):
+    """Exception class and innermost campaign_tool function only: no message, argument, path or line."""
+    root, where = Path(__file__).resolve().parent.parent, None
+    for frame, _ in traceback.walk_tb(error.__traceback__):
+        try:
+            rel = Path(frame.f_code.co_filename).resolve().relative_to(root)
+        except ValueError:
+            continue
+        where = ".".join(("campaign_tool", *rel.with_suffix("").parts, frame.f_code.co_name))
+    return {"type": re.sub(r"\W", "_", type(error).__name__)[:64],
+            "where": re.sub(r"[^\w.<>]", "_", where or "unknown")[:160]}
 
 
 def needs(*items):
@@ -764,8 +778,12 @@ def stage_counts(db):
 
 def stage_extract(args):
     """Phase 1 native-text extraction; see ``native_extract`` for the per-document codes."""
-    from . import native_extract as ne
-    from .run import RunError
+    try:
+        from . import native_extract as ne
+        from .run import RunError
+    except (ImportError, SyntaxError) as error:
+        # An engine/runtime mismatch (a module or package the image lacks) is a coded failure.
+        return result("fail", {"failed": 1}, "EXTRACT_IMPORT_FAILED", internal=internal_error(error)), 1
 
     _, processing, _ = paths(args.project)
     deadline = time.monotonic() + args.timeout - ne.DEADLINE_MARGIN
@@ -782,15 +800,22 @@ def stage_extract(args):
     if args.ocr:
         # Phase 2 (T6): operator stage plan only. Missing tools or a bad vision config fail the
         # stage visibly; nothing silently falls back to native-only.
-        from .run import local_ocr_tools
-        tools, signature = local_ocr_tools()
+        try:
+            from .run import local_ocr_tools
+            tools, signature = local_ocr_tools()
+        except StageTimeout:
+            raise  # the container alarm is not an unusable probe; main emits STAGE_CONTAINER_TIMEOUT
+        except Exception as error:  # noqa: BLE001 - a probe that raises means the tools are unusable
+            return result("fail", {"failed": 1}, "EXTRACT_OCR_UNAVAILABLE", internal=internal_error(error)), 1
         if tools is None:
             return result("fail", {"failed": 1}, "EXTRACT_OCR_UNAVAILABLE"), 1
         vision = None
         if args.ocr_vision_config:
-            from .extract import vision as page_vision
             try:
+                from .extract import vision as page_vision
                 vision = page_vision.load_config(args.ocr_vision_config)
+            except (ImportError, SyntaxError) as error:
+                return result("fail", {"failed": 1}, "EXTRACT_IMPORT_FAILED", internal=internal_error(error)), 1
             except ValueError:
                 return result("fail", {"failed": 1}, "EXTRACT_OCR_VISION_CONFIG_INVALID"), 1
         ocr = {"tools": tools, "tool_signature": signature, "vision": vision,
@@ -819,7 +844,10 @@ def stage_extract(args):
     stage, code = extract_result(summary)
     if "refusals" in summary:
         stage["refusals"] = summary["refusals"]
-    from .ocr_review import ChainBroken, pending, pages
+    try:
+        from .ocr_review import ChainBroken, pending, pages
+    except (ImportError, SyntaxError) as error:
+        return result('fail', {'failed': 1}, 'EXTRACT_IMPORT_FAILED', internal=internal_error(error)), 1
     try:
         with ledger_ro(processing) as db:
             count = len(pending(db, Path(args.project) / 'ocr-review-v1' / 'reviews.jsonl'))
@@ -1001,6 +1029,14 @@ def stage_outputs(args):
         raise
     except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
         warning = "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"
+    # Untied received messages become 'tie to a request' decisions (DFGL-04): own try, own code; earlier outputs stay.
+    try:
+        from .outcomes.unmatched import write_run_unmatched
+        write_run_unmatched(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
+        warning = warning or "OUTPUTS_UNMATCHED_UNAVAILABLE"
     # Shadow-only model advice (REC-H2O-1): off unless the campaign enables it; never changes another output.
     try:
         from .model_advice import write_run_model_advice
@@ -1074,6 +1110,13 @@ def stage_outputs(args):
         raise
     except Exception:  # noqa: BLE001 - isolate timeline errors; never expose private exception text
         warning = warning or "OUTPUTS_TIMELINE_UNAVAILABLE"
+    try:  # Analysis-ready manifest (DFGL-05): last, own code; reads the files written above; starts nothing.
+        from .outcomes.analysis_ready import write_run_analysis_ready
+        write_run_analysis_ready(args.project, args.run_id)
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - isolate manifest errors; never expose private exception text
+        warning = warning or "OUTPUTS_ANALYSIS_READY_UNAVAILABLE"
     produced = 1
     if prepared_digest is not None:
         try:
@@ -1233,8 +1276,8 @@ def main(argv=None):
             line = arrival_projection(args, line)
     except StageTimeout:
         line, code = result("fail", {"failed": 1}, "STAGE_CONTAINER_TIMEOUT"), 1
-    except Exception:  # noqa: BLE001 - never print exception text (may hold private values)
-        line, code = result("fail", {"failed": 1}, "STAGE_INTERNAL_ERROR"), 1
+    except Exception as error:  # noqa: BLE001 - class and function only, never exception text
+        line, code = result("fail", {"failed": 1}, "STAGE_INTERNAL_ERROR", internal=internal_error(error)), 1
     finally:
         signal.alarm(0)
     print(json.dumps(line, sort_keys=True))

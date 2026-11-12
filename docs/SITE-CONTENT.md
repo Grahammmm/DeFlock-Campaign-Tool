@@ -467,8 +467,12 @@ characters without control characters, `state` a two-letter USPS code (50 states
 federal agency (`US` only with `federal`), `kind` one of `local`, `state`, `federal`, `private`, `unknown`; 1 to 2000 rows,
 and the same name (any letter case) and state twice is refused. `--source-url` is an `https://` page on
 `transparency.flocksafety.com`; `--checked-on` is a real date not after today. Every bad row is named by its line (at most 20,
-then "and N more"); on any error nothing is written. The file is read as a plain file, never fetched, and a symlink is refused.
+then "and N more"); on any error before the file is installed (validation, or a write or replace failure) nothing is written and
+the previous file is kept. The file is read as a plain file, never fetched, and a symlink is refused.
 The whole `content/agencies.json` is validated and then written once; an agency that already has a list needs `--replace`.
+After the replacement the `content/` directory is flushed to disk; if that flush fails the command stops with an error saying
+the new sharing data was written but crash durability is unconfirmed, the complete new file stays installed, and you must
+inspect the file before retrying. A directory flush is an attempt, not a promise that the data survives a power loss.
 Recipients are stored sorted by state, then name. The agency page and the agencies-list card show "Who the vendor portal lists
 as receiving data": "As listed on the vendor transparency portal, transcribed by the organizer (checked `{date}`): `{n}`
 agencies.", a count by state (the campaign's own state first) and by kind, then "Out of state and federal:" with the name,
@@ -1205,7 +1209,7 @@ Decisions other governments have made, kept apart from this campaign's own agenc
 
 #### Maintaining the file: `content elsewhere add|remove|list`
 
-These commands edit only `content/elsewhere.json`. Nothing is fetched, built, sent or deployed; the page changes at your next `build`. Each change validates the **whole** prospective file with the same loader the build uses (the duplicate rule included) and the shared email, phone and plate lint on every field, URLs included, then writes it once (a temporary file beside it, one rename). A refusal prints one `Stopped:` line naming the flag or `elsewhere.json[N].field` and a category, never your text, exits 1 and leaves the old file byte for byte. A broken stored file (an old row, a duplicate, invalid JSON, a link) is refused by all three verbs; fix it by hand, then retry.
+These commands edit only `content/elsewhere.json`. Nothing is fetched, built, sent or deployed; the page changes at your next `build`. Each change validates the **whole** prospective file with the same loader the build uses (the duplicate rule included) and the shared email, phone and plate lint on every field, URLs included, then writes it once (a temporary file beside it, one rename). A refusal prints one `Stopped:` line naming the flag or `elsewhere.json[N].field` and a category, never your text, exits 1 and, **before the change is committed**, leaves the old file byte for byte. A change can already have taken effect when the directory flush that follows it fails: the stop line then says the file was `written` (replacement) or `removed` (last entry), but the folder could not be flushed to disk, and prints no success summary. Run `content elsewhere list` to see what is stored before deciding what to do; nothing is retried, rebuilt, restaged, fetched or published automatically. A broken stored file (an old row, a duplicate, invalid JSON, a link) is refused by all three verbs; fix it by hand, then retry.
 
 ```sh
 D=../my-campaign   # synthetic example values; type what the official record says

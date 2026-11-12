@@ -123,15 +123,36 @@ def _quote_file(path):
         _refuse("--quote-file: must be a regular file")
     if info.st_size > MAX_QUOTE_FILE:
         _refuse("--quote-file: file too large for a quote of at most 400 characters")
+    fd = None
+    problem = None
+    data = b""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as handle:
-            opened = os.fstat(handle.fileno())
-            data = handle.read(MAX_QUOTE_FILE + 1)
+        # Admit the opened descriptor itself before any payload byte is read.
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+            problem = "--quote-file: changed while it was being read"
+        elif opened.st_size > MAX_QUOTE_FILE:
+            problem = "--quote-file: file too large for a quote of at most 400 characters"
+        elif (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (info.st_size, info.st_mtime_ns, info.st_ctime_ns):
+            # A filesystem may hand a recreated file the old inode number: device and inode alone cannot tell a
+            # substituted file from the one inspected, so the size and the change times must also be unchanged.
+            problem = "--quote-file: changed while it was being read"
+        else:
+            stream = os.fdopen(fd, "rb")
+            fd = None  # the stream now owns the descriptor
+            with stream:
+                data = stream.read(MAX_QUOTE_FILE + 1)
     except OSError:
-        _refuse("--quote-file: cannot be read")
-    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
-        _refuse("--quote-file: changed while it was being read")
+        problem = "--quote-file: cannot be read"
+    finally:
+        if fd is not None:  # raw descriptor never transferred to a stream
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    if problem:
+        _refuse(problem)
     if len(data) > MAX_QUOTE_FILE:
         _refuse("--quote-file: file too large for a quote of at most 400 characters")
     try:

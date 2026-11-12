@@ -25,6 +25,8 @@ HEADER = ("node_url", "latitude", "longitude", "manufacturer", "operator", "dire
 FILLED = HEADER[-4:]
 MAX_CSV_BYTES = 2 * 1024 * 1024
 ROW_PROBLEM = re.compile(r"map/point-checks\.json\.checks\[(\d+)\]\.(\w+): (.*)")
+NODE_URL_PREFIX = "https://www.openstreetmap.org/node/"
+CANONICAL_NODE_URL = re.compile(re.escape(NODE_URL_PREFIX) + r"[1-9][0-9]*")  # ASCII only: no sign, padding or normalisation
 NOTE = "Private worksheet; nothing was built, imported or published."
 
 
@@ -247,11 +249,44 @@ def survey_sheet(root, city, *, today=None):
             "points": len(rows), "note": NOTE}
 
 
-def _read_sheet(csv_path):
-    path = Path(csv_path)
-    if path.is_symlink() or not path.is_file():
+def _open_inspected(csv_path):
+    """Binary stream of the regular file inspected by one ``lstat``; refuses any other inode before a byte is read.
+
+    The pathname is opened ``O_NOFOLLOW | O_NONBLOCK`` and the descriptor must be a regular file with the inspected
+    device/inode. This binds the open to the inspection; it is not a snapshot of concurrent content or a path sandbox."""
+    refused = "--csv: cannot safely read the inspected regular file"
+    try:
+        before = os.lstat(csv_path)
+    except FileNotFoundError:
+        raise SurveyError("--csv: not a regular file") from None
+    except OSError:
+        raise SurveyError(refused) from None
+    if not stat.S_ISREG(before.st_mode):
         raise SurveyError("--csv: not a regular file")
-    with path.open("rb") as handle:
+    nofollow, nonblock = getattr(os, "O_NOFOLLOW", 0), getattr(os, "O_NONBLOCK", 0)
+    if not nofollow or not nonblock:
+        raise SurveyError(refused)
+    fd = None
+    try:
+        fd = os.open(csv_path, os.O_RDONLY | nofollow | nonblock)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise SurveyError(refused)
+        handle = os.fdopen(fd, "rb")
+        fd = None  # the stream owns the descriptor now
+        return handle
+    except OSError:
+        raise SurveyError(refused) from None
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _read_sheet(csv_path):
+    with _open_inspected(csv_path) as handle:
         data = handle.read(MAX_CSV_BYTES + 1)
     if len(data) > MAX_CSV_BYTES:
         raise SurveyError("--csv: file too large")
@@ -284,6 +319,7 @@ def survey_import(root, csv_path, *, apply=False, today=None):
     path, document = _existing(root)
     table = _read_sheet(csv_path)
     nodes = content.point_nodes(cameras)
+    mapped = {f"{NODE_URL_PREFIX}{node}": node for node in nodes if node >= 1}  # canonical URL -> loaded node, built once
     problems, additions, seen = [], [], set()
     for number, cells in enumerate(table, start=2):  # the header is row 1, as in a spreadsheet
         if len(cells) != len(HEADER):
@@ -292,12 +328,11 @@ def survey_import(root, csv_path, *, apply=False, today=None):
         row = dict(zip(HEADER, cells))
         if not any(row[key].strip() for key in FILLED):
             continue
-        match = content.OSM_NODE_URL.fullmatch(row["node_url"])
-        node = int(match.group(1)) if match else None
-        if node is None or node < 1 or row["node_url"] != f"https://www.openstreetmap.org/node/{node}":
+        if not CANONICAL_NODE_URL.fullmatch(row["node_url"]):  # the cell is untrusted: never int() its digits
             problems.append(f"row {number} node_url: edited; it must be a node URL exactly as the sheet wrote it")
             continue
-        if node not in nodes:
+        node = mapped.get(row["node_url"])
+        if node is None:
             problems.append(f"row {number} node_url: not a mapped point")
             continue
         for key in FILLED[:3]:

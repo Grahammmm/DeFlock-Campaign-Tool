@@ -324,9 +324,10 @@ def _load_comparison(path, run_id):
     return report, hashlib.sha256(raw).hexdigest()
 
 
-def collect(db, processing, comparison_report, *, run_id, comparison_sha256=None):
+def collect(db, processing, comparison_report, *, run_id, comparison_sha256=None, links=None):
     """Pure read-only inventory + projection. `comparison_report` is the parsed
-    same-run comparison.json (or None when it is unavailable)."""
+    same-run comparison.json (or None when it is unavailable). `links` maps a message sha256 to the
+    organizer-approved (agency_id, request_id) from message-links.jsonl (DFGL-04)."""
     db.row_factory = sqlite3.Row
     tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     report = {"schema": SCHEMA, "run_id": run_id, "review_required": True, "legal_conclusion": False,
@@ -349,6 +350,7 @@ def collect(db, processing, comparison_report, *, run_id, comparison_sha256=None
     for row in _rows(db, "SELECT j.original_sha256,j.agency_id,j.request_id,r.agency_id AS request_agency "
                          "FROM joins j LEFT JOIN requests r ON r.id=j.request_id WHERE j.status='typed' ORDER BY j.id"):
         joins.setdefault(row["original_sha256"], []).append(row)
+    request_owner = {r["id"]: r["agency_id"] for r in _rows(db, "SELECT id,agency_id FROM requests")} if links else {}
     has_extraction = "extraction_adapter_current" in tables and "extraction_adapter_imports" in tables and "units" in tables
     by_original = {}
     for subject in [r["sha256"] for r in _rows(db, "SELECT sha256 FROM originals ORDER BY sha256")]:
@@ -378,6 +380,13 @@ def collect(db, processing, comparison_report, *, run_id, comparison_sha256=None
             diagnostics.append("typed_join_request_mismatch")
         if request_id is not None and agency_id is None:
             request_id = None
+        link = (links or {}).get(subject)
+        if link is not None:  # an approved link takes the linked ids; one to a vanished request is counted, never used
+            if request_owner.get(link[1]) == link[0]:
+                agency_id, request_id = link
+            else:
+                diagnostics.append("message_link_request_missing")
+                report["diagnostics"].append("message_link_request_missing")
         # Time: earliest valid incoming mail time, else occurrence time, else a unique parent's mail time.
         received_at, source = None, None
         times = sorted(mail_times.get(subject, []))
@@ -516,8 +525,13 @@ def write_run_received_items(project, run_id):
         run_dir = _safe_dir(project / "run-outputs" / run_id)
         comparison, digest = _load_comparison(run_dir / "comparison.json", run_id)
         _need(not (processing / "ledger.sqlite").is_symlink(), "received_items_symlink_path")
+        from .unmatched import read_links
+        links, bad_links = read_links(project)
         with snapshot_ro(processing / "ledger.sqlite") as db:
-            report = collect(db, processing, comparison, run_id=run_id, comparison_sha256=digest)
+            report = collect(db, processing, comparison, run_id=run_id, comparison_sha256=digest, links=links)
+        if bad_links:
+            report["diagnostics"].append("message_links_invalid")
+        report["diagnostics"] = sorted(set(report["diagnostics"]))
         encoded = (_canon(report) + "\n").encode()
         _need(len(encoded) <= MAX_OUTPUT_BYTES, "received_items_output_bound")
         outcomes = _safe_dir(run_dir / "outcomes")

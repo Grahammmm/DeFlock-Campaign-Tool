@@ -37,9 +37,16 @@ expired, superseded or disputed fact is listed; exit 3 when any does (without it
 **Review log** (`review --store DIR --agency SLUG --ids ID[,ID...] --set checked|disputed --reviewer NAME [--date D] [--note T]`):
 the only way to change `status` after import. A reviewer equal to the fact's `added_by` (case and spaces ignored), an unknown or
 duplicate id, a date after today or before `added_at`, or any `--check` error refuses the whole call. Each change appends a
-row to the private `<store>/agencies/<slug>/FACT-REVIEWS.csv` (v1: `fact_id,from_status,to_status,reviewer,reviewed_at,note`,
+row to the private `<store>/agencies/<slug>/FACT-REVIEWS.csv` (v2: `fact_id,from_status,to_status,reviewer,reviewed_at,note,evidence_fp`,
 mode 0600); a fact already at the target is `unchanged` and not logged. `--check` validates the log and names a fact whose
 FACTS status differs from its last logged `to_status` (a hand edit). Ids and counts only; the note is never printed.
+
+**FACT-REVIEWS v2** binds each row to the evidence it reviewed: a row is *bound* to the FACTS row with the same `fact_id` and
+`evidence_fp`, and the status of a row is the last `to_status` of its bound chain. A row whose evidence changed (for example a new
+quote under the same id) or was removed is *unbound* history: kept verbatim, format-checked only, never rebound and never conferring
+status. A status other than `unreviewed` with no bound chain is a raw edit, not a review (`overlay_errors`; `--check` still accepts
+a manually imported store). v1 logs stay readable; `review` upgrades a v1 log that passes the v1 check, stamping each row with the
+fp of the current row of its `fact_id`, in the same write as the new rows. An inconsistent v1 log is refused and never upgraded.
 
 **Review history** (`reviews --store DIR --agency SLUG [--fact ID] [--since YYYY-MM-DD]`, read-only): after the same full check as
 `review`, one `reviews | slug | fact_id | from -> to | reviewed_at` line per log row (file order, `--since` inclusive), then counts
@@ -76,3 +83,28 @@ visually reviewed)`, `(text state: <words>)`, or `(text state not recorded)` whe
 linked, oversize or invalid file is a `config:` error and nothing is written. The label never changes which findings are
 included. Operators should point live report configs at the latest text-state file; without the key a report makes no
 claim about text state.
+
+## Store write lock
+
+`import` (not `--dry-run`) and `review` take an exclusive `fcntl.flock` on the store folder itself (a read-only descriptor, no lock file, so no listing, backup or DAG output snapshot ever sees one). They wait up to 30 s, then print `locked: fact store busy` and exit 1 with the store untouched; a refused import still creates no store. `--dry-run`, `--check`, `status`, `coverage`, `quote-check`, `stale`, `reviews` and `unreadable` take no lock. `evidence_fp(row)` (`E-` + 16 hex over every reviewed column but `status`) and `projection_sha256(path)` (hash of the file's rows with every status `unreviewed`; equals the bytes an unreviewed import wrote) are the shared helpers later units use.
+
+## Crash recovery (review transaction)
+
+`review` writes FACTS.csv and FACT-REVIEWS.csv as one journaled transaction: both new files are staged (`.FACTS.csv.txn`, `.FACT-REVIEWS.csv.txn`, fsynced), then `.FACTS-TXN.json` (`flock-facts-txn-v1`, old and new sha256 of each file) is committed by an atomic replace, then the log and FACTS are replaced and the journal removed. A crash before the commit leaves the old pair (the next writer unlinks the leftover temps); a crash after it is rolled forward exactly once by `recover(store, slug)`, which every `review` and every non-dry-run `import` runs under the exclusive lock before reading the store. A journal whose hashes fit neither file prints `REVIEW_TXN_CORRUPT` (exit 1) and touches nothing. `read_reviewed(store, slug)` is the packet readers' view under the shared lock: `REVIEW_TXN_PENDING` for a journal, `REVIEW_STATE_INVALID` for a failed check or a raw status edit; it never writes or recovers. `import --dry-run` stays lock-free, recovery-free and write-free.
+
+## Reconcile (fresh projection + review overlay)
+
+`flock_facts.py reconcile --store ACTIVE --from STAGING --agency SLUG --superseded DIR` installs the unreviewed import in `STAGING` over `ACTIVE` without losing bound reviews. Under the exclusive lock it recovers a pending journal, validates the log, copies the current FACTS.csv and FACT-REVIEWS.csv (those present) to `DIR/<UTC>[-n]/` (never deleted), and writes the merged FACTS.csv and log in one journaled transaction. A row's status is the last `to_status` of the log chain bound to its (fact_id, evidence_fp), else `unreviewed`. Output: `reconcile | <slug> | kept=K reset=R new=N removed=M raw_dropped=D` (kept: carries a bound decision; reset: had a decision but its evidence changed; raw_dropped: active status with no bound chain). A staging file that is unreadable (bad UTF-8, CSV error), invalid or has any status but `unreviewed` prints `RECONCILE_STAGING_INVALID`; a malformed or linked log, an inconsistent v1 log, an invalid active FACTS.csv, or a merged pair whose log fails the full review check (e.g. a history row that would bind to a returning row whose added_by is its reviewer) prints `REVIEW_STATE_INVALID`; both exit 1 with nothing written. A consistent v1 log is upgraded to v2 in the same transaction; a missing active FACTS.csv is simply installed (no log, nothing superseded).
+
+| case | result |
+| --- | --- |
+| unchanged evidence, bound checked/disputed | status, log and marks kept |
+| changed evidence under the same fact_id | `unreviewed`; old log rows stay as unbound history |
+| added evidence | `unreviewed` |
+| removed evidence | row gone; its log rows stay as unbound history |
+| evidence reverts to an earlier fingerprint | regains the last decision for exactly that (fact_id, fp) |
+| dispute, or reversal checked ↔ disputed | last `to_status` of the bound chain; full chain kept |
+| raw status edit (no bound chain) | not a review; written as the log-derived status (`raw_dropped`) |
+| log absent | every row `unreviewed`, no log created |
+| log malformed or a link, inconsistent v1 log | `REVIEW_STATE_INVALID`, nothing written |
+| concurrent review | serialized by the lock; the log is read at merge time |

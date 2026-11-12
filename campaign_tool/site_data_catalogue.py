@@ -191,29 +191,57 @@ def _duplicate_keys(pairs):
 
 
 def _read_regular(public, relative, limit=MAX_BYTES):
-    """Bytes of ``public/<relative>``; ``None`` when absent, a reason string when it is a symlink, escapes or is not a file or exceeds ``limit`` bytes (enforced on the bytes actually read, at most limit + 1 requested)."""
+    """Bytes of ``public/<relative>``; ``None`` when absent, a reason string when it is a symlink, escapes or is not a file or exceeds ``limit`` bytes (enforced on the bytes actually read, at most limit + 1 requested).
+
+    The leaf is opened without following links or blocking and the opened descriptor must be the regular
+    file (same device and inode) that the path walk inspected, so a late replacement is never read."""
     current = public
     for index, part in enumerate(relative.split("/")):
         current = current / part
         try:
-            mode = os.lstat(current).st_mode
+            inspected = os.lstat(current)
         except FileNotFoundError:
             return None
         except OSError:
             return "cannot be read"
+        mode = inspected.st_mode
         if stat.S_ISLNK(mode):
             return "is or sits under a symlink"
         if index < relative.count("/") and not stat.S_ISDIR(mode):
             return "has a non-directory ancestor"
     if not stat.S_ISREG(mode):
         return "is not a regular file"
-    if os.lstat(current).st_size > limit:
+    if inspected.st_size > limit:
         return "is too large to check"
+    flags = getattr(os, "O_NOFOLLOW", None), getattr(os, "O_NONBLOCK", None)
+    if None in flags:
+        return "cannot be read"
     try:
-        # Bound the read itself: the file may have grown since the size check above.
-        with open(current, "rb") as handle:
-            data = handle.read(limit + 1)
+        fd = os.open(current, os.O_RDONLY | flags[0] | flags[1])
     except OSError:
+        return "cannot be read"
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            return "is not a regular file"
+        if (opened.st_dev, opened.st_ino) != (inspected.st_dev, inspected.st_ino):
+            return "cannot be read"
+        if opened.st_size > limit:
+            return "is too large to check"
+        # Bound the read itself: the file may have grown since the size check above.
+        handle = os.fdopen(fd, "rb", closefd=False)
+        try:
+            data = handle.read(limit + 1)
+        finally:
+            handle.close()
+    except OSError:
+        return "cannot be read"
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            data = None
+    if data is None:
         return "cannot be read"
     if len(data) > limit:
         return "is too large to check"
@@ -276,6 +304,9 @@ def _check_resource(public, resource, seen, problems, city_names):
         expected, _ = _expected_schema(full, meta[3], meta[4], data)
     except UnicodeDecodeError:
         problems.append((full, "CSV is not UTF-8"))
+        expected = None
+    except csv.Error:  # RF0211-4: only the header parse; a fixed reason, never the parser's text or the cell
+        problems.append((full, "CSV header cannot be parsed"))
         expected = None
     if expected is not None and resource.get("schema") != expected:
         problems.append((full, "schema does not match the file"))

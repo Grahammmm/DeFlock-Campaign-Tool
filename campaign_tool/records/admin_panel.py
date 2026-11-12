@@ -25,6 +25,7 @@ from . import approval_queue, console_board, console_calendar, console_documents
 from . import console_origin
 from . import console_access, console_layout, console_review, console_settings
 from .ledger import store
+from .outcomes import unmatched
 from .outcomes.reading import BANNER, esc
 
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
@@ -46,6 +47,9 @@ SECTIONS = (("mail", "Inbox: mail received"), ("documents", "Documents"), ("stag
 # Upstream codes are content-free; only these are ever shown.
 QUEUE_CODES = frozenset({"queue_invalid", "queue_io", "unknown_id", "invalid_transition", "approval_required",
                          "invalid_draft", "invalid_actor", "source_invalid", "source_conflict"})
+MISSING_CSRF = "The form expired; reload the page and try again."
+EMPTY_FIELD = {"approve": "Paste the detached signature", "reject": "Say why you are rejecting",
+               "edit": "The edited text is empty"}
 ACTION_STATUS = {"unknown_id": 404, "invalid_transition": 409, "approval_required": 403,
                  "invalid_draft": 400, "invalid_actor": 400}
 REASONS = {400: "Bad request", 403: "Refused", 404: "Not found", 405: "Method not allowed", 408: "Request timed out",
@@ -313,13 +317,13 @@ def load_dashboard(project, run_id, *, run_report_path=None, kit_root=None, as_o
 def _table(headers, rows, caption):
     if not rows:
         return "<p>None reported in this source.</p>"
-    out = ["<table><caption>" + esc(caption) + "</caption><thead><tr>"]
+    out = ['<div class="scroll" tabindex="0" role="region" aria-label="%s"><table><caption>' % esc(caption) + esc(caption) + "</caption><thead><tr>"]
     out += ['<th scope="col">' + esc(h) + "</th>" for h in headers]
     out.append("</tr></thead><tbody>")
     for row in rows:
         out.append("<tr>" + "".join("<td>" + (c if isinstance(c, _Raw) else esc(_text(c))) + "</td>" for c in row)
                    + "</tr>")
-    out.append("</tbody></table>")
+    out.append("</tbody></table></div>")
     return "".join(out)
 
 
@@ -653,7 +657,7 @@ def render_dashboard(model, *, csrf_token=None):
                 "stages": _stages_section(model), "findings": _findings_section(model),
                 "deadlines": _deadlines_section(model), "drafts": _drafts_section(model, csrf_token)}
     out = ['<header>',
-           '<a href="#content">Skip to content</a><h1>Records pipeline dashboard</h1>',
+           '<h1>Records pipeline dashboard</h1>',
            '<p class="notice">' + esc(mode) + "</p>",
            "<p>Run %s, captured %s, deadlines as of %s. Current ledger state and the selected run's outcomes are "
            "separate sources.</p>" % (esc(model["run_id"]), esc(model["captured_at"]), esc(model["as_of"])),
@@ -762,19 +766,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def _fail(self, status):
-        text = REASONS.get(status, "Error")
-        self._send(status, '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>%s</title></head>'
-                           "<body><h1>%s</h1><p>%s</p><p><a href=\"/\">Back to the dashboard</a></p></body></html>\n"
-                   % (esc(text), esc(text), esc(BANNER)))
+    def _fail(self, status, text=None):
+        text = text or REASONS.get(status, "Error")
+        self._send(status, console_layout.shell(text, "<h1>%s</h1><p><a href=\"/\">Back to the dashboard</a></p>" % esc(text)))
 
     def _stale(self, ident):
         """409 for an edit made from an older page: nothing was saved; the submitted text is not echoed."""
-        self._send(409, '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Draft changed</title>'
-                        "</head><body><h1>Draft changed</h1><p>This draft changed after your page was loaded. "
-                        "Your edit was not saved. Reload the draft and make the edit again.</p>"
-                        '<p><a href="/review?id=%s">Reload the draft</a></p><p>%s</p></body></html>\n'
-                   % (esc(urllib.parse.quote(ident)), esc(BANNER)))
+        self._send(409, console_layout.shell("Draft changed", "<h1>Draft changed</h1><p>This draft changed after your "
+                   "page was loaded. Your edit was not saved. Reload the draft and make the edit again.</p>"
+                   '<p><a href="/review?id=%s">Reload the draft</a></p>' % esc(urllib.parse.quote(ident))))
 
     def _host_ok(self):
         return console_origin.request_ok(self, post=False)
@@ -895,6 +895,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(fields)
         action, names = route
         back = fields.pop("return", "/")  # optional; it only chooses the 303 target
+        choice = fields.pop("choice", None)  # DFGL-04: only an approve of a message_link row carries it
+        if back == "review" and action in ("approve", "reject", "edit") and "csrf_token" not in fields \
+                and DRAFT_ID.fullmatch(fields.get("id", "")):
+            return console_review.refuse(self, fields["id"], MISSING_CSRF, None)
         if set(fields) != set(names):
             return self._fail(400)
         if not hmac.compare_digest(fields["csrf_token"].encode("utf-8"), self.server.csrf_token.encode("ascii")):
@@ -910,7 +914,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._post_send(fields)
         value = fields[names[2]].replace("\r\n", "\n")
         if not value.strip():
+            if back == "review":
+                return console_review.refuse(self, ident, EMPTY_FIELD[action], (names[2], value))
             return self._fail(400)
+        link = None
+        try:
+            row = next((r for r in approval_queue.load_queue(self.server.options["project"]) if r["id"] == ident), None)
+            if row is not None and row["kind"] == draft_templates.MESSAGE_LINK and action == "approve":
+                link = unmatched.choose(row, choice)  # not among the candidates -> 400 before anything changes
+            elif choice is not None:
+                return self._fail(400)
+        except ValueError:
+            return self._fail(400)
+        except (approval_queue.ApprovalQueueError, OSError):
+            return self._fail(503)
         if action == "edit" and not REVISION.fullmatch(fields["expected_revision"]):
             return self._fail(400)
         project, actor = self.server.options["project"], self.server.actor
@@ -936,7 +953,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(503)
         if rows.get(ident, {}).get("status") not in expected:  # never claim success from a return value alone
             return self._fail(503)
-        if hook and self.server.mail_drafts_config and rows[ident].get("kind") not in draft_templates.NEXT_STEP_KINDS:
+        if link is not None:
+            try:
+                unmatched.append_link(project, rows[ident]["item_id"], link[0], link[1], rows[ident]["approved_by"])
+            except ValueError as error:
+                return self._fail(409 if str(error) == "message_link_conflict" else 503)
+            except OSError:
+                return self._fail(503)
+        if hook and self.server.mail_drafts_config and rows[ident].get("kind") not in draft_templates.NON_MAIL_KINDS:
             _place_after_approve(project, self.server.mail_drafts_config, ident)
         self._send(303, "", location="/review?id=" + urllib.parse.quote(ident) if back == "review" else back)
 

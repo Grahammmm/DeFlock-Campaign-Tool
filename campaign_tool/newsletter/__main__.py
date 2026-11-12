@@ -33,6 +33,12 @@ def _day(value):  # YYYY-MM-DD only; argparse turns the ValueError into exit 2
     return value
 
 
+def _manifest_path(value):  # RF0211-5: an explicit empty operand is never "no --manifest"; the path is otherwise kept exactly
+    if value == "":
+        raise argparse.ArgumentTypeError("expected a non-empty path")
+    return value
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", nargs="?", choices=("sent", "archive"),
@@ -42,7 +48,7 @@ def main(argv=None):
     parser.add_argument("--publish", action="store_true",
                         help="With archive: write content/newsletters/DATE.json locally (never replaces; hosts nothing)")
     source = parser.add_mutually_exclusive_group()
-    source.add_argument("--manifest", help="Newsletter manifest JSON (from the workspace newsletter_draft job)")
+    source.add_argument("--manifest", type=_manifest_path, help="Newsletter manifest JSON (from the workspace newsletter_draft job)")
     source.add_argument("--from-content", action="store_true", help="Build the manifest from content/")
     source.add_argument("--record-sent", metavar="DATE",
                         help="Record that kit/newsletter-draft was sent by hand on this YYYY-MM-DD day; sends nothing")

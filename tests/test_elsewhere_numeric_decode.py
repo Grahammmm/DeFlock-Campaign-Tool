@@ -6,6 +6,7 @@ written independently of the code under test; the oversized number tokens stay f
 import contextlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -238,15 +239,17 @@ class CompatibilityTests(Case):
                 read_elsewhere(self.root, DAY)
         # the cap+1 binary read and handle closure also hold on a numeric parse failure
         self.put(CASES["root"])
-        real_open, handles = Path.open, []
+        real_fdopen, handles = os.fdopen, []
+        target_path = self.path
 
-        def tracking_open(path, *args, **kwargs):
-            handle = real_open(path, *args, **kwargs)
-            if path.name == "elsewhere.json":
+        def tracking_fdopen(descriptor, *args, **kwargs):
+            same = os.path.samestat(os.fstat(descriptor), os.stat(target_path))
+            handle = real_fdopen(descriptor, *args, **kwargs)
+            if same:
                 handles.append(handle)
             return handle
 
-        with mock.patch.object(Path, "open", tracking_open):
+        with mock.patch.object(os, "fdopen", tracking_fdopen):
             with self.assertRaisesRegex(ContentError, REFUSAL):
                 read_elsewhere(self.root, DAY)
         self.assertEqual(len(handles), 1)

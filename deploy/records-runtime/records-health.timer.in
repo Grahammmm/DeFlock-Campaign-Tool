@@ -1,0 +1,11 @@
+[Unit]
+Description=Records pipeline health check, hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+Unit=records-health.service
+
+[Install]
+WantedBy=timers.target

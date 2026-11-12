@@ -364,7 +364,10 @@ def inventory(root, as_of=None, directory=None, today=None):
     as_of = as_of or today.isoformat()
     root = os.fspath(root)
     directory = os.fspath(directory if directory is not None else root)
-    kind = os.lstat(root).st_mode if os.path.lexists(root) else None
+    try:  # a root that vanishes or cannot be stat'ed after lexists is refused like a missing one, value-free
+        kind = os.lstat(root).st_mode if os.path.lexists(root) else None
+    except OSError:
+        raise MeetingsStatusError(BAD_ROOT) from None
     if kind is None or not stat.S_ISDIR(kind):
         raise MeetingsStatusError(BAD_ROOT)
     errors = []

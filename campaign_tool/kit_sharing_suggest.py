@@ -32,6 +32,8 @@ def _seed_index(seed):
         for entry in county["agencies"]:
             known = found.setdefault(entry["agency_id"], entry)
             if (known["name"], known["kind"]) != (entry["name"], entry["kind"]):
+                if kit_agencies._has_control(entry["agency_id"]):  # never echo a control-bearing id
+                    raise ValueError(IDENTIFIER_MESSAGE)
                 raise ValueError(f"seed defines agency_id {entry['agency_id']} inconsistently")
     return found
 

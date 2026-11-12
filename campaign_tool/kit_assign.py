@@ -3,9 +3,11 @@
 An owner is an alias the volunteer team chose, not a verified identity. Assigning never changes a due date, a response
 step or any other store, and nothing is sent or published from this module.
 """
+import contextlib
 import errno
 import json
 import os
+import secrets
 import stat
 import unicodedata
 from pathlib import Path
@@ -16,6 +18,11 @@ LABEL_MAX = 40
 MAX_BYTES = 1 << 20
 DIGITS_MAX = 6  # seven or more decimal digits make a label phone-like
 FILE = "kit/assignments.json"
+LEAF = "assignments.json"
+TEMP_TRIES = 8
+# Asked by name, not by identity: this module can be first imported lazily while a test has replaced os.open, and an
+# identity check would then record "no dir_fd support" for the whole process.
+_DIR_FD = "open" in {getattr(function, "__name__", "") for function in os.supports_dir_fd}
 
 
 def owner_label(value, flag="--to"):
@@ -61,14 +68,84 @@ def _label_ok(label):
         return False
 
 
-def _read_leaf(path, bad):
+def _bad(reason):
+    return ValueError(f"{FILE} unreadable: {reason}")
+
+
+def _close_secondary(fd):
+    """Close a descriptor once while another error is propagating; a close OSError is subordinate and dropped."""
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def _open_kit(root):
+    """Yield a descriptor for the campaign's kit/ directory, or None when root or kit/ does not exist.
+
+    kit/ is opened relative to the root descriptor without following a symlink, so every later assignments read,
+    temporary, replacement and cleanup stays in this one directory even if kit/ is renamed or replaced afterwards.
+    The caller's root and its ancestors keep their existing trust. No unsafe fallback without the needed flags."""
+    needed = ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    if not all(hasattr(os, n) for n in needed) or not _DIR_FD:
+        raise _bad("file changed or could not be read")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        root_fd = os.open(root, flags & ~os.O_NOFOLLOW)  # the root and its ancestors keep link semantics
+    except FileNotFoundError:
+        yield None
+        return
+    except OSError:
+        raise _bad("file changed or could not be read") from None
+    kit_fd = None
+    try:
+        try:
+            kit_fd = os.open("kit", flags, dir_fd=root_fd)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            try:
+                linked = stat.S_ISLNK(os.stat("kit", dir_fd=root_fd, follow_symlinks=False).st_mode)
+            except OSError:
+                linked = False
+            if linked:
+                raise ValueError("kit/ must not be a symlink") from None
+            raise _bad("file changed or could not be read") from None
+        if kit_fd is not None and not stat.S_ISDIR(os.fstat(kit_fd).st_mode):
+            raise _bad("file changed or could not be read")
+    except BaseException:
+        # Each owned descriptor gets exactly one close attempt; the admission error outranks a close OSError.
+        try:
+            if kit_fd is not None:
+                _close_secondary(kit_fd)
+        finally:
+            _close_secondary(root_fd)
+        raise
+    try:
+        os.close(root_fd)  # consumed whether it returns or raises: never retried
+    except BaseException:
+        if kit_fd is not None:
+            _close_secondary(kit_fd)  # the root-close error wins and the body never runs
+        raise
+    try:
+        yield kit_fd
+    except BaseException:
+        if kit_fd is not None:
+            _close_secondary(kit_fd)  # the body's failure wins over a close OSError
+        raise
+    if kit_fd is not None:
+        os.close(kit_fd)  # a close-only failure after a normal body is still an error
+
+
+def _read_leaf(kit_fd, bad):
     """Up to MAX_BYTES + 1 bytes of the regular file opened once, nonblocking and without following a symlink."""
     if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_NONBLOCK"):  # no unsafe fallback
         raise bad("file changed or could not be read")
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(LEAF, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=kit_fd)
     except OSError as exc:
-        if exc.errno == errno.ELOOP:  # a symlink, dangling or not, swapped in after the pathname checks
+        if exc.errno == errno.ELOOP:  # a symlink, dangling or not, swapped in after the early checks
             raise bad("not a regular file") from None
         raise bad("file changed or could not be read") from None
     try:
@@ -91,25 +168,24 @@ def _read_leaf(path, bad):
         raise bad("file changed or could not be read") from None
 
 
-def read_assignments(root):
-    """``{sent.json key: owner label}`` from kit/assignments.json; {} when absent. Never resets a bad file.
-
-    Reads at most MAX_BYTES + 1 bytes before decoding. A document the JSON decoder refuses for excessive nesting
-    (RecursionError) is reported as the fixed "JSON nesting is too deep" unreadable store. Orphans (a key with no recorded request)
-    are kept as stored; callers ignore them."""
-    path = _kit_dir(root) / "assignments.json"
-
-    def bad(reason):
-        return ValueError(f"{FILE} unreadable: {reason}")
-    if not os.path.lexists(path):
+def _load(kit_fd):
+    """The validated assignments from the leaf in the admitted kit directory; {} when kit/ or the leaf is absent."""
+    if kit_fd is None:
         return {}
-    if path.is_symlink() or not path.is_file():
+    bad = _bad
+    try:
+        early = os.stat(LEAF, dir_fd=kit_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        raise bad("file changed or could not be read") from None
+    if not stat.S_ISREG(early.st_mode):
         raise bad("not a regular file")
-    if path.stat().st_size > MAX_BYTES:
+    if early.st_size > MAX_BYTES:
         raise bad("larger than 1 MiB")
-    # The pathname checks above are only an early refusal. The bytes come from the object opened here without
-    # following a final-component symlink (leaf only; ancestors are not anchored) and re-checked on its descriptor.
-    raw = _read_leaf(path, bad)
+    # The early checks only refuse sooner. The bytes come from the object opened here relative to the admitted
+    # kit descriptor, without following a leaf symlink, and re-checked on its own descriptor.
+    raw = _read_leaf(kit_fd, bad)
     if len(raw) > MAX_BYTES:
         raise bad("larger than 1 MiB")
     try:
@@ -126,6 +202,17 @@ def read_assignments(root):
         if not _entry_ok(key, label):
             raise bad("an assignment is malformed")
     return document["assignments"]
+
+
+def read_assignments(root):
+    """``{sent.json key: owner label}`` from kit/assignments.json; {} when absent. Never resets a bad file.
+
+    kit/ is opened once without following a symlink and the leaf is read relative to it. Reads at most MAX_BYTES + 1
+    bytes before decoding. A document the JSON decoder refuses for excessive nesting (RecursionError) is reported as
+    the fixed "JSON nesting is too deep" unreadable store. Orphans (a key with no recorded request) are kept as
+    stored; callers ignore them."""
+    with _open_kit(root) as kit_fd:
+        return _load(kit_fd)
 
 
 def assign(root, agency_id, *, request="main", to=None, clear=False):
@@ -147,15 +234,45 @@ def assign(root, agency_id, *, request="main", to=None, clear=False):
     if key not in kit_track.read_sent(root):
         raise ValueError(f"no recorded request {kit_track._label(agency_id, request)}: "
                          "owners are assigned to requests recorded with kit-sent or kit-sent-import")
-    stored = read_assignments(root)
-    result = {"agency_id": agency_id, "request": request, "owner": label}
-    if stored.get(key) == label:  # same owner, or clearing a request that has none: nothing to write
-        return {**result, "changed": False}
-    updated = {k: v for k, v in stored.items() if k != key}
-    if label is not None:
-        updated[key] = label
-    document = {"schema_version": 1, "assignments": dict(sorted(updated.items()))}
-    if len(json.dumps(document, indent=2, ensure_ascii=False).encode("utf-8")) + 1 > MAX_BYTES:
-        raise ValueError(f"{FILE} would be larger than 1 MiB; owner not recorded")
-    kit._write_json(kit_dir / "assignments.json", document)  # temp file in kit/ (0600), then an atomic replace
+    with _open_kit(root) as kit_fd:
+        if kit_fd is None:
+            raise _bad("file changed or could not be read")
+        stored = _load(kit_fd)
+        result = {"agency_id": agency_id, "request": request, "owner": label}
+        if stored.get(key) == label:  # same owner, or clearing a request that has none: nothing to write
+            return {**result, "changed": False}
+        updated = {k: v for k, v in stored.items() if k != key}
+        if label is not None:
+            updated[key] = label
+        document = {"schema_version": 1, "assignments": dict(sorted(updated.items()))}
+        data = (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        if len(data) > MAX_BYTES:
+            raise ValueError(f"{FILE} would be larger than 1 MiB; owner not recorded")
+        # A private temporary and the atomic replace, both relative to the admitted kit descriptor.
+        for _ in range(TEMP_TRIES):
+            temp = f".{LEAF}.{secrets.token_hex(8)}.tmp"
+            try:
+                fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=kit_fd)
+                break
+            except FileExistsError:
+                continue
+            except OSError:
+                raise _bad("file changed or could not be read") from None
+        else:
+            raise _bad("file changed or could not be read")
+        try:
+            try:
+                handle = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)
+                raise
+            with handle:
+                handle.write(data)
+            os.replace(temp, LEAF, src_dir_fd=kit_fd, dst_dir_fd=kit_fd)
+        except BaseException:
+            try:
+                os.unlink(temp, dir_fd=kit_fd)  # only our own temporary, in the admitted directory
+            except OSError:
+                pass  # keep the original failure
+            raise
     return {**result, "changed": True}

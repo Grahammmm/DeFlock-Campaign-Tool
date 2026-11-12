@@ -4,11 +4,13 @@ redirect points at, and validate the optional ``site.json.unlinked_assets_ok`` a
 Pure functions: no filesystem traversal (beyond the existence check of ``validate_unlinked_assets_ok``), no network, no
 writes. Nothing is deleted, moved or left uncopied; an acknowledgement is publication intent, not a privacy review.
 """
+import stat
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .content import ASSET_PART, ContentError
+from .site_check import _srcset_urls
 
 MAX_ENTRIES = 50
 LABEL = "site.json.unlinked_assets_ok"
@@ -47,12 +49,26 @@ def validate_unlinked_assets_ok(value, assets_dir=None):
         seen.add(entry)
         if assets_dir is None:
             continue
-        chain = [Path(assets_dir).joinpath(*parts[:depth]) for depth in range(len(parts) + 1)]
-        if any(step.is_symlink() for step in chain):
-            raise ContentError(f"{label}: is or sits under a symlink; use a regular file in content/public-assets/")
-        if not chain[-1].is_file():
-            raise ContentError(f"{label}: file not found in content/public-assets/")
+        _inspect_chain(label, Path(assets_dir), parts)
     return list(value)
+
+
+def _inspect_chain(label, assets_dir, parts):
+    """Walk assets_dir -> leaf with lstat, stopping at the first failed component. Only metadata is read: no file is
+    opened or resolved. An inspection failure other than 'absent' becomes a fixed refusal that carries no path,
+    errno text or exception context; it is not a readability policy (a regular leaf whose metadata is visible passes)."""
+    for depth in range(len(parts) + 1):
+        step = assets_dir.joinpath(*parts[:depth])
+        try:
+            mode = step.lstat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            raise ContentError(f"{label}: file not found in content/public-assets/") from None
+        except OSError:
+            raise ContentError(f"{label}: cannot inspect file in content/public-assets/") from None
+        if stat.S_ISLNK(mode):
+            raise ContentError(f"{label}: is or sits under a symlink; use a regular file in content/public-assets/")
+    if not stat.S_ISREG(mode):
+        raise ContentError(f"{label}: file not found in content/public-assets/")
 
 
 def local_path(url, page, base_url=None):
@@ -68,14 +84,18 @@ def local_path(url, page, base_url=None):
     except ValueError:
         return None
     if split.scheme:
-        if split.scheme.lower() != "https" or not base_url or split.username or split.password or not split.hostname:
+        # Authority identity uses presence, not truthiness: empty userinfo is still userinfo,
+        # and explicit port 0 is distinct from the default 443.
+        if split.scheme.lower() != "https" or not base_url or split.username is not None or split.password is not None or not split.hostname:
             return None
         try:
             base = urlsplit(base_url.rstrip("/"))
             base_port = base.port
         except ValueError:
             return None
-        if base.scheme.lower() != "https" or (split.hostname, port or 443) != (base.hostname, base_port or 443):
+        if base.username is not None or base.password is not None or not base.hostname:
+            return None
+        if base.scheme.lower() != "https" or (split.hostname, 443 if port is None else port) != (base.hostname, 443 if base_port is None else base_port):
             return None
         prefix = base.path.rstrip("/") + "/"
         if not split.path.startswith(prefix):
@@ -115,10 +135,8 @@ class _Collector(HTMLParser):
             if name in values:
                 self.urls.append(values[name])
         if tag in ("img", "source") and "srcset" in values:
-            for candidate in values["srcset"].split(","):
-                parts = candidate.split()
-                if parts:
-                    self.urls.append(parts[0])
+            # RF1741-5: a candidate URL keeps its own commas (data:, query payloads).
+            self.urls.extend(_srcset_urls(values["srcset"]))
         if tag == "meta" and "content" in values:
             key = (values.get("property") or values.get("name") or "").strip().lower()
             if key in _SHARE_META:

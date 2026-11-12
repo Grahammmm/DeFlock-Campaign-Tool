@@ -74,8 +74,13 @@ def _read(dir_fd, name, limit):
             raise _Hazard('not_regular', 'not a regular file (link or special file; not followed)') from None
         raise _Hazard('unreadable', 'cannot be read') from None
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
             raise _Hazard('not_regular', 'not a regular file (link or special file; not followed)')
+        # RF1500-23: the descriptor must be the very file inspected above; a regular file renamed over the name in
+        # between is refused before any byte is read (a later run may inspect it once the folder settles).
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise _Hazard('unreadable', 'file changed while being opened')
         chunks, total = [], 0
         while total <= limit:
             try:
@@ -104,6 +109,20 @@ def _row(path, kind, status, findings=(), reasons=()):
     return {'path': path, 'kind': kind, 'status': status, 'findings': list(findings), 'reasons': list(reasons)}
 
 
+class _RepeatedMember(ValueError):
+    """A JSON object names the same decoded member twice."""
+
+
+def _unique_members(pairs):
+    """object_pairs_hook: refuse repeated member names instead of keeping the last."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _RepeatedMember
+        result[key] = value
+    return result
+
+
 class _Index:
     """Current findings and meetings, read lazily and only as far as the drafts need."""
 
@@ -125,9 +144,12 @@ class _Index:
         path = f'{prefix}/{name}'
         try:
             data = _read(fd, name, MAX_JSON_BYTES)
-            return json.loads(data.decode('utf-8')), False
+            return json.loads(data.decode('utf-8'), object_pairs_hook=_unique_members), False
         except _Hazard as hazard:
             self.rows.append(_row(path, 'input', hazard.status, reasons=_hazard_reason(hazard)))
+        except _RepeatedMember:
+            # Ambiguous evidence: never pick a member, never quote the key or value.
+            self._invalid(path, 'duplicate JSON object member names')
         except (UnicodeDecodeError, ValueError, RecursionError):
             self._invalid(path, 'file is not valid UTF-8 JSON')
         return None, True

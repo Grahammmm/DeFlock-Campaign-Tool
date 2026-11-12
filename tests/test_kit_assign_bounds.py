@@ -28,8 +28,9 @@ class ReadProbe:
         self.fds = []
         self.grown = False
 
-    def is_store(self, path):
-        return isinstance(path, (str, os.PathLike)) and os.fspath(path) == str(self.path)
+    def is_store(self, path, kwargs):
+        # The leaf is opened by name relative to the admitted kit directory descriptor, never by pathname.
+        return path == "assignments.json" and isinstance(kwargs.get("dir_fd"), int)
 
     @contextlib.contextmanager
     def active(self):
@@ -37,7 +38,7 @@ class ReadProbe:
 
         def opened(path, flags, *args, **kwargs):
             fd = REAL_OS_OPEN(path, flags, *args, **kwargs)
-            if probe.is_store(path):
+            if probe.is_store(path, kwargs):
                 probe.fds.append(fd)
             return fd
 
@@ -78,6 +79,19 @@ class ReadProbe:
         with mock.patch.object(os, "open", opened), mock.patch.object(os, "fstat", statted), \
                 mock.patch.object(os, "fdopen", fdopened):
             yield self
+
+
+@contextlib.contextmanager
+def no_creation():
+    """Refuse any file creation (O_CREAT) through os.open, by name or relative to a directory descriptor."""
+    forward = os.open  # whatever seam is already active
+
+    def opened(path, flags, *args, **kwargs):
+        if flags & os.O_CREAT:
+            raise AssertionError("temporary file attempted")
+        return forward(path, flags, *args, **kwargs)
+    with mock.patch.object(os, "open", opened), mock.patch("tempfile.mkstemp", side_effect=AssertionError("mkstemp")):
+        yield
 
 
 def snapshot(root):
@@ -170,7 +184,7 @@ class KitAssignBoundsTests(unittest.TestCase):
 
         probe = ReadProbe(self.store, 2 * LIMIT, after_growth=remember)
         with probe.active(), mock.patch("os.replace", side_effect=AssertionError("replacement attempted")), \
-                mock.patch("tempfile.mkstemp", side_effect=AssertionError("temporary file attempted")):
+                no_creation():
             result = existing.run(arguments[0], "--directory", self.root, *arguments[1:])
         self.assert_probe(probe)
         self.assertTrue(probe.grown)

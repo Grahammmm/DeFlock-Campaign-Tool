@@ -12,6 +12,12 @@ RF1835-2: the existing file is read only up to ``MAX_JSON_BYTES``, and the compl
 limit in the exact UTF-8 bytes that would be written (indentation and non-ASCII text included). A larger document, or
 one that cannot be encoded as UTF-8, is refused before any temporary file is created, so a successful import always
 leaves a file the content reader accepts.
+
+RF0540-4: after the replacement the admitted ``content`` directory is flushed (one ``fsync`` on the retained descriptor)
+before success is reported. If that flush fails the complete new file stays installed (never rolled back) and the
+import stops with a fixed message saying the data was written but crash durability is unconfirmed. A directory fsync
+attempt is not a promise of power-loss survival on every filesystem. Failures before the replacement still leave the
+previous file untouched.
 """
 import csv
 import io
@@ -211,7 +217,12 @@ def import_sharing(root, agency_id, csv_path, checked_on, source_url, replace=Fa
         if (why := _install_problem(root_fd, content_fd, content_stat, target_fd, target_stat, original)) is not None:
             raise SharingImportError(f"{why}; nothing was written")
         os.replace(temp, TARGET, src_dir_fd=content_fd, dst_dir_fd=content_fd)
-        temp = None
+        temp = None  # committed: from here on the new document is installed and must never be rolled back
+        try:  # RF0540-4: flush the already-admitted content directory so the rename itself is made durable
+            os.fsync(content_fd)
+        except OSError:
+            raise SharingImportError("content/agencies.json: the new sharing data was written, but content/ could not be flushed to disk; "
+                                     "crash durability is unconfirmed. Inspect the file before retrying.") from None
     finally:
         if temp_fd is not None:
             os.close(temp_fd)

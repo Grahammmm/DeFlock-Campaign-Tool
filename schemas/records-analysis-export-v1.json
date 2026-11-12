@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "records-analysis-export-v1",
+  "description": "EXPORT.json of one exported run folder (records analysis-export, DFGL-06A). Private, review-required, never published. `files` maps each other file in the folder (relative path) to its sha256; a run settled without a usable analysis-ready.json is a marker folder with analysis_ready \"missing\" and no files.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "analysis_ready", "engine", "files"],
+  "properties": {
+    "schema": {"const": "records-analysis-export-v1"},
+    "run_id": {"type": "string", "pattern": "^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$"},
+    "analysis_ready": {"enum": ["present", "missing"]},
+    "engine": {"type": "string", "description": "campaign_tool package version"},
+    "files": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+    }
+  }
+}

@@ -16,6 +16,7 @@ PLAIN_KINDS = {
     "reply-extension": "Reply to an extension", "fee-reply": "Reply about fees",
     "followup-missing-records": "Ask for missing records", "next-social-post": "Suggested post",
     "next-site-update": "Suggested site update", "next-followup-probe": "Suggested follow-up",
+    "message_link": "Tie this message to a request",
 }
 DISCONNECTED = (("agency-page", "CON-SITEPR-1"), ("redaction", "CON-REDACT-1"), ("finding", "CON-FIND-1"))
 NEXT = {"next-site-update": ("site-update", "site"), "next-social-post": ("social-post", "social"),
@@ -48,12 +49,15 @@ def load(project, run_id, run_report_path=None, now=None, *, send_config=None, m
         pass
     try:
         board = cb.load(project, run_id)
+        model["received"] = board["received"]
         model["deadlines"] = board["deadlines"]
         model["refusals"] = board["refusals"]
-        model["waiting"] = ({"state": "ok", "rows": waiting_rows(board, model["now"].date()), "reminders": model["reminders"]}
+        model["waiting"] = ({"state": "ok", "rows": waiting_rows(board, model["now"].date()), "reminders": model["reminders"],
+                             "received": board["received"]["state"]}
                             if board["timeline"]["state"] == "ok" else dict(board["timeline"]))
     except Exception:
         model["waiting"] = co._unavailable("board_unreadable")
+        model["received"] = co._unavailable("board_unreadable")
     try:
         model["packets"] = {"state": "ok", "rows": public_packets.pending(project, model["now"].timestamp())}
     except public_packets.PacketError as error:
@@ -125,10 +129,10 @@ def decision_rows(model, today):
                     label, _, _ = cb.computed_clock(model, req, "determination_due", day)
             why = "No reply since %s (%s due date; on our records, not a legal finding)" % (day, label)
         if row["status"] == "pending":
-            group, _ = NEXT.get(kind, ("request" if kind == "first-request" else "follow-up", None))
+            group, _ = NEXT.get(kind, ("request" if kind in ("first-request", "message_link") else "follow-up", None))
             link = "/review?id=" + urllib.parse.quote(ident, safe="")
             add(ident, group, kind, row["agency_id"], row["request_id"], why or "Draft awaiting decision", age, link, "queue", when=when)
-        elif row["status"] == "approved" and kind not in NEXT and sends.get("configured") and sends["state"] == "ok":
+        elif row["status"] == "approved" and kind not in NEXT and kind != "message_link" and sends.get("configured") and sends["state"] == "ok":
             result = latest.get((ident, row["revision"]))
             if result and result.get("state") == "sent":
                 continue
@@ -147,6 +151,7 @@ def decision_rows(model, today):
         when = _epoch(line.get("proposed_at"))
         add(line["id"], "status-line", line["state"], line["agency_key"], line.get("request_id"), why,
             _age(now, when), "/public-updates", "public", hours, when)
+        rows[-1]["what"] = "Public status line (%s, %s)" % (line.get("template") or "no template", event.get("date") or "no date")
     for packet in model["packets"].get("rows", []):
         if packet["status"] != "proposed":
             continue
@@ -215,7 +220,8 @@ def render_waiting(state, today):
         out.append('<tr>%s</tr>' % ''.join('<td>%s</td>' % c for c in cells))
     out.append('</tbody></table>')
     if not rows:
-        out.append('<p>No requests waiting on agencies.</p>')
+        out.append('<p>No requests waiting on agencies.</p>' if state.get("received", "ok") == "ok"
+                   else '<p>Not known: received documents not loaded.</p>')
     if len(rows) > 40:
         out.append('<p>and <a href="/board?filter=waiting">%d more on the Agencies page</a></p>' % (len(rows) - 40))
     return "\n".join(out + ['</section>'])
@@ -293,15 +299,25 @@ def render_progress(model, today):
     return "\n".join(out + ['</section>'])
 
 
+def unavailable_sources(model):
+    """Source keys Home reads that could not be loaded (the waiting list repeats the timeline, so it is dropped then)."""
+    keys = [k for k in ("timeline", "queue", "public", "packets", "sends", "calendar", "received", "waiting")
+            if model.get(k, {}).get("state", "ok") != "ok"]
+    return [k for k in keys if not (k == "waiting" and "timeline" in keys)]
+
+
 def render_home(model, token):
     rows = decision_rows(model, model["now"].date())
+    missing = unavailable_sources(model)
+    decision_count = str(len(rows)) if not {"queue", "public", "packets", "sends"} & set(missing) else "unknown"
     calendar = model["calendar"]
     week = calendar.get("rows", [])
     week_count = str(len(week)) if calendar["state"] == "ok" else "unknown"
     waiting = model["waiting"]
     waiting_count = ("%d waiting on agencies (%d overdue)" % (len(waiting["rows"]), sum(bool(r["overdue"]) for r in waiting["rows"]))
-                     if waiting["state"] == "ok" else "waiting on agencies: unknown")
-    out = ["<h1>Home</h1>", '<p role="status">%d need your decision · %s due in the next 7 days · %s</p>' % (len(rows), week_count, waiting_count),
+                     if waiting["state"] == "ok" and "received" not in missing else "waiting on agencies: unknown")
+    out = ([console_layout.sources_banner(console_layout.plain(missing))] if missing else []) + [
+           "<h1>Home</h1>", '<p role="status">%s need your decision · %s due in the next 7 days · %s</p>' % (decision_count, week_count, waiting_count),
            '<section id="decide"><h2>Needs your decision</h2>']
     counts = ["%s %d" % (label, count) for group, label in zip(GROUPS, LABELS)
               if (count := sum(r["kind_group"] == group for r in rows))]
@@ -310,7 +326,7 @@ def render_home(model, token):
     for source in ("timeline", "queue", "public", "packets", "sends"):
         state = model[source]
         if state["state"] != "ok":
-            out.append('<p role="status">%s: unavailable (%s).</p>' % (esc(source), esc(state.get("code"))))
+            out.append('<p role="status">%s</p>' % esc(console_layout.unavailable_note(*console_layout.plain([source]), state.get("code"))))
     if model["packets"]["state"] == "ok" and not model["packets"]["rows"]:
         out.append("<p>No packets pending.</p>")
     out.append('<table><thead><tr>' + "".join('<th scope="col">%s</th>' % title for title in

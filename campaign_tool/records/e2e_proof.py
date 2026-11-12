@@ -21,6 +21,7 @@ import io
 import json
 import os
 import re
+import sqlite3
 import sys
 import threading
 import time
@@ -37,6 +38,10 @@ PAGES = (("inbox", "/dashboard", "Inbox: mail received"), ("documents", "/docume
          ("deadlines", "/dashboard", "Deadlines"), ("drafts", "/dashboard", "Drafts"), ("next_steps", "/next-steps", "Next steps"))
 NEXT_KINDS = ("next-social-post", "next-site-update", "next-followup-probe")
 ARRIVAL_DONE = ("sync", "delta", "adoption", "portal")  # the live mailbox-side stages; a replay starts after them
+EXTRACT_UNFINISHED = ("AWAITING_OCR", "EXTRACT_ERROR", "EXTRACT_TIMEOUT", "EXTRACT_NOT_ACCEPTED")
+SEED_SCHEMA = "records-e2e-seed-v1"
+SEED_MAX_BYTES = 64 * 1024
+OUTPUTS_UNFINISHED = re.compile(r"^(OUTPUTS_[A-Z_]+_UNAVAILABLE|OUTPUTS_DIGEST_UNRESOLVED)$")
 
 
 class ProofError(Exception):
@@ -102,8 +107,16 @@ def _stage(argv):
     return code, json.loads(lines[0])
 
 
+# One scanned page costs a pdftoppm child plus a tesseract child, each allowed OCR_PAGE_TIMEOUT. The default 120 s stage
+# leaves a ~100 s document budget, which cut the page after its OCR finished (EXTRACT_TIMEOUT). With --ocr the extract
+# stage gets 600 s and a document budget of 2 * page timeout + 60 s, which stays under stage timeout - DEADLINE_MARGIN.
+STAGE_TIMEOUT, OCR_STAGE_TIMEOUT, OCR_PAGE_TIMEOUT = 120, 600, 120
+OCR_DOCUMENT_TIMEOUT = 2 * OCR_PAGE_TIMEOUT + 60
+
+
 def _adapter(name, project, run_id, *extra):
-    code, line = _stage([name, "--project", str(project), "--timeout", "120", "--run-id", run_id,
+    timeout = [] if "--timeout" in extra else ["--timeout", str(STAGE_TIMEOUT)]
+    code, line = _stage([name, "--project", str(project), *timeout, "--run-id", run_id,
                          "--require-sandbox", *extra])
     detail = {"counts": line.get("counts"), "outcomes": line.get("outcomes", [])}
     if code != 0 or line.get("status") == "fail":
@@ -135,7 +148,73 @@ def _post(port, path, fields):
         conn.close()
 
 
-def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None):
+def _seed_rows(seed):
+    """Validated (agencies, requests, join target, fact sheets) of a records-e2e-seed-v1 file; codes only."""
+    try:
+        path = Path(seed)
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > SEED_MAX_BYTES:
+            raise ValueError
+        doc = json.loads(path.read_bytes())
+        text = lambda v: type(v) is str and bool(v.strip())  # noqa: E731
+        agencies, requests, join = doc["agencies"], doc["requests"], doc["join"]
+        facts = doc.get("fact_sheets")
+        if (type(doc) is not dict or doc.get("schema") != SEED_SCHEMA or type(agencies) is not list
+                or type(requests) is not list or type(join) is not dict or set(join) != {"agency_id", "request_id"}
+                or not agencies or not requests or not (facts is None or type(facts) is dict)):
+            raise ValueError
+        rows = [(a["id"], a["name"], a.get("jurisdiction")) for a in agencies]
+        reqs = [(r["id"], r["agency_id"], r.get("external_ref"), r.get("submitted_at"), r["status"]) for r in requests]
+        ids, rids = {a[0] for a in rows}, {r[0] for r in reqs}
+        owner = {r[0]: r[1] for r in reqs}
+        if (len(ids) != len(rows) or len(rids) != len(reqs) or not all(text(v) for r in rows for v in r[:2])
+                or not all(text(r[0]) and text(r[1]) and text(r[4]) for r in reqs)
+                or any(r[1] not in ids for r in reqs) or owner.get(join["request_id"]) != join["agency_id"]):
+            raise ValueError
+        return rows, reqs, (join["agency_id"], join["request_id"]), facts
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        raise ProofError("SEED_INVALID") from None
+
+
+def _apply_seed(project, seed):
+    """Sandbox-only: write canonical agencies, requests and typed joins for every admitted original, plus the
+    comparison input file. In production canonical identity comes only from the pipeline."""
+    project = Path(project)
+    marker = project / MARKER
+    if (project.is_symlink() or project.name != "project" or marker.is_symlink() or not marker.is_file()
+            or marker.read_text(encoding="utf-8") != "e2e-proof sandbox\n"):
+        raise ProofError("SEED_NOT_SANDBOX")
+    agencies, requests, (agency_id, request_id), facts = _seed_rows(seed)
+    db = sqlite3.connect(str(project / "processing-v1" / "ledger.sqlite"), isolation_level=None)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        originals = [r[0] for r in db.execute("SELECT sha256 FROM originals ORDER BY sha256")]
+        message = [r[0] for r in db.execute("SELECT eml_sha256 FROM mail_messages")]
+        if len(message) != 1 or not originals:
+            raise ProofError("SEED_NO_MESSAGE")
+        db.executemany("INSERT INTO agencies(id, name, jurisdiction) VALUES(?,?,?)", agencies)
+        db.executemany("INSERT INTO requests(id, agency_id, external_ref, submitted_at, status) VALUES(?,?,?,?,?)", requests)
+        evidence = json.dumps({"locator": "e2e-proof seed", "source_sha256": message[0]}, sort_keys=True,
+                              separators=(",", ":"))
+        db.executemany("INSERT INTO joins(id, original_sha256, agency_id, request_id, join_type, evidence, status) "
+                       "VALUES(?,?,?,?,'e2e_proof_seed',?,'typed')",
+                       [(hashlib.sha256(b"e2e-seed\0" + o.encode()).hexdigest(), o, agency_id, request_id, evidence)
+                        for o in originals])
+        db.execute("COMMIT")
+    except sqlite3.Error:
+        raise ProofError("SEED_LEDGER_REFUSED") from None
+    finally:
+        db.close()
+    if facts is not None:
+        tmp = project / ".agency-fact-sheets.json.tmp"
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(facts, indent=2) + "\n")
+        os.replace(tmp, project / "agency-fact-sheets.json")
+    return "ok", None, {"agencies": len(agencies), "requests": len(requests), "joins": len(originals),
+                        "fact_sheets": int(facts is not None)}
+
+
+def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None, ocr=False, seed=None):
     """Replay one message; return the proof report dict. ``out/label`` must not exist yet."""
     now = now or datetime.now(timezone.utc)
     base = Path(os.path.abspath(out)) / label
@@ -234,7 +313,7 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None)
                 token = re.search(r'name="csrf_token" value="([^"]+)"', bodies["/next-steps"])
                 if not token:
                     raise ProofError("CONSOLE_NO_CSRF")
-                ident = rows[0]["id"]
+                ident = next((r for r in rows if r["kind"] == "next-followup-probe"), rows[0])["id"]  # PROBE first
                 code = _post(port, "/approvals/reject", {"csrf_token": token.group(1), "id": ident,
                                                         "reason": "e2e-proof deny check", "return": "/next-steps"})
                 after = {r["id"]: r["status"] for r in approval_queue.load_queue(str(project))}
@@ -249,7 +328,11 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None)
     try:
         line.run("arrival_trigger", arrival_trigger, ["runtime/arrival"])
         line.run("save_mail", save_mail, ["project/processing-v1/ledger.sqlite"])
-        line.run("extract", lambda: _adapter("extract", project, run_id), ["project/processing-v1/extract"])
+        if seed is not None:
+            line.run("seed", lambda: _apply_seed(project, seed), ["project/agency-fact-sheets.json"])
+        extract_args = ("--ocr", "--timeout", str(OCR_STAGE_TIMEOUT), "--ocr-page-timeout", str(OCR_PAGE_TIMEOUT),
+                        "--document-timeout", str(OCR_DOCUMENT_TIMEOUT)) if ocr else ()
+        line.run("extract", lambda: _adapter("extract", project, run_id, *extract_args), ["project/processing-v1/extract"])
         line.run("digest_gates", lambda: _adapter("digest_gates", project, run_id))
         line.run("outputs", outputs, [f"project/run-outputs/{run_id}/outcomes/{name}" for name in (
             "received-items.json", "comparison.json", "gap-proposals.json", "response-items.json",
@@ -265,13 +348,26 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None)
     for stage in line.stages:
         if stage["status"] in ("fail", "not_run"):
             manual.append({"stage": stage["stage"], "why": stage["code"]})
+        manual.extend({"stage": stage["stage"], "why": why} for why in _unfinished_work(stage))
     report = {"schema": SCHEMA, "run_id": run_id, "sandbox": str(base), "message_sha256": hashlib.sha256(raw).hexdigest(),
               "sent": False, "published": False, "stages": line.stages, "manual_steps": manual,
               "total_seconds": round(sum(s["seconds"] for s in line.stages), 3),
-              "result": "PASS" if not manual else "FAIL"}
+              "result": "PASS" if not manual else "FAIL", "ocr": bool(ocr)}
     (base / "proof-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (base / "proof-report.md").write_text(render_markdown(report), encoding="utf-8")
     return report
+
+
+def _unfinished_work(stage):
+    """Manual-step reasons for a stage that reported ok/warn but left work undone (counts and codes only)."""
+    if stage["status"] not in ("ok", "warn"):
+        return []
+    if stage["stage"] == "extract":
+        held = {o.get("code"): o.get("count") or 0 for o in (stage.get("detail") or {}).get("outcomes") or []}
+        return ["extract:" + code for code in EXTRACT_UNFINISHED if held.get(code, 0) > 0]
+    if stage["stage"] == "outputs" and stage["status"] == "warn" and OUTPUTS_UNFINISHED.match(stage["code"] or ""):
+        return ["outputs:" + stage["code"]]
+    return []
 
 
 def _counts(stage):
@@ -305,10 +401,13 @@ def main(argv=None):
     parser.add_argument("--out", required=True, help="private directory for the sandbox and proof files")
     parser.add_argument("--label", default="replay-1")
     parser.add_argument("--as-of", help="YYYY-MM-DD clock for the deadline and health views")
+    parser.add_argument("--seed", help="records-e2e-seed-v1 JSON: synthetic agency, request and typed joins for the sandbox ONLY")
+    parser.add_argument("--ocr", action="store_true", help="run extract with local OCR (stage 600 s, document budget fits one page)")
     args = parser.parse_args(argv)
     try:
         path = pick_message(args.message, args.mail_store, args.nth)
-        report = replay(path, args.out, args.campaign_root, label=args.label, as_of=args.as_of)
+        report = replay(path, args.out, args.campaign_root, label=args.label, as_of=args.as_of, ocr=args.ocr,
+                        seed=args.seed)
     except ProofError as error:
         print("records e2e-proof: refused (%s)" % error.code, file=sys.stderr)
         return 2

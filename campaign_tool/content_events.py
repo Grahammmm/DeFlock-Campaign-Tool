@@ -177,6 +177,9 @@ def _read_bounded_json(path):
         return json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ContentError(f"{path.name}: not valid UTF-8 JSON ({exc})") from None
+    except ValueError:
+        # e.g. an integer token beyond the interpreter's str-to-int conversion guard; fixed text, never the exception
+        raise ContentError(f"{path.name}: not valid UTF-8 JSON (value could not be decoded)") from None
 
 
 def read_events(root, problems=None):

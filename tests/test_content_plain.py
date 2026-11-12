@@ -875,5 +875,17 @@ class DenseQuotePageTests(Case):
         self.assertTrue(all(list(row) == ROW_KEYS for row in report["warnings"]))
 
 
+class DenseIntroductionPageTests(Case):
+    def test_dense_introduction_page_keeps_content_exit_and_prefixes(self):
+        for form in ("automated license plate readers (ALPR). ", "ALPR (automated license plate readers). "):
+            self.page("synthetic", title="", body=form * 20000)
+            report = self.report()
+            self.assertEqual(report, {"advisory": True, "warnings": [{
+                "file": "content/pages/synthetic.json", "entry": "synthetic", "rule": "long_paragraph",
+                "field": "body_md", "paragraph": 1, "sentence": 1, "word": 1, "start": 0, "end": 799997,
+                "word_count": 100000, "limit": 150, "abbreviation": None}]})
+            self.assertTrue(all(list(row) == ROW_KEYS for row in report["warnings"]))
+
+
 if __name__ == "__main__":
     unittest.main()
