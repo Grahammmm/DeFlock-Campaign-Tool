@@ -479,7 +479,14 @@ class KitTimingTests(Base):
             with self.subTest(patched), mock.patch(patched, side_effect=error), self.assertRaises(OSError):
                 kit_timing.write_csv(self.root, out, report)
             self.assertFalse(out.exists())  # this call's partial file is removed
-        with mock.patch("os.open", side_effect=PermissionError("open")), self.assertRaises(PermissionError):
+        real_open = os.open
+
+        def leaf_open_fault(path, flags, *args, **kwargs):  # only the CSV creation fails; directory walk stays real
+            if flags & os.O_EXCL:
+                raise PermissionError("open")
+            return real_open(path, flags, *args, **kwargs)
+
+        with mock.patch("os.open", side_effect=leaf_open_fault), self.assertRaises(PermissionError):
             kit_timing.write_csv(self.root, self.private / "new.csv", report)
         self.assertEqual(sorted(p.name for p in self.private.iterdir()),
                          ["content-alias", "dangling.csv", "existing.csv", "link.csv", "public-alias"])
