@@ -86,6 +86,11 @@ def read(journal):
         raw = snap._read_file(directory, FILE, MAX_JOURNAL) or b""
     finally:
         os.close(directory)
+    return parse(raw)
+
+
+def parse(raw):
+    """The entries of journal bytes (also used by DFGL-16C's apply, which reads them from a stream)."""
     entries = []
     for line in raw[:raw.rfind(b"\n") + 1].split(b"\n")[:-1]:
         try:

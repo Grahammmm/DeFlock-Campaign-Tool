@@ -435,6 +435,23 @@ CONSOLE_EXPORT_DIR=@CONSOLE_EXPORT_DIR@
 # that ends with less than CONSOLE_EXPORT_MIN_SECONDS left skips the export.
 CONSOLE_EXPORT_TIMEOUT=300
 CONSOLE_EXPORT_MIN_SECONDS=10
+# DECISIONS-APPLY-BEGIN (rendered only when DECISIONS_DIR is also given; DFGL-16C)
+DECISIONS_DIR=@DECISIONS_DIR@
+# Replay the console decision journal inside the container, through the same approval, packet and
+# oversight functions the live console would call, so the export that follows lists what was applied.
+# Every outcome is receipted by code in the project; a failure is logged and changes nothing else.
+decisions_apply_step() {
+  [ -f "$DECISIONS_DIR/decisions.jsonl" ] || return 0
+  set +e
+  out=$("$TIMEOUT" -k "$KILL_AFTER" "$1" "$DOCKER" exec -i -u @CONTAINER_USER@ "$CONTAINER" \
+    env PYTHONPATH=@CONTAINER_ENGINE_DIR@ @CONTAINER_PYTHON@ -B -m campaign_tool.records \
+    decisions-apply --project @CONTAINER_PROJECT_DIR@ --from-journal - <"$DECISIONS_DIR/decisions.jsonl" 2>&1 9>&-)
+  arc=$?
+  log "decisions apply rc=$arc $(printf '%s' "$out" | tr '\n' ';' | head -c 2000)"
+  set -e
+  return 0
+}
+# DECISIONS-APPLY-END
 console_export_step() {
   ce_secs=$((INVOCATION_DEADLINE_USE - $(date +%s) - KILL_AFTER))
   [ "$ce_secs" -le "$CONSOLE_EXPORT_TIMEOUT" ] || ce_secs=$CONSOLE_EXPORT_TIMEOUT
@@ -442,6 +459,15 @@ console_export_step() {
     log "console export SKIPPED: ${ce_secs}s left before the invocation deadline; previous export kept; run status unchanged"
     return 0
   fi
+# DECISIONS-APPLY-BEGIN
+  decisions_apply_step "$ce_secs"
+  ce_secs=$((INVOCATION_DEADLINE_USE - $(date +%s) - KILL_AFTER))
+  [ "$ce_secs" -le "$CONSOLE_EXPORT_TIMEOUT" ] || ce_secs=$CONSOLE_EXPORT_TIMEOUT
+  if [ "$ce_secs" -lt "$CONSOLE_EXPORT_MIN_SECONDS" ]; then
+    log "console export SKIPPED: ${ce_secs}s left after decisions apply; previous export kept; run status unchanged"
+    return 0
+  fi
+# DECISIONS-APPLY-END
   set +e
   err=$("$TIMEOUT" -k "$KILL_AFTER" "$ce_secs" "$DOCKER" exec -u @CONTAINER_USER@ "$CONTAINER" \
     env PYTHONPATH=@CONTAINER_ENGINE_DIR@ @CONTAINER_PYTHON@ -B -m campaign_tool.records \

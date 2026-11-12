@@ -307,6 +307,19 @@ def write_model(project, out_dir, now):
     return {"schema": MODEL_SCHEMA, "source_project_id": pid, "generated_at": _iso(now)}
 
 
+def _applied(project):
+    """The decisions-apply receipts (DFGL-16C) as manifest keys: applied entry ids, and every entry's outcome code (a refusal
+    is shown by the panel as ``not applied: <code>``). Read-only on the live project."""
+    from . import console_apply
+    try:
+        done = console_apply.receipts(project)
+    except approval_queue.ApprovalQueueError:
+        raise ExportError("RECEIPTS_INVALID") from None
+    return {"applied_journal_ids": [i for i, o in done.items() if o == "APPLIED"],
+            "apply_outcomes": {i: {"outcome": o} if o == "APPLIED" else {"outcome": o, "refusal": o}
+                               for i, o in done.items()}}
+
+
 def build(project, run_id, dest):
     """Write the export tree for run_id into dest (an empty directory) and return the manifest."""
     _need(isinstance(run_id, str) and RUN_ID.fullmatch(run_id) and run_id not in (".", ".."), "RUN_ID_INVALID")
@@ -343,7 +356,7 @@ def build(project, run_id, dest):
     _need(sum(os.path.getsize(os.path.join(dest, rel)) for rel in files) <= MAX_BYTES, "EXPORT_TOO_LARGE")
     manifest = {"schema": SCHEMA, "run_id": run_id, "source_project_id": approval_queue._project_id(project),
                 "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "files": dict(sorted(files.items())), "applied_journal_ids": [], "model": model}
+                "files": dict(sorted(files.items())), "model": model, **_applied(project)}
     Path(dest, MANIFEST).write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
 

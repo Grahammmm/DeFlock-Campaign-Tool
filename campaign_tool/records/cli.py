@@ -6,6 +6,7 @@ import sys
 
 COMMANDS = {
     "console-export": ("console_export", "export_main"),
+    "decisions-apply": ("console_apply", "main"),
     "console-import": ("console_export", "import_main"),
     "denials": ("denial_log", "main"),
     "deadlines": ("deadline_calc", "main"),
