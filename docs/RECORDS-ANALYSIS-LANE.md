@@ -135,8 +135,9 @@ and prints one `<slug> PACKET_*` line (and one `kind: packet` ledger line) holdi
   log `EVIDENCE_REVIEW_STATE_INVALID`. A cited fact must exist (`EVIDENCE_FACT_MISSING`), be `checked` (`EVIDENCE_FACT_UNREVIEWED`,
   `EVIDENCE_FACT_DISPUTED`) and be a `record` whose `source_sha256` is in `SOURCES.csv` (`EVIDENCE_SOURCE_UNKNOWN`).
 - **Documents.** One per cited source sha; `date_received` is the first 10 characters of the earliest `received_at` (not `YYYY-MM-DDT…Z` →
-  `EVIDENCE_DATE_UNAVAILABLE`; never a file or run time). `request_id` is the common `request_id`, else empty.
-- **Law.** The newest retained `analysis-ready.json` listing the agency names the package; `campaign_tool.law.load_package` must report the same
+  `EVIDENCE_DATE_UNAVAILABLE`; never a file or run time). `request_id` is the common `request_id`, else empty. Provenance `run_id`,
+  `received_at` and `received_at_source` all come from that same earliest row.
+- **Law.** The newest retained `analysis-ready.json` listing the agency names the package (a run with no `analysis-ready.json` is skipped; an unreadable one is `EVIDENCE_LAW_UNAVAILABLE`); `campaign_tool.law.load_package` must report the same
   status (`EVIDENCE_LAW_UNAVAILABLE`, `EVIDENCE_LAW_MISMATCH`). Citations (all `verified`) are one per checked fact plus the citation of each
   `verified` rule of a `reviewed` package; every other rule id and every policy ref goes to `provenance.withheld_*`. A draft package adds the
   `Research draft - not legal advice. The <id> law package is draft and unreviewed.` note to the text.

@@ -367,12 +367,17 @@ def _law_package(root, agency):
             ready = json.loads((root / ".analysis" / "runs" / run / "analysis-ready.json").read_text(encoding="utf-8"))
             ref = next(a["law_package"] for a in ready["agencies"] if a["agency_id"] == agency)
             package = law.load_package(ref["id"])
-        except StopIteration:
+        except (StopIteration, FileNotFoundError):  # a run with no analysis-ready.json (EXPORT analysis_ready=missing) is skipped
             continue
         except (OSError, ValueError, KeyError, TypeError):
             return None, None, "EVIDENCE_LAW_UNAVAILABLE"
         return ref, package, None if package["status"] == ref["status"] else "EVIDENCE_LAW_MISMATCH"
     return None, None, "EVIDENCE_LAW_UNAVAILABLE"
+
+
+def _first(rows):
+    """The earliest-received SOURCES row; every provenance field of a document comes from this one row."""
+    return min(rows, key=lambda r: r["received_at"])
 
 
 def _hold(row, code, ids):
@@ -390,7 +395,7 @@ def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft):
     docs, cites = {}, []
     for i in ids:
         sha = facts[i]["source_sha256"]
-        first = min(sources[sha], key=lambda r: r["received_at"])
+        first = _first(sources[sha])
         if not DAYTIME.fullmatch(first["received_at"]):
             return None, ("EVIDENCE_DATE_UNAVAILABLE", ids)
         docs[sha] = {"sha256": sha, "date_received": first["received_at"][:10], "source_request": first["request_id"], "redaction_ids": [],
@@ -416,8 +421,8 @@ def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft):
     return {"packet": packet, "provenance": {
         "finding_id": row["finding_id"], "fact_ids": ids, "rule_ids": cited, "withheld_rule_ids": [i for i in rule_ids if i not in cited],
         "withheld_policy_refs": [i for i in found["policy_refs"].split(";") if i],
-        "documents": [{"sha256": d["sha256"], "run_id": sources[d["sha256"]][0]["run_id"], "received_at": min(sources[d["sha256"]], key=lambda r: r["received_at"])["received_at"],
-                       "received_at_source": min(sources[d["sha256"]], key=lambda r: r["received_at"])["received_at_source"]} for d in packet["documents"]]}}, None
+        "documents": [{"sha256": d["sha256"], "run_id": f["run_id"], "received_at": f["received_at"], "received_at_source": f["received_at_source"]}
+                      for d in packet["documents"] for f in [_first(sources[d["sha256"]])]]}}, None
 
 
 def _packets(root, slug, config):
