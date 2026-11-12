@@ -148,8 +148,9 @@ class DecodedMembers(Base):
                 self.refuses(register_bytes(*objects))
         self.seed(register_bytes(members(*self.row()), members(*second)))  # same fields across distinct rows are normal
         self.assertEqual([e["name"] for e in registry._load(self.register)], ["Synthetic", "Second"])
-        self.seed(register_bytes(members(*self.row()), members(*self.row(root=self.other))))  # equal names: unchanged policy
-        self.assertEqual([e["name"] for e in registry._load(self.register)], ["Synthetic", "Synthetic"])
+        self.seed(register_bytes(members(*self.row()), members(*self.row(root=self.other))))  # RF1900-3: equal row names refuse
+        with self.assertRaisesRegex(ValueError, r"^the register contains a repeated campaign name$"):
+            registry._load(self.register)
 
 
 class Routes(Base):
