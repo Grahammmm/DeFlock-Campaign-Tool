@@ -40,6 +40,13 @@ def _day(value):
         return None
 
 
+def _unencodable(value):
+    """True when the decoded string holds a surrogate code point (U+D800-U+DFFF): it cannot be written as UTF-8.
+
+    Decided on the decoded value, never the JSON spelling: an escaped high+low pair already decoded to one scalar."""
+    return any(0xD800 <= ord(char) <= 0xDFFF for char in value)
+
+
 def _row(raw, index, officials, today):
     """-> (problem lines, canonical row or None). ``officials`` None skips only the roster-membership check."""
     where = f"{FILE}[{index}]"
@@ -76,6 +83,8 @@ def _row(raw, index, officials, today):
 
     try:
         _quote(raw, where)
+        if _unencodable(raw["quote"]):
+            problems.append(f"{where}.quote: must be valid Unicode text without surrogate code points")
     except ContentError as exc:
         problems.append(str(exc))
     if not isinstance(raw["context"], str) or raw["context"] not in CONTEXTS:
@@ -95,6 +104,8 @@ def _row(raw, index, officials, today):
                 or any(unicodedata.category(char) in ("Cc", "Cf") for char in note)):
             problems.append(f"{where}.context_note: must be 1 to {MAX_NOTE} plain-text characters without angle brackets "
                             "or control characters")
+        elif _unencodable(note):
+            problems.append(f"{where}.context_note: must be valid Unicode text without surrogate code points")
     for key in PUBLIC_FIELDS:  # the shared privacy lint: a quoted source is no exemption
         if key in raw and isinstance(raw[key], str) and (note := refusal(f"{where}.{key}", raw[key])):
             problems.append(note)
