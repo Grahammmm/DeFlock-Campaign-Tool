@@ -15,7 +15,7 @@ from unittest import mock
 from campaign_tool import approval
 from campaign_tool.records import admin_panel as ap
 from campaign_tool.records import approval_queue as aq
-from campaign_tool.records import console_journal, console_manual_events, mail_send
+from campaign_tool.records import console_journal, console_manual_events, console_snapshot, mail_send
 from campaign_tool.records import public_packets as pp
 from campaign_tool.records import public_updates as pu
 from tests.records.test_console_export import tree_state
@@ -219,6 +219,16 @@ class Decisions(Journal):
             self.assertIn("journal_unavailable", self.get(path, 503))
         self.assertEqual(self.decide("/approvals/reject", id=self.pending_id, reason="no")[0], 503)
         self.assertEqual((self.j / console_journal.FILE).read_text(), "not json\n")
+
+    def test_a_journal_past_its_size_cap_is_refused_not_grown_or_crashed_on(self):
+        self.make_export()
+        self.up()
+        self.assertEqual(self.decide("/approvals/reject", id=self.pending_id, reason="no")[0], 303)
+        with mock.patch.object(console_journal, "MAX_JOURNAL", 50):
+            self.assertIn("journal_unavailable", self.get("/", 503))  # reading refuses an oversize file
+            with self.assertRaises(console_journal.JournalError):
+                console_journal.append(str(self.j), console_snapshot.Pinner(str(self.root)).pin(), "a", "/x", "reject", "t", 0, "v")
+        self.assertEqual(len(self.lines()), 1)
 
     def test_without_a_journal_every_post_stays_refused_and_nothing_is_journaled(self):
         self.make_export()

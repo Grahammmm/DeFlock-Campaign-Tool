@@ -803,8 +803,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if self.server.decisions_dir is not None:  # journal mode: pending decisions are shown over the export
             try:
                 source = console_journal.JournalSource(self.pin, console_journal.overlay(self.server.decisions_dir, self.pin))
-            except (console_journal.JournalError, approval_queue.ApprovalQueueError, OSError, ValueError, KeyError,
-                    TypeError):
+            except (console_journal.JournalError, console_snapshot.SnapshotError, approval_queue.ApprovalQueueError,
+                    OSError, ValueError, KeyError, TypeError):
                 self._fail(503, "journal_unavailable")
                 return False
         self.options = {**self.server.options, "project": self.pin.path, "run_id": self.pin.run_id, "source": source}

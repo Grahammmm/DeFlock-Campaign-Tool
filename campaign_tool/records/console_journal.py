@@ -64,8 +64,8 @@ def append(journal, pin, actor, route, action, target_id, revision_seen, value, 
             fcntl.flock(lock, fcntl.LOCK_EX)
             fd = os.open(FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT | flags, 0o600, dir_fd=directory)
             try:
-                if not stat.S_ISREG(os.fstat(fd).st_mode):
-                    raise JournalError("journal_not_regular")
+                if not stat.S_ISREG(os.fstat(fd).st_mode) or os.fstat(fd).st_size + len(data) > MAX_JOURNAL:
+                    raise JournalError("journal_unusable")
                 view = memoryview(data)
                 while view:
                     view = view[os.write(fd, view):]
