@@ -5,7 +5,8 @@ streams them as a deterministic tar. ``records console-import`` (host side) veri
 EXPORT.json, installs it as ``DIR/exports/<UTC>-<run_id>/`` (dirs 0500, files 0400) and repoints the
 relative symlink ``DIR/current``. Earlier exports are never deleted. The approval, mail, packet and
 public-update journals, blobs and credentials are never copied: the existing journal readers cannot read a
-copy, and their writers must keep failing closed on it.
+copy, and their writers must keep failing closed on it. Instead ``console-model/`` (DFGL-16R) holds plain JSON
+views those readers computed on the live project inside the container.
 """
 import argparse
 import errno
@@ -19,10 +20,11 @@ import stat
 import sys
 import tarfile
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import approval_queue
+from . import approval_queue, mail_drafts, mail_send, public_packets, public_updates
 
 SCHEMA = "records-console-export-v1"
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # same grammar as admin_panel.check_run_id
@@ -234,6 +236,77 @@ def latest_run(project):
     return max(found)[1]
 
 
+def _iso(now):
+    return datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _model_queue(project, now):
+    rows = approval_queue.load_queue(project)
+    return {"rows": rows,
+            "payloads": {r["id"]: approval_queue.approval_payload(project, r["id"]).decode("utf-8")
+                         for r in rows if r["status"] == "pending"},
+            "history": {r["id"]: approval_queue.history(project, r["id"]) for r in rows}}
+
+
+def _model_packets(project, now):
+    status = public_packets.status(project, now, read_only=True)
+    return {"pending": public_packets.pending(project, now, read_only=True), "status": status,
+            "payloads": {r["id"]: public_packets.payload(project, r["id"], read_only=True).decode("utf-8")
+                         for r in status["packets"] if r["status"] == "proposed"},
+            "switch": public_packets.switch_state(project, read_only=True)}
+
+
+def _model_public_updates(project, now):
+    from . import console_oversight
+    loaded = console_oversight._load_public(project)  # lock-free read-only fold; a failure is its own unavailable
+    if loaded["state"] == "ok":
+        loaded["switch"] = public_updates.switch_state(project, read_only=True)
+    return loaded
+
+
+def _model_mail_drafts(project, now):
+    return {"rows": mail_drafts.placements(project)}
+
+
+def _model_sends(project, now):
+    try:
+        os.lstat(os.path.join(project, "approvals"))
+    except FileNotFoundError:
+        return {"rows": [], "journal": "absent"}  # a project without approvals/ has never logged a send
+    except OSError:
+        raise mail_send.MailSendError("send_io") from None
+    return {"rows": mail_send.results(project, strict=True)}  # strict: never an empty or partial list on failure
+
+
+MODEL = {"queue.json": _model_queue, "packets.json": _model_packets, "public-updates.json": _model_public_updates,
+         "mail-drafts.json": _model_mail_drafts, "sends.json": _model_sends}
+MODEL_SCHEMA = "records-console-model-v1"
+MODEL_DIR = "console-model"
+
+
+def write_model(project, out_dir, now):
+    """Write console-model/*.json for the live project, read by the existing readers (nothing is written to it)."""
+    project = os.path.abspath(project)
+    pid = approval_queue._project_id(project)
+    os.makedirs(os.path.join(out_dir, MODEL_DIR), mode=0o700, exist_ok=True)
+    for name, make in MODEL.items():
+        head = {"schema": MODEL_SCHEMA, "source_project_id": pid}
+        try:
+            body = {**head, "state": "ok", **make(project, now)}
+            if body.get("state") != "ok":  # a source that reports its own unavailable state
+                body = {**head, "state": "unavailable", "code": body.get("code") or "model_unreadable"}
+        except (approval_queue.ApprovalQueueError, public_packets.PacketError, public_updates.PublicUpdatesError,
+                mail_drafts.MailDraftError, mail_send.MailSendError) as error:
+            body = {**head, "state": "unavailable", "code": error.code}
+        except (OSError, ValueError, KeyError, TypeError):
+            body = {**head, "state": "unavailable", "code": "model_unreadable"}
+        path = os.path.join(out_dir, MODEL_DIR, name)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            out.write(json.dumps(body, indent=1, sort_keys=True, allow_nan=False) + "\n")
+    return {"schema": MODEL_SCHEMA, "source_project_id": pid, "generated_at": _iso(now)}
+
+
 def build(project, run_id, dest):
     """Write the export tree for run_id into dest (an empty directory) and return the manifest."""
     _need(isinstance(run_id, str) and RUN_ID.fullmatch(run_id) and run_id not in (".", ".."), "RUN_ID_INVALID")
@@ -246,6 +319,7 @@ def build(project, run_id, dest):
             _copy_tree(run_fd, os.path.join("run-outputs", run_id), dest)
         finally:
             os.close(run_fd)
+        model = write_model(project, dest, time.time())
         for rel in FILES:
             parts = rel.split("/")
             parent = _open_chain(root, parts[:-1])
@@ -269,7 +343,7 @@ def build(project, run_id, dest):
     _need(sum(os.path.getsize(os.path.join(dest, rel)) for rel in files) <= MAX_BYTES, "EXPORT_TOO_LARGE")
     manifest = {"schema": SCHEMA, "run_id": run_id, "source_project_id": approval_queue._project_id(project),
                 "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "files": dict(sorted(files.items())), "applied_journal_ids": [], "model": None}
+                "files": dict(sorted(files.items())), "applied_journal_ids": [], "model": model}
     Path(dest, MANIFEST).write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
 

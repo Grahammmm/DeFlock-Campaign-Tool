@@ -169,6 +169,19 @@ file, no `-wal`/`-shm`), `agency-retention.csv`, `agency-aliases.tsv` and `agenc
 (`records-console-export-v1`: run id, `source_project_id`, per-file sha256). The approval, mail-draft and send journals and locks,
 `public-packets.*`, `public-updates.*`, `mail/`, blobs and credentials are never copied, and a symlink in the source is refused.
 
+### Read model (DFGL-16R)
+
+Each export also carries `console-model/` (`records-console-model-v1`, listed in `EXPORT.json.files`; `EXPORT.json.model` names the
+schema, `source_project_id` and `generated_at`). Its five files are plain JSON computed in the container by the existing readers on the
+live project, so approval signatures are verified there and bound to the live project id: `queue.json` (rows with verified approvals,
+payloads of pending rows, history), `packets.json` (pending, status, payloads of proposed packets, switch), `public-updates.json`,
+`mail-drafts.json` and `sends.json`. A reader that fails writes its file with `state: "unavailable"` and its own code
+(`queue_invalid`, `journal_busy`, `packets_unavailable`, ...) and no list; an unavailable file is never an empty list. `sends.json` reads
+`mail_send.results(P, strict=True)`: an unreadable or corrupt journal is `send_io` or `send_results_invalid`, and only an absent journal
+(or an absent `approvals/` directory, `journal: "absent"`) is an empty `ok` list. The packet readers take a `read_only=True` keyword
+(`pending`, `status`, `payload`) that opens the lock read-only and creates nothing; the default behaviour is unchanged. No raw
+signature is written (only `signature_sha256` and the signer name). The live project is only read, and the model grants no authority.
+
 `records console-import --out DIR --from-tar FILE|-` runs on the host. `DIR` must be absolute, owner-only 0700 and symlink-free
 (else `EXPORT_DIR_INVALID`). The stream is verified against `EXPORT.json`, unpacked to `DIR/exports/<UTC>-<run_id>/` (directories
 0500, files 0400) and `DIR/current` is repointed with a relative link `exports/<name>`. Earlier exports are kept; a failed import leaves

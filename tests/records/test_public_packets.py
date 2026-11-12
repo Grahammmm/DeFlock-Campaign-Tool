@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -166,6 +168,61 @@ class WriteTests(Base):
             row = [r for r in pp.status(self.project, now=T0)["packets"] if r["id"] == ident][0]
             self.assertEqual(row["status"], action + ("led" if action == "cancel" else "ed"))
             self.assertEqual(self.code(pp.approve, self.project, ident, self.sign(b"x"), now=T0), "packet_not_open")
+
+
+class ReadOnlyTests(Base):
+    def copy(self, name="copy"):
+        copy = os.path.join(self.tmp.name, name)
+        shutil.copytree(self.project, copy)
+        return copy
+
+    def seal(self, copy):
+        """Make the copy 0500/0400: nothing in it can be created, locked for write or changed."""
+        for base, dirs, names in os.walk(copy):
+            for n in names:
+                os.chmod(os.path.join(base, n), 0o400)
+        os.chmod(copy, 0o500)
+        self.addCleanup(os.chmod, copy, 0o700)
+
+    def listing(self, root):
+        return sorted((n, stat.S_IMODE(os.stat(os.path.join(root, n)).st_mode)) for n in os.listdir(root))
+
+    def test_read_only_reads_a_sealed_copy_and_creates_nothing(self):
+        ident = pp.propose(self.project, doc(), now=T0)["id"]
+        copy = self.copy()  # the payload names the project, so the default answers are taken on the copy itself
+        expected = (pp.pending(copy, T0), pp.status(copy, T0), pp.payload(copy, ident))
+        self.seal(copy)
+        before = self.listing(copy)
+        self.assertEqual((pp.pending(copy, T0, read_only=True), pp.status(copy, T0, read_only=True),
+                          pp.payload(copy, ident, read_only=True)), expected)
+        self.assertEqual(self.listing(copy), before)
+        with self.assertRaises(OSError):  # the default still needs a writable lock: unchanged
+            pp.pending(copy, T0)
+
+    def test_read_only_with_no_packet_evidence_is_empty_and_creates_no_lock(self):
+        bare = os.path.join(self.tmp.name, "bare")
+        os.mkdir(bare)
+        self.assertEqual(pp.pending(bare, T0, read_only=True), [])
+        self.assertEqual(pp.status(bare, T0, read_only=True), {"switch": "OFF", "packets": []})
+        self.assertEqual(self.code(pp.payload, bare, "0" * 16, read_only=True), "packet_unknown")
+        self.assertEqual(os.listdir(bare), [])
+        self.assertEqual(pp.pending(bare, T0), [])  # the default call still creates its lock
+        self.assertEqual(os.listdir(bare), [pp.LOCK])
+
+    def test_read_only_with_evidence_but_no_lock_is_unavailable_not_empty(self):
+        ident = pp.propose(self.project, doc(), now=T0)["id"]
+        os.unlink(os.path.join(self.project, pp.LOCK))
+        for call in (lambda: pp.pending(self.project, T0, read_only=True), lambda: pp.status(self.project, T0, read_only=True),
+                     lambda: pp.payload(self.project, ident, read_only=True)):
+            self.assertEqual(self.code(call), "packets_unavailable")
+        self.assertFalse(os.path.lexists(os.path.join(self.project, pp.LOCK)))
+
+    def test_read_only_still_refuses_unknown_and_corrupt(self):
+        pp.propose(self.project, doc(), now=T0)
+        self.assertEqual(self.code(pp.payload, self.project, "0" * 16, read_only=True), "packet_unknown")
+        with open(os.path.join(self.project, pp.JOURNAL), "ab") as journal:
+            journal.write(b"not json\n")
+        self.assertEqual(self.code(pp.status, self.project, T0, read_only=True), "journal_invalid")
 
 
 if __name__ == "__main__":
