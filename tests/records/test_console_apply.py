@@ -1,4 +1,5 @@
 """records decisions-apply: the console decision journal replayed on the live project inside the records run (DFGL-16C)."""
+import errno
 import io
 import json
 import os
@@ -7,13 +8,16 @@ import sys
 import types
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from campaign_tool.records import approval_queue as aq
 from campaign_tool.records import cli, console_apply, console_export, console_journal
 from campaign_tool.records import public_packets as pp
+from campaign_tool.records import public_updates as pu
 from tests.records.test_console_export import tree_state
 from tests.records.test_console_journal import Journal
 from tests.records.test_console_model import RUN
+from tests.records.test_console_oversight import candidate
 
 ROOT = Path(__file__).resolve().parents[2]
 FOREIGN = "0" * 16
@@ -168,6 +172,133 @@ class Outcomes(Apply):
         self.assertEqual(self.row(self.pending_id)["status"], "pending")
         with self.assertRaises(console_export.ExportError):  # an export never claims an unreadable receipt file is empty
             console_export.build(str(self.live), RUN, str(self.tmp / "unused"))
+
+
+class Interrupted(Apply):
+    """A run that dies after the live mutation but before its outcome line is receipted must replay to the true outcome."""
+
+    def lose_outcomes(self):
+        real = console_apply._receipt
+
+        def receipt(project, ident, outcome, base=None):
+            if outcome != console_apply.INTENT:
+                raise OSError(errno.ENOSPC, "no space")
+            return real(project, ident, outcome, base)
+        return mock.patch.object(console_apply, "_receipt", receipt)
+
+    def interrupted_run(self):
+        err = io.StringIO()
+        with self.lose_outcomes(), redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = console_apply.main(["--project", str(self.live), "--from-journal", str(self.j / console_journal.FILE)])
+        self.assertEqual((code, err.getvalue()), (1, "decisions-apply: refused (OSError)\n"))
+
+    def entry(self, route, action, target, revision, value, actor="operator"):
+        pin = types.SimpleNamespace(source_project_id=self.pid, run_id=RUN, name="x")
+        return console_journal.append(str(self.j), pin, actor, route, action, target, revision, value)
+
+    def assert_replays_to_applied(self, ident):
+        self.assertEqual(console_apply.ledger(self.live)[0], {})  # no outcome was receipted ...
+        self.assertEqual(list(console_apply.ledger(self.live)[1]), [ident])  # ... only the write-ahead line
+        self.assertEqual(self.apply(), ["APPLIED"])
+        self.assertEqual(console_apply.receipts(self.live), {ident: "APPLIED"})
+        self.assertEqual(self.apply(), ["ALREADY"])
+        name = self.make_export(RUN + "-2")
+        manifest = json.loads((self.root / "exports" / name / "EXPORT.json").read_text())
+        self.assertEqual((manifest["applied_journal_ids"], manifest["apply_outcomes"]),
+                         ([ident], {ident: {"outcome": "APPLIED"}}))
+
+    def test_an_edit_whose_receipt_failed_is_applied_not_stale_on_replay(self):
+        self.make_export()
+        self.up()
+        self.decide("/approvals/edit", id=self.pending_id, body="mine", expected_revision="0")
+        (entry,) = self.lines()
+        self.interrupted_run()
+        self.assertEqual((self.row(self.pending_id)["body"], self.row(self.pending_id)["revision"]), ("mine", 1))
+        self.assert_replays_to_applied(entry["entry_id"])
+        self.assertEqual((self.row(self.pending_id)["body"], self.row(self.pending_id)["revision"]), ("mine", 1))  # once
+
+    def test_a_reject_and_an_approve_whose_receipt_failed_replay_to_applied(self):
+        self.make_export()
+        self.up()
+        self.decide("/approvals/reject", id=self.pending_id, reason="not ours")
+        (entry,) = self.lines()
+        self.interrupted_run()
+        self.assert_replays_to_applied(entry["entry_id"])
+        self.assertEqual(self.row(self.pending_id)["status"], "rejected")
+
+    def test_a_signed_approve_whose_receipt_failed_replays_to_applied(self):
+        self.make_export()
+        self.up()
+        self.decide("/approvals/approve", id=self.pending_id,
+                    signature=self.sign(self.exported("queue.json", self.pending_id)))
+        (entry,) = self.lines()
+        self.interrupted_run()
+        self.assertEqual(self.row(self.pending_id)["status"], "approved")
+        self.assert_replays_to_applied(entry["entry_id"])
+
+    def test_packet_approve_whose_receipt_failed_replays_to_applied(self):
+        self.make_export()
+        self.up()
+        self.decide("/packets/approve", id=self.proposed, revision=self.packet_revision(self.proposed),
+                    signature=self.sign(self.exported("packets.json", self.proposed)))
+        (entry,) = self.lines()
+        self.interrupted_run()
+        self.assertEqual(next(r for r in pp.status(self.live)["packets"] if r["id"] == self.proposed)["status"], "approved")
+        self.assert_replays_to_applied(entry["entry_id"])
+
+    def test_packet_reject_whose_receipt_failed_replays_to_applied(self):
+        self.make_export()
+        ident = self.entry("/packets/reject", "packet_reject", self.approved_packet,
+                           int(self.packet_revision(self.approved_packet)), "no")
+        self.interrupted_run()
+        self.assertEqual(next(r for r in pp.status(self.live)["packets"] if r["id"] == self.approved_packet)["status"],
+                         "rejected")
+        self.assert_replays_to_applied(ident)
+
+    def test_an_oversight_retract_whose_receipt_failed_replays_to_applied(self):
+        pu.init(self.live)
+        cand = candidate()
+        pu.propose(self.live, [cand])
+        self.make_export()
+        ident = self.entry("/public-updates/retract", "retract", cand["id"], 0, "undo")
+        self.interrupted_run()
+        self.assertEqual(pu.fold(console_apply._events(pu, self.live))[0][cand["id"]]["state"], "retracted")
+        self.assert_replays_to_applied(ident)
+
+    def test_a_lost_intent_applies_nothing_and_an_intent_without_a_landed_mutation_is_applied_once(self):
+        self.make_export()
+        self.up()
+        self.decide("/approvals/reject", id=self.pending_id, reason="no")
+        (entry,) = self.lines()
+        real = console_apply._receipt
+
+        def no_intent(project, ident, outcome, base=None):
+            if outcome == console_apply.INTENT:
+                raise OSError(errno.ENOSPC, "no space")
+            return real(project, ident, outcome, base)
+        before = tree_state(self.live)
+        with mock.patch.object(console_apply, "_receipt", no_intent):
+            self.assertEqual(self.apply(), ["DEFERRED"])  # no write-ahead line, so no mutation
+        self.assertEqual((tree_state(self.live), self.row(self.pending_id)["status"]), (before, "pending"))
+        base = console_apply._mark(self.live, console_journal.parse(self.journal_bytes())[0])
+        console_apply._receipt(self.live, entry["entry_id"], console_apply.INTENT, base)  # died after intent, before mutation
+        self.assertEqual(self.apply(), ["APPLIED"])
+        self.assertEqual(self.row(self.pending_id)["status"], "rejected")
+
+    def test_an_intent_is_not_an_outcome_and_a_damaged_intent_is_refused(self):
+        self.make_export()
+        self.up()
+        self.decide("/approvals/reject", id=self.pending_id, reason="no")
+        (entry,) = self.lines()
+        console_apply._receipt(self.live, entry["entry_id"], console_apply.INTENT, 0)
+        self.assertEqual(console_apply.ledger(self.live), ({}, {entry["entry_id"]: 0}))
+        name = self.make_export(RUN + "-2")
+        manifest = json.loads((self.root / "exports" / name / "EXPORT.json").read_text())
+        self.assertEqual((manifest["applied_journal_ids"], manifest["apply_outcomes"]), ([], {}))
+        receipts = self.live / "approvals" / console_apply.FILE
+        receipts.write_text(json.dumps({"entry_id": "x", "outcome": "INTENT", "at": "t"}) + "\n")
+        with self.assertRaises(aq.ApprovalQueueError):
+            console_apply.ledger(self.live)
 
 
 class Registered(Apply):

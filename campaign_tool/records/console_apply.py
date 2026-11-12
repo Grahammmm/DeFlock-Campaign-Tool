@@ -16,33 +16,54 @@ from .console_oversight import _journal_actor
 from .outcomes import unmatched
 
 FILE = "decisions-applied.jsonl"
+INTENT = "INTENT"  # write-ahead receipt line (never an outcome): recorded before an entry's live mutation, see ``settle``
+QUEUE_ACTIONS = ("approve", "reject", "edit")
 TRANSIENT = {"queue_busy", "queue_io", "journal_busy"}  # not final: the entry stays unreceipted and is tried at the next run
 CODES = {"stale_revision": "STALE_REVISION", "packet_stale": "STALE_REVISION", "approval_required": "SIGNATURE_REFUSED",
          "invalid_transition": "INVALID_TRANSITION", "packet_not_open": "INVALID_TRANSITION"}
 
 
-def receipts(project):
-    """{entry id: outcome} in receipt order. Read-only; an unreadable file raises ApprovalQueueError(receipts_invalid)."""
+def ledger(project):
+    """({entry id: final outcome}, {entry id: base of an INTENT with no final outcome yet}) in receipt order. Read-only; an
+    unreadable file raises ApprovalQueueError(receipts_invalid)."""
     with aq._Store(project, False) as store:
         fd = None if store.dir_fd is None else aq._open_file(store.dir_fd, FILE, os.O_RDONLY)
         if fd is None:
-            return {}
+            return {}, {}
         try:
             raw = aq._read_capped(fd, cj.MAX_JOURNAL)
         finally:
             os.close(fd)
     aq._need(len(raw) <= cj.MAX_JOURNAL and (not raw or raw.endswith(b"\n")), "receipts_invalid")
-    found = {}
+    found, intents = {}, {}
     for line in raw.split(b"\n")[:-1]:
         row = aq._strict_load(line, "receipts_invalid")
-        aq._need(isinstance(row, dict) and set(row) == {"entry_id", "outcome", "at"}
-                 and all(isinstance(v, str) for v in row.values()), "receipts_invalid")
+        aq._need(isinstance(row, dict) and {"entry_id", "outcome", "at"} <= set(row) <= {"entry_id", "outcome", "at", "base"}
+                 and all(isinstance(row[k], str) for k in ("entry_id", "outcome", "at")), "receipts_invalid")
+        if row["outcome"] == INTENT:
+            base = row.get("base")
+            aq._need(set(row) == {"entry_id", "outcome", "at", "base"} and (base is None or type(base) is int and base >= 0),
+                     "receipts_invalid")
+            if row["entry_id"] not in found:
+                intents[row["entry_id"]] = base
+            continue
+        aq._need("base" not in row, "receipts_invalid")
         found[row["entry_id"]] = row["outcome"]
-    return found
+        intents.pop(row["entry_id"], None)
+    return found, intents
 
 
-def _receipt(project, ident, outcome):
-    data = (aq._canon({"entry_id": ident, "outcome": outcome, "at": aq._now()}) + "\n").encode()
+def receipts(project):
+    """{entry id: final outcome} in receipt order (an INTENT is not an outcome). Read-only; see ``ledger``."""
+    return ledger(project)[0]
+
+
+def _receipt(project, ident, outcome, base=None):
+    """One append-only line: a final outcome, or (INTENT) the write-ahead record taken before the live mutation."""
+    row = {"entry_id": ident, "outcome": outcome, "at": aq._now()}
+    if outcome == INTENT:
+        row["base"] = base
+    data = (aq._canon(row) + "\n").encode()
     with aq._Store(project, True) as store:
         flags = os.O_WRONLY | os.O_APPEND
         fd = aq._open_file(store.dir_fd, FILE, flags) or aq._open_file(store.dir_fd, FILE, flags, create=True)
@@ -57,17 +78,25 @@ def _receipt(project, ident, outcome):
             os.close(fd)
 
 
+def _link_choice(project, ident, entry):
+    row = next((r for r in aq.load_queue(project) if r["id"] == ident), None)
+    return unmatched.choose(row, entry.get("choice")) if row and row["kind"] == draft_templates.MESSAGE_LINK else None
+
+
+def _append_link(project, ident, link):  # as the console does after a message-link approve; the mail-draft placement hook is not run
+    done = next(r for r in aq.load_queue(project) if r["id"] == ident)
+    unmatched.append_link(project, done["item_id"], link[0], link[1], done["approved_by"])
+
+
 def _apply(project, entry):
     """Call the existing function for the entry's action with the recorded value; its refusal propagates."""
     action, ident, revision, value = entry["action"], entry["target_id"], entry["revision_seen"], entry["value"]
     actor = entry["actor"]
     if action == "approve":
-        row = next((r for r in aq.load_queue(project) if r["id"] == ident), None)
-        link = unmatched.choose(row, entry.get("choice")) if row and row["kind"] == draft_templates.MESSAGE_LINK else None
+        link = _link_choice(project, ident, entry)
         aq.approve(project, ident, {"kind": "ssh", "signature": value})
-        if link:  # as the console does after a message-link approve; the mail-draft placement hook is not run
-            done = next(r for r in aq.load_queue(project) if r["id"] == ident)
-            unmatched.append_link(project, done["item_id"], link[0], link[1], done["approved_by"])
+        if link:
+            _append_link(project, ident, link)
     elif action == "reject":
         aq.reject(project, ident, actor, value)
     elif action == "edit":
@@ -82,6 +111,98 @@ def _apply(project, entry):
         (pu.turn_off if action == "off" else pu.kill)(project, _journal_actor(actor))
     else:
         raise ValueError("unknown_action")
+
+
+def _events(module, project):
+    """The append-only journal events of the packet or public-updates store (read-only; no lock file -> none)."""
+    try:
+        with module._Locked(project, read_only=True) as lock:
+            return lock.events()
+    except FileNotFoundError:
+        return []
+
+
+def _mark(project, entry):
+    """Where the target's history stood before the mutation: the queue row's revision, or the packet / public-updates
+    journal length. None when there is nothing to compare (an action whose replay is harmless, or an unknown target)."""
+    action, ident = entry["action"], entry["target_id"]
+    if action in QUEUE_ACTIONS:
+        row = next((r for r in aq.load_queue(project) if r["id"] == ident), None)
+        return row["revision"] if row else None
+    if action in ("packet_approve", "packet_reject"):
+        return len(_events(pp, project))
+    if action == "retract":
+        return len(_events(pu, project))
+    return None
+
+
+def _landed(project, entry, base):
+    """True when the live stores hold this entry's own mutation made after ``base`` (identity: target, revision, actor and
+    the recorded value), i.e. an earlier run applied it and was interrupted before its outcome was receipted."""
+    action, ident, revision, value = entry["action"], entry["target_id"], entry["revision_seen"], entry["value"]
+    actor = entry["actor"]
+    if base is None:
+        return False
+    if action in QUEUE_ACTIONS:
+        with aq._Store(project, False) as store:
+            raw = store.raw()
+        for line in raw.split(b"\n")[:-1]:
+            ev = aq._strict_load(line, "queue_invalid")
+            if ev.get("id") != ident or ev.get("revision") != base + 1:
+                continue
+            if action == "approve":
+                return ev.get("event") == "approve" and (ev.get("approval") or {}).get("signature") == value
+            if action == "reject":
+                return ev.get("event") == "reject" and ev.get("reason") == value and ev.get("actor") == actor
+            return ev.get("event") == "edited" and ev.get("body") == value and ev.get("actor") == actor
+        return False
+    who = _journal_actor(actor)
+    if action == "packet_approve":
+        return any(e.get("event") == "approved" and e.get("id") == ident and e.get("revision") == revision
+                   and e.get("signature") == value for e in _events(pp, project)[base:])
+    if action == "packet_reject":
+        return any(e.get("event") == "rejected" and e.get("id") == ident and e.get("revision") == revision
+                   and e.get("actor") == who and e.get("reason") == value for e in _events(pp, project)[base:])
+    if action == "retract":
+        return any(e.get("event") == "retract" and e.get("id") == ident and e.get("actor") == who
+                   for e in _events(pu, project)[base:])
+    return False
+
+
+def settle(project, entry, intents):
+    """The final outcome of one unreceipted entry, or None to leave it for the next run.
+
+    Write-ahead: an INTENT line (with the target's ``base``) is receipted before the live mutation, so a run that dies after
+    the mutation but before its outcome line is reconciled on replay: when the live stores show this entry's own mutation
+    the outcome is APPLIED instead of re-executing it against a revision that it has itself moved past."""
+    ident = entry["entry_id"]
+    try:
+        if ident in intents:
+            if _landed(project, entry, intents[ident]):
+                if entry["action"] == "approve":  # the message-link step after the approve is idempotent
+                    link = _link_choice(project, entry["target_id"], entry)
+                    if link:
+                        _append_link(project, entry["target_id"], link)
+                return "APPLIED"
+            base = None
+        else:
+            base = _mark(project, entry)
+    except (aq.ApprovalQueueError, pp.PacketError, pu.PublicUpdatesError) as error:
+        if error.code in TRANSIENT:
+            return None
+        base = None  # unreadable state: outcome() below refuses with the same code
+    except OSError:
+        return None
+    except (KeyError, TypeError, AttributeError, ValueError):
+        base = None  # a malformed entry: outcome() refuses it with a code
+    if ident not in intents:
+        try:
+            _receipt(project, ident, INTENT, base)
+        except (aq.ApprovalQueueError, OSError) as error:  # no mutation without its write-ahead line
+            if isinstance(error, OSError) or error.code in TRANSIENT:
+                return None
+            raise
+    return outcome(project, entry)
 
 
 def outcome(project, entry):
@@ -117,14 +238,14 @@ def main(argv=None):
             finally:
                 os.close(fd)
         aq._need(len(raw) <= cj.MAX_JOURNAL, "journal_invalid")
-        entries, done, pid = cj.parse(raw), receipts(project), aq._project_id(project)
+        entries, (done, intents), pid = cj.parse(raw), ledger(project), aq._project_id(project)
         for entry in entries:
             if entry["entry_id"] in done:
                 result = "ALREADY"
             elif entry.get("source_project_id") != pid:
                 result = "PROJECT_MISMATCH"  # nothing applied and no receipt: another project (or this one moved) owns it
             else:
-                result = outcome(project, entry)
+                result = settle(project, entry, intents)
                 if result is None:
                     result = "DEFERRED"
                 else:

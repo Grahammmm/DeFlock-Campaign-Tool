@@ -263,7 +263,12 @@ checked on the live project and nothing is verified or trusted anew), `public_pa
 `public_updates.retract|turn_off|kill`. A message-link approve also appends its link as the console does. No mail-draft placement and no send runs.
 Outcomes print one line per entry and, when final, are appended to `P/approvals/decisions-applied.jsonl` (0600, `{entry_id, outcome, at}`):
 `APPLIED`, `STALE_REVISION`, `SIGNATURE_REFUSED`, `INVALID_TRANSITION` or `REFUSED <code>`. A receipted entry is never retried (`ALREADY`, no event);
-the organizer decides again on the next export. `PROJECT_MISMATCH` (the entry's `source_project_id` is another project's) applies nothing and writes no
+the organizer decides again on the next export. Each unreceipted entry first gets a write-ahead `INTENT` line (`{entry_id, outcome: "INTENT", at, base}`;
+`base` is the target's queue revision or its packet / public-updates journal length, and an INTENT is never an outcome nor listed in the export). If a run dies after the
+live mutation but before its outcome line (queue busy, disk full, timeout), the replay finds the INTENT, looks for that entry's own mutation after `base` (same target,
+revision, actor and recorded value) and receipts `APPLIED` instead of running it again against a revision it has itself moved past; when nothing landed it applies the
+entry as normal. If the INTENT cannot be written, nothing is mutated (`DEFERRED`).
+`PROJECT_MISMATCH` (the entry's `source_project_id` is another project's) applies nothing and writes no
 receipt; a transient lock or I/O failure prints `DEFERRED` and is tried again at the next run. A damaged journal or receipt file exits 1 before anything is applied.
 
 `console-export` then writes `applied_journal_ids` (the `APPLIED` entries) and `apply_outcomes` (`{"outcome": code}`, plus `"refusal": code` when not
