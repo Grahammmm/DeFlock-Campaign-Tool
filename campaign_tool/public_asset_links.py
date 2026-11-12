@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .content import ASSET_PART, ContentError
+from .site_check import _srcset_urls
 
 MAX_ENTRIES = 50
 LABEL = "site.json.unlinked_assets_ok"
@@ -134,10 +135,8 @@ class _Collector(HTMLParser):
             if name in values:
                 self.urls.append(values[name])
         if tag in ("img", "source") and "srcset" in values:
-            for candidate in values["srcset"].split(","):
-                parts = candidate.split()
-                if parts:
-                    self.urls.append(parts[0])
+            # RF1741-5: a candidate URL keeps its own commas (data:, query payloads).
+            self.urls.extend(_srcset_urls(values["srcset"]))
         if tag == "meta" and "content" in values:
             key = (values.get("property") or values.get("name") or "").strip().lower()
             if key in _SHARE_META:
