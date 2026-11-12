@@ -91,3 +91,20 @@ claim about text state.
 ## Crash recovery (review transaction)
 
 `review` writes FACTS.csv and FACT-REVIEWS.csv as one journaled transaction: both new files are staged (`.FACTS.csv.txn`, `.FACT-REVIEWS.csv.txn`, fsynced), then `.FACTS-TXN.json` (`flock-facts-txn-v1`, old and new sha256 of each file) is committed by an atomic replace, then the log and FACTS are replaced and the journal removed. A crash before the commit leaves the old pair (the next writer unlinks the leftover temps); a crash after it is rolled forward exactly once by `recover(store, slug)`, which every `review` and every non-dry-run `import` runs under the exclusive lock before reading the store. A journal whose hashes fit neither file prints `REVIEW_TXN_CORRUPT` (exit 1) and touches nothing. `read_reviewed(store, slug)` is the packet readers' view under the shared lock: `REVIEW_TXN_PENDING` for a journal, `REVIEW_STATE_INVALID` for a failed check or a raw status edit; it never writes or recovers. `import --dry-run` stays lock-free, recovery-free and write-free.
+
+## Reconcile (fresh projection + review overlay)
+
+`flock_facts.py reconcile --store ACTIVE --from STAGING --agency SLUG --superseded DIR` installs the unreviewed import in `STAGING` over `ACTIVE` without losing bound reviews. Under the exclusive lock it recovers a pending journal, validates the log, copies the current FACTS.csv and FACT-REVIEWS.csv (those present) to `DIR/<UTC>[-n]/` (never deleted), and writes the merged FACTS.csv and log in one journaled transaction. A row's status is the last `to_status` of the log chain bound to its (fact_id, evidence_fp), else `unreviewed`. Output: `reconcile | <slug> | kept=K reset=R new=N removed=M raw_dropped=D` (kept: carries a bound decision; reset: had a decision but its evidence changed; raw_dropped: active status with no bound chain). A staging file that is invalid or has any status but `unreviewed` prints `RECONCILE_STAGING_INVALID`; a malformed or linked log, an inconsistent v1 log or an invalid active FACTS.csv prints `REVIEW_STATE_INVALID`; both exit 1 with nothing written. A consistent v1 log is upgraded to v2 in the same transaction; a missing active FACTS.csv is simply installed (no log, nothing superseded).
+
+| case | result |
+| --- | --- |
+| unchanged evidence, bound checked/disputed | status, log and marks kept |
+| changed evidence under the same fact_id | `unreviewed`; old log rows stay as unbound history |
+| added evidence | `unreviewed` |
+| removed evidence | row gone; its log rows stay as unbound history |
+| evidence reverts to an earlier fingerprint | regains the last decision for exactly that (fact_id, fp) |
+| dispute, or reversal checked ↔ disputed | last `to_status` of the bound chain; full chain kept |
+| raw status edit (no bound chain) | not a review; written as the log-derived status (`raw_dropped`) |
+| log absent | every row `unreviewed`, no log created |
+| log malformed or a link, inconsistent v1 log | `REVIEW_STATE_INVALID`, nothing written |
+| concurrent review | serialized by the lock; the log is read at merge time |
