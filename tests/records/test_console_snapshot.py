@@ -14,7 +14,7 @@ from unittest import mock
 
 from campaign_tool.records import admin_panel as ap
 from campaign_tool.records import approval_queue as aq
-from campaign_tool.records import console_export, console_manual_events, console_snapshot, mail_send
+from campaign_tool.records import console_export, console_layout, console_manual_events, console_snapshot, mail_send
 from campaign_tool.records import public_packets as pp
 from campaign_tool.records import public_updates as pu
 from campaign_tool.records.ledger import store
@@ -269,6 +269,35 @@ class SendResults(Panel):
         self.send_journal().unlink()
         self.send_journal().symlink_to(copy)
         self.check("send_io")
+
+    def home_and_calendar(self, mutate=None):
+        self.make_export(RUN3, mutate)
+        self.up()
+        home, calendar = self.get("/"), self.get("/calendar")
+        return home, calendar
+
+    def drop_sends(self, dest):
+        (dest / "console-model" / "sends.json").unlink()
+
+    def check_unavailable(self, home, calendar, wording):
+        self.assertIn("sent-mail results: unavailable. " + wording, html.unescape(home))
+        self.assertIn("unknown need your decision", home)  # never a numeric count over unreadable send state
+        self.assertNotRegex(home, r"\d+ need your decision")
+        self.assertIn("follow-up planned sends: unavailable (sends_unreadable)", calendar)
+
+    def test_home_and_calendar_show_a_missing_sends_document_unavailable_without_send_config(self):
+        """Export mode refuses send_config; the snapshot's own sends state still reaches Home and the calendar."""
+        home, calendar = self.home_and_calendar(self.drop_sends)
+        self.check_unavailable(home, calendar, console_layout.reason("console_model_missing"))
+
+    def test_home_and_calendar_show_an_invalid_sends_document_unavailable(self):
+        home, calendar = self.home_and_calendar(lambda dest: (dest / "console-model" / "sends.json").write_text("[]"))
+        self.check_unavailable(home, calendar, console_layout.reason("console_model_invalid"))
+
+    def test_home_and_calendar_show_an_exported_unavailable_send_journal(self):
+        self.write_sends(json.dumps(SEND_ROW).encode() + b"\nnot json\n")
+        home, calendar = self.home_and_calendar()
+        self.check_unavailable(home, calendar, console_layout.reason("send_results_invalid"))
 
     def test_no_journal_is_an_empty_list_and_the_approved_row_renders(self):
         self.send_journal().unlink()

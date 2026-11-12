@@ -50,17 +50,27 @@ def _row_ok(r):
     return all(r.get(k) is None or isinstance(r.get(k), dict) for k in ("deadline", "promised"))
 
 
+def sends_model(source, send_config=None):
+    """The sent-mail model. Live reads results only when send transport is configured; a snapshot source
+    (export mode, which refuses send_config) always reads its sends document so an unavailable one propagates."""
+    model = {"state": "ok", "rows": [], "configured": send_config is not None}
+    if send_config is not None or getattr(source, "snapshot", False):
+        try:
+            model["rows"] = source.send_results()
+        except mail_send.MailSendError as error:
+            # the export's own code (console_model_missing/_invalid/_mismatch, send_results_invalid, ...) says why
+            return co._unavailable(error.code if getattr(source, "snapshot", False) and error.code else "sends_unreadable")
+        except (OSError, ValueError, KeyError, TypeError):
+            return co._unavailable("sends_unreadable")
+    return model
+
+
 def load(project, run_id, now=None, *, send_config=None, meetings_dir=None, source=None):
     source = source or console_snapshot.LiveSource(project)
     model = co.load(project, run_id, None, now, source=source)
     model["deadlines"] = cb.computed_dates(project, run_id)
     model["meetings"] = _load_meetings(meetings_dir)
-    model["sends"] = {"state": "ok", "rows": [], "configured": send_config is not None}
-    if send_config is not None:
-        try:
-            model["sends"]["rows"] = source.send_results()
-        except (mail_send.MailSendError, OSError, ValueError, KeyError, TypeError):
-            model["sends"] = co._unavailable("sends_unreadable")
+    model["sends"] = sends_model(source, send_config)
     try:
         model["packets"] = {"state": "ok", "rows": source.packets_pending(model["now"].timestamp())}
     except public_packets.PacketError as error:

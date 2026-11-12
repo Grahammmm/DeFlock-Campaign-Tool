@@ -2,7 +2,7 @@
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
-from . import console_board as cb, console_oversight as co, console_outstanding, console_standing, mail_send, public_packets
+from . import console_board as cb, console_oversight as co, console_outstanding, console_standing, public_packets
 from .outcomes.reading import BANNER, esc
 from . import console_calendar, console_layout, console_snapshot, followup_clock
 
@@ -65,12 +65,7 @@ def load(project, run_id, run_report_path=None, now=None, *, send_config=None, m
         model["packets"] = co._unavailable(error.code)
     except (OSError, ValueError, KeyError, TypeError):
         model["packets"] = co._unavailable("packets_unreadable")
-    model["sends"] = {"state": "ok", "rows": [], "configured": send_config is not None}
-    if send_config is not None:
-        try:
-            model["sends"]["rows"] = source.send_results()
-        except (mail_send.MailSendError, OSError, ValueError, KeyError, TypeError):
-            model["sends"] = co._unavailable("sends_unreadable")
+    model["sends"] = console_calendar.sends_model(source, send_config)
     return model
 
 
