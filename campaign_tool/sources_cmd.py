@@ -477,6 +477,11 @@ def _copy_targets(document, sha, fragment=None):
     return [index for index, entry in entries if entry["public_url"] == url]
 
 
+def _receipt_day(received_at):
+    """Written (offset-local) calendar day of an admitted received_at; same parser as the library loader."""
+    return datetime.fromisoformat(received_at.replace("Z", "+00:00")).date()
+
+
 def verify_copy(root, prefix, file, checked_on, differs_because=None, today=None, *, fragment=None):
     """Hash a copy the organizer downloaded from a public_url; record public_copy on the entries sharing that URL."""
     path, document = _library(root)
@@ -499,9 +504,9 @@ def verify_copy(root, prefix, file, checked_on, differs_because=None, today=None
         raise ValueError("--checked-on: a real YYYY-MM-DD date")
     if day > (today or date.today()):
         raise ValueError("--checked-on: must not be in the future")
-    received = max(document[index]["received_at"][:10] for index in targets)
-    if checked_on < received:
-        raise ValueError(f"--checked-on: must not be before the record was received ({received})")
+    received = max(_receipt_day(document[index]["received_at"]) for index in targets)
+    if day < received:
+        raise ValueError(f"--checked-on: must not be before the record was received ({received.isoformat()})")
     digest = _hash_copy(file)
     matches = digest == sha
     if not matches and differs_because is None:
