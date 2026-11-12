@@ -129,7 +129,14 @@ def _staged(root, meeting_id, now):
     starts = datetime.fromisoformat(loaded["starts_at"].replace("Z", "+00:00"))
     if starts <= now:
         raise MeetingSpeakersError(PAST)
-    return loaded, document["comment_kit_md"] if isinstance(document.get("comment_kit_md"), str) else ""
+    kit_md = document["comment_kit_md"] if isinstance(document.get("comment_kit_md"), str) else ""
+    # JSON escapes can decode to a lone surrogate inside physically valid UTF-8; the plan binds a strict UTF-8 SHA-256 of
+    # the kit, so refuse such text here for every action, with the same value-free template as the schema refusal.
+    try:
+        kit_md.encode("utf-8")
+    except UnicodeEncodeError:
+        raise MeetingSpeakersError(f"content/meetings/{meeting_id}.json is not valid staged meeting content") from None
+    return loaded, kit_md
 
 
 def _check_imported(root, meeting_id):

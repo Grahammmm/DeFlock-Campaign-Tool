@@ -177,8 +177,8 @@ class InventoryTests(LinkCheckBase):
                 ("https://council.example.org/result", "outcome.source_url"),
                 ("https://council.example.org/minutes", "outcome.minutes_url"),
                 ("https://video.example.org/watch?v=1", "outcome.recording_url"),
-                ("https://county.example.org/chief", "content/officials.json:ca-cedar-police.officials[0].profile_url"),
-                ("https://county.example.org/staff", "officials[0].source_url"),
+                ("https://county.example.org/chief", "content/officials.json:bodies[0].officials[0].profile_url"),
+                ("https://county.example.org/staff", "content/officials.json:bodies[0].officials[0].source_url"),
                 ("https://pages.example.org/only", "content/pages/links.json:body_md[anchor 1]"),
                 ("https://council.example.org/packet#p2", "comment_kit_md[anchor 1]")):
             self.assertIn(expected, urls)
