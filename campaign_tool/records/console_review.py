@@ -135,8 +135,11 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
     message, field_name, typed = refusal or (None, None, None)
     out = ["<h1>%s</h1><p role=\"status\">%s</p>" % (esc(title), status)]
     if export is not None and row["status"] == "approved":
-        out.append("<p>Approved by %s: signature verified on the live project (%s) at export %s.</p>" % (
-            esc(row.get("approved_by")), esc(export.source_project_id), esc(export.exported_at)))
+        proof = row.get("approval_evidence") or {}
+        out.append("<p>Approved by %s: signature verified on the live project (%s) at export %s (signed revision %s, "
+                   "signature sha256 %s).</p>" % (esc(row.get("approved_by")), esc(export.source_project_id),
+                                                  esc(export.exported_at), esc(proof.get("signed_revision")),
+                                                  esc(str(proof.get("signature_sha256"))[:12])))
     if message:
         out.append('<p role="alert" class="diag">%s. Nothing was saved or decided.</p>' % esc(message.rstrip(".")))
     out.append("<dl>")
