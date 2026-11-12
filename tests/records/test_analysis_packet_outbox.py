@@ -173,21 +173,33 @@ class PacketOutboxTests(unittest.TestCase):
             bridge._packets(self.root, tt.SLUG, json.loads(self.t.config().read_text()))
         self.assertEqual(seen, ["writer excluded"])
 
-    def test_provenance_comes_from_the_one_earliest_received_source_row(self):
+    def test_a_newer_run_without_analysis_ready_does_not_hide_the_older_retained_one(self):
         self.start()
         self.review("N1")
-        path = self.out / "inputs" / "SOURCES.csv"
-        with open(path, newline="") as handle:
+        newer = self.root / ".analysis" / "runs" / "run_20261231T000000Z_dddddddd"
+        newer.mkdir()
+        (newer / "EXPORT.json").write_text(json.dumps({"analysis_ready": "missing"}))
+        outcome, _, _, summary, write = bridge._packets(self.root, tt.SLUG, json.loads(self.t.config().read_text()))
+        self.assertEqual((outcome, summary), ("PACKET_STAGED", "n=1 held=3 EVIDENCE_FACT_UNREVIEWED=3"))
+        (newer / "analysis-ready.json").write_text("{")  # a present but unreadable newer file is still unavailable
+        self.assertEqual(bridge._packets(self.root, tt.SLUG, json.loads(self.t.config().read_text()))[0], "PACKET_ALL_HELD")
+
+    def test_provenance_comes_from_the_one_earliest_received_row_of_a_document(self):
+        self.start()
+        self.review("N1")
+        sources = self.out / "inputs" / "SOURCES.csv"
+        with open(sources, newline="") as handle:
             rows = list(csv.DictReader(handle))
-        later = dict(rows[0], run_id="run-later-export", received_at="2026-11-01T09:00:00Z", received_at_source="portal_date", request_id="rq0")
-        with open(path, "a", newline="") as handle:
-            csv.DictWriter(handle, list(rows[0])).writerow(later)  # appended after, but received earlier
-        self.tick("PACKET_STAGED")
-        (entry,) = json.loads(self.outbox()[0].read_text())["packets"]
+        later = dict(rows[0], run_id=tb.R2, received_at="2026-11-01T09:00:00Z", received_at_source="fallback_received_at", request_id="rq1")
+        with open(sources, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows + [later])
+        write = bridge._packets(self.root, tt.SLUG, json.loads(self.t.config().read_text()))[4]
+        (entry,) = json.loads(write[2])["packets"]
+        self.assertEqual(entry["provenance"]["documents"], [{"sha256": self.digest, "run_id": tb.R2, "received_at": "2026-11-01T09:00:00Z",
+                                                             "received_at_source": "fallback_received_at"}])
         self.assertEqual(entry["packet"]["documents"][0]["date_received"], "2026-11-01")
-        self.assertEqual(entry["packet"]["documents"][0]["source_request"], "rq0")
-        self.assertEqual({k: entry["provenance"]["documents"][0][k] for k in ("run_id", "received_at", "received_at_source")},
-                         {"run_id": "run-later-export", "received_at": "2026-11-01T09:00:00Z", "received_at_source": "portal_date"})
 
     def test_a_dispute_after_staging_holds_the_finding_and_adds_no_file(self):
         self.start()
