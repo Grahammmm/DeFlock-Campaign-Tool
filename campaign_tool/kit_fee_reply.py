@@ -7,8 +7,8 @@ narrower scope would change the estimate. It disputes nothing, pays nothing, cha
 """
 import os
 import re
+import secrets
 import stat
-import tempfile
 import unicodedata
 from datetime import date
 from pathlib import Path
@@ -111,42 +111,101 @@ def _plain_basis(basis):  # a nonblank string with no tag or control character o
     return basis.strip() if ok else None
 
 
+UNSAFE_FOLDER = "kit/followups must stay the same real private folder; nothing written"
+_DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+_TEMP_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+# RF1440-2: every write after admission goes through the held folder descriptor; no pathname fallback
+_ANCHORED = (hasattr(os, "O_DIRECTORY") and hasattr(os, "O_NOFOLLOW") and os.stat in os.supports_follow_symlinks
+             and {os.open, os.stat, os.link, os.rename, os.unlink} <= os.supports_dir_fd)
+
+
+def _admit(folder):  # (descriptor, stat) of the real private folder named ``folder``; never follows a link
+    try:
+        seen = os.lstat(folder)
+        fd = os.open(folder, _DIR_FLAGS)
+    except OSError:
+        raise ValueError(UNSAFE_FOLDER) from None
+    try:
+        held = os.fstat(fd)
+        if not stat.S_ISDIR(seen.st_mode) or not stat.S_ISDIR(held.st_mode) \
+                or (held.st_dev, held.st_ino) != (seen.st_dev, seen.st_ino):
+            raise ValueError(UNSAFE_FOLDER)
+        if stat.S_IMODE(held.st_mode) & 0o077:
+            raise ValueError("kit/followups must be private (no group or other permissions); not changed")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, held
+
+
+def _same_folder(folder, held):  # the name still points at the admitted folder (no swap detected)
+    try:
+        now = os.lstat(folder)
+    except OSError:
+        raise ValueError(UNSAFE_FOLDER) from None
+    if not stat.S_ISDIR(now.st_mode) or (now.st_dev, now.st_ino) != (held.st_dev, held.st_ino):
+        raise ValueError(UNSAFE_FOLDER)
+
+
+def _temp(dir_fd):  # (descriptor, name) of a new 0600 temporary file created exclusively inside the folder
+    for _ in range(100):
+        name = f".fee-reply.{secrets.token_hex(6)}.tmp"
+        try:
+            return os.open(name, _TEMP_FLAGS, 0o600, dir_fd=dir_fd), name
+        except FileExistsError:
+            continue
+    raise FileExistsError("no free temporary name in kit/followups")
+
+
 def _write(folder, name, text, replace):
+    if not _ANCHORED:
+        raise ValueError("this platform cannot anchor writes to kit/followups; nothing written")
     folder = Path(folder)
     if os.path.lexists(folder):
         _folder(folder, "kit/followups")
-        if stat.S_IMODE(folder.stat().st_mode) & 0o077:
-            raise ValueError("kit/followups must be private (no group or other permissions); not changed")
     else:
         folder.mkdir(mode=0o700)
-    target = folder / name
-    before = None
-    if os.path.lexists(target):
-        before = os.lstat(target)
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            raise ValueError(f"kit/followups/{name} must be a regular single-link file, not a link or special file")
-        if not replace:
-            raise ValueError(f"kit/followups/{name} already exists; use --replace to rewrite it")
-    fd, temp = tempfile.mkstemp(dir=folder, prefix=".fee-reply.", suffix=".tmp")
+    dir_fd, held = _admit(folder)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        if before is None:
+        try:
+            before = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            before = None
+        if before is not None:
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise ValueError(f"kit/followups/{name} must be a regular single-link file, not a link or special file")
+            if not replace:
+                raise ValueError(f"kit/followups/{name} already exists; use --replace to rewrite it")
+        fd, temp = _temp(dir_fd)
+        try:
             try:
-                os.link(temp, target)  # exclusive: never replaces a file that appeared meanwhile
-            except FileExistsError:
-                raise ValueError(f"kit/followups/{name} already exists; use --replace to rewrite it") from None
-        else:
-            now = os.lstat(target)
-            if (now.st_ino, now.st_dev) != (before.st_ino, before.st_dev) or now.st_nlink != 1 \
-                    or not stat.S_ISREG(now.st_mode):
-                raise ValueError(f"kit/followups/{name} changed while writing; nothing replaced")
-            os.replace(temp, target)
+                handle = os.fdopen(fd, "w", encoding="utf-8")  # owns fd from here on
+            except BaseException:
+                os.close(fd)
+                raise
+            with handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            _same_folder(folder, held)
+            if before is None:
+                try:  # exclusive: never replaces a file that appeared meanwhile
+                    os.link(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+                except FileExistsError:
+                    raise ValueError(f"kit/followups/{name} already exists; use --replace to rewrite it") from None
+            else:
+                now = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                if (now.st_ino, now.st_dev) != (before.st_ino, before.st_dev) or now.st_nlink != 1 \
+                        or not stat.S_ISREG(now.st_mode):
+                    raise ValueError(f"kit/followups/{name} changed while writing; nothing replaced")
+                os.replace(temp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        finally:
+            try:  # only this call's temporary file, through the admitted folder
+                os.unlink(temp, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
     finally:
-        if os.path.lexists(temp):
-            os.unlink(temp)
+        os.close(dir_fd)
 
 
 def fee_reply(root, agency_id, *, request="main", narrow=None, replace=False, law_base=None, today=None):

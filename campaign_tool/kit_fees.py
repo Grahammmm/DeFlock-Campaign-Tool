@@ -6,6 +6,7 @@ from . import kit_export, kit_track
 
 SCHEMA = "kit-fees-v1"
 NOTE = "Amounts as recorded by the organizer; not an invoice, not legal advice. Nothing was sent."
+READ_FAILED = "kit-fees: unable to read campaign inputs"
 NONE_NOTE = " No fee estimates recorded."
 ORDER = {"unpaid": 0, "paid": 1, "waived": 2}
 HEADER = ("agency_id", "request", "name", "reference", "fee_estimate", "fee_state", "fee_paid", "over_fee_cap")
@@ -13,8 +14,11 @@ HEADER = ("agency_id", "request", "name", "reference", "fee_estimate", "fee_stat
 
 def fees(root, today=None, law_base=None):
     """The fee report: requests with a recorded estimate, and exact-cents campaign totals."""
-    report = kit_track.status(root, today, law_base)
-    sent = kit_track.read_sent(root)
+    try:  # diagnostic contract: an OSError from loading inputs never reaches output (it names private paths)
+        report = kit_track.status(root, today, law_base)
+        sent = kit_track.read_sent(root)
+    except OSError:
+        raise ValueError(READ_FAILED) from None
     rows, quoted, paid, unpaid = [], 0, 0, 0
     for row in report["requests"]:
         if row["fee_state"] is None:

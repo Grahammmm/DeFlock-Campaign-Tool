@@ -74,8 +74,13 @@ def _read(dir_fd, name, limit):
             raise _Hazard('not_regular', 'not a regular file (link or special file; not followed)') from None
         raise _Hazard('unreadable', 'cannot be read') from None
     try:
-        if not stat.S_ISREG(os.fstat(fd).st_mode):
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
             raise _Hazard('not_regular', 'not a regular file (link or special file; not followed)')
+        # RF1500-23: the descriptor must be the very file inspected above; a regular file renamed over the name in
+        # between is refused before any byte is read (a later run may inspect it once the folder settles).
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise _Hazard('unreadable', 'file changed while being opened')
         chunks, total = [], 0
         while total <= limit:
             try:
