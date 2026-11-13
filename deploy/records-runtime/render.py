@@ -45,6 +45,7 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 from campaign_tool.records import run_orchestrator, schedule as records_schedule  # noqa: E402
+from campaign_tool.records.portal.policy import FETCH_MIN_TOTAL_BYTES  # noqa: E402
 
 TEMPLATES = (("run-records.sh.in", "run-records.sh", 0o700),
              ("records-run.service.in", "records-run.service", 0o600),
@@ -81,11 +82,17 @@ ABSOLUTE = {"ANALYSIS_ROOT", "BACKUP_DIR", "ENGINE_DIR", "DOCKER", "TIMEOUT", "F
             "CONTAINER_OCR_VISION_CONFIG",
             "CONTAINER_ENGINE_DIR", "CONTAINER_PROJECT_DIR", "CONTAINER_APPROVAL_FILE",
             "CONTAINER_PYTHON", "CONTAINER_SYNC_SCRIPT", "ADOPTION_CONFIG",
+            # PORTAL-ARGV-1: root-owned egress policy of the opt-in live-portal plan only.
+            "PORTAL_EGRESS_FILE",
             # AUD-DF1: the TEST plan's own sandbox project, adoption config and approval file.
             "CONTAINER_PROJECT_DIR_TEST", "ADOPTION_CONFIG_TEST", "CONTAINER_APPROVAL_FILE_TEST"}
 INTEGERS = {"RUN_UID", "DOCKER_WAIT_ATTEMPTS", "DOCKER_WAIT_DELAY", "DOCKER_WAIT_MAX_DELAY",
             "DOCKER_CMD_TIMEOUT", "DOCKER_WAIT_DEADLINE", "NOTIFY_TIMEOUT", "RUN_BUDGET_SECONDS",
             "MIN_FREE_BYTES"}
+# PORTAL-ARGV-1: the portal engine's own bounds (portal/engine.py Limits, portal/policy.py
+# fetch_settings), checked here so a bad cap is a render refusal and not a run-time refusal.
+PORTAL_BOUNDS = {"PORTAL_MAX_ITEMS": (1, 1000), "PORTAL_MAX_BYTES": (1, 100 * 1024 ** 2),
+                 "PORTAL_TOTAL_BYTES": (FETCH_MIN_TOTAL_BYTES, 1024 ** 3), "PORTAL_REQUEST_TIMEOUT": (1, 120)}
 # Free-space preflight (Fable audit F4(a)): bytes that must be available on
 # the RUNTIME_DIR filesystem before a run starts. The floor refuses values
 # that would make the check meaningless (0, or a unit slip such as "2" for
@@ -130,11 +137,12 @@ def check_values(values):
             raise RenderError(f"{key}: value must be a non-empty shell-safe word")
         if key in ABSOLUTE and not value.startswith("/"):
             raise RenderError(f"{key}: expected an absolute path")
-        if key in INTEGERS and not value.isdigit():
+        if (key in INTEGERS or key in PORTAL_BOUNDS) and not value.isdigit():
             raise RenderError(f"{key}: expected a non-negative integer")
         if key in TARGET_NAMES and not run_orchestrator.TARGET_RE.match(value):
             raise RenderError(f"{key}: expected an upper-case target name")
     timer_schedule(values)
+    check_portal_values(values)
     if "RELEASE_COMMIT" in values and not re.fullmatch(r"[0-9a-f]{40}", values["RELEASE_COMMIT"]):
         raise RenderError("RELEASE_COMMIT: expected 40 lower-case hex characters")
     if "EXPECTED_IMAGE" in values and not re.fullmatch(r"sha256:[0-9a-f]{64}",
@@ -146,6 +154,21 @@ def check_values(values):
         raise RenderError("ANALYSIS_ROOT: expected a normalised absolute path")
     if "RECORDS_DROP_DIR" in values:
         check_drop_dir(values["RECORDS_DROP_DIR"], values.get("RUNTIME_DIR"))
+
+
+def check_portal_values(values):
+    """Portal download values are all-or-nothing and inside the engine's limits (PORTAL-ARGV-1)."""
+    given = [key for key in ("PORTAL_EGRESS_FILE", *PORTAL_BOUNDS) if key in values]
+    if given and len(given) != 1 + len(PORTAL_BOUNDS):
+        raise RenderError(f"portal: PORTAL_EGRESS_FILE and every PORTAL_* cap are required together; "
+                          f"missing {sorted({'PORTAL_EGRESS_FILE', *PORTAL_BOUNDS} - set(given))}")
+    for key, (low, high) in PORTAL_BOUNDS.items():
+        if key in values and not re.fullmatch(r"[1-9][0-9]*", values[key]):
+            raise RenderError(f"{key}: expected a positive decimal integer without leading zeros")
+        if key in values and not low <= int(values[key]) <= high:
+            raise RenderError(f"{key}: expected {low} to {high}")
+    if "PORTAL_MAX_BYTES" in values and int(values["PORTAL_TOTAL_BYTES"]) < int(values["PORTAL_MAX_BYTES"]):
+        raise RenderError("PORTAL_TOTAL_BYTES: must be at least PORTAL_MAX_BYTES")
 
 
 def timer_schedule(values):

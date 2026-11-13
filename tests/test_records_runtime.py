@@ -1258,6 +1258,80 @@ class RendererTests(unittest.TestCase):
                     values=self.ocr_container_values(
                         CONTAINER_OCR_VISION_CONFIG="/srv/flock-live/vision.json"))
 
+    PORTAL = {"PORTAL_EGRESS_FILE": "/srv/flock-live/portal-egress.json", "PORTAL_MAX_ITEMS": "5",
+              "PORTAL_MAX_BYTES": "5242880", "PORTAL_TOTAL_BYTES": "31457280",
+              "PORTAL_REQUEST_TIMEOUT": "25"}
+
+    def portal_targets(self, template="live-portal-container.json.in"):
+        return [("TEST", str(RUNTIME / "targets" / "test-container.json.in")),
+                ("LIVE", str(RUNTIME / "targets" / template))]
+
+    def test_live_portal_plan_adds_only_the_portal_download_argv(self):
+        # PORTAL-ARGV-1: same as the LIVE plan except the portal stage's download flags and caps.
+        phase1 = {s["name"]: s for s in self.render_ocr_plan(
+            "live-container.json.in", self.ocr_container_values(), out=self.tmp / "out-p1")["stages"]}
+        plan = self.render_ocr_plan("live-portal-container.json.in",
+                                    self.ocr_container_values(**self.PORTAL), out=self.tmp / "out-p2")
+        stages = {s["name"]: s for s in plan["stages"]}
+        self.assertEqual(list(stages), list(phase1))
+        portal = stages.pop("portal")
+        self.assertEqual(portal["argv"], phase1["portal"]["argv"] + [
+            "--portal-egress-file", "/srv/flock-live/portal-egress.json",
+            "--portal-max-bytes", "5242880", "--portal-request-timeout", "25"])
+        self.assertEqual(plan["portal"], {"fetch": {"apply": True, "max_items": 5,
+                                                   "max_bytes_total": 31457280}})
+        self.assertEqual({k: portal[k] for k in ("timeout_seconds", "on_fail")},
+                         {k: phase1["portal"][k] for k in ("timeout_seconds", "on_fail")})
+        for name, stage in stages.items():
+            self.assertEqual(stage, phase1[name], name)
+        # The engine turns the plan into its own download argv and accepts the rendered stage.
+        from campaign_tool.records import run_stages  # noqa: PLC0415
+        argv = self.render.run_orchestrator.stage_argv(plan, portal)
+        self.assertEqual(argv[-5:], ["--portal-download", "--portal-max-items", "5",
+                                     "--portal-total-bytes", "31457280"])
+        args = run_stages.parser().parse_args(argv[argv.index("campaign_tool.records.run_stages") + 1:])
+        self.assertFalse(run_stages.config_invalid(args))
+        self.assertEqual((args.portal_download, args.portal_max_items, args.portal_max_bytes,
+                          args.portal_request_timeout, args.portal_egress_file),
+                         (True, 5, 5242880, 25, "/srv/flock-live/portal-egress.json"))
+        # The plain LIVE plan has no portal block: the engine adds no download flag.
+        plain = self.render_ocr_plan("live-container.json.in", self.ocr_container_values(),
+                                     out=self.tmp / "out-p3")
+        self.assertNotIn("portal", plain)
+        self.assertNotIn("--portal-download", self.render.run_orchestrator.stage_argv(
+            plain, next(s for s in plain["stages"] if s["name"] == "portal")))
+
+    def test_live_portal_plan_is_fail_closed_without_every_value(self):
+        # No egress file or no cap: refused, never a plan that downloads with engine defaults.
+        values = self.ocr_container_values(**self.PORTAL)
+        self.assert_refused("no value for", values=self.ocr_container_values(),
+                            targets=self.portal_targets())
+        for key in self.PORTAL:
+            with self.subTest(key):
+                partial = {k: v for k, v in values.items() if k != key}
+                self.assert_refused(f"missing {[key]}", values=partial, targets=self.portal_targets())
+        # The values belong to the portal plan only; the plain LIVE plan stays as it was.
+        for other in ("live-container.json.in", "live-ocr-container.json.in"):
+            with self.subTest(other):
+                self.assert_refused("unknown placeholder", values=values,
+                                    targets=self.portal_targets(other))
+
+    def test_live_portal_values_are_bounded_and_safe(self):
+        for key, bad, fragment in (("PORTAL_EGRESS_FILE", "egress.json", "absolute path"),
+                                   ("PORTAL_EGRESS_FILE", "/srv/x;rm", "shell-safe"),
+                                   ("PORTAL_MAX_ITEMS", "0", "positive decimal integer"),
+                                   ("PORTAL_MAX_ITEMS", "1001", "expected 1 to 1000"),
+                                   ("PORTAL_MAX_ITEMS", "five", "non-negative integer"),
+                                   ("PORTAL_MAX_ITEMS", "05", "leading zeros"),
+                                   ("PORTAL_MAX_BYTES", "104857601", "expected 1 to"),
+                                   ("PORTAL_TOTAL_BYTES", "1073741825", "expected 26214400 to"),
+                                   ("PORTAL_TOTAL_BYTES", "26214399", "expected 26214400 to"),
+                                   ("PORTAL_REQUEST_TIMEOUT", "121", "expected 1 to 120"),
+                                   ("PORTAL_MAX_BYTES", "31457281", "at least PORTAL_MAX_BYTES")):
+            with self.subTest(key, bad=bad):
+                self.assert_refused(fragment, targets=self.portal_targets(),
+                                    values=self.ocr_container_values(**{**self.PORTAL, key: bad}))
+
     def assert_refused(self, fragment, **kwargs):
         with self.assertRaises(ValueError) as caught:
             self.do_render(**kwargs)
