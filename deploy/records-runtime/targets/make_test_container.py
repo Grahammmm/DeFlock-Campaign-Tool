@@ -15,6 +15,14 @@ Generates, in ``deploy/records-runtime/targets/``:
   fallback for empty or low-confidence pages), with the limits in
   ``OCR_EXTRACT``.
 
+- ``live-portal-container.json.in`` (mode ``live``, PORTAL-ARGV-1). The LIVE plan
+  with the portal stage gaining ``--portal-egress-file @PORTAL_EGRESS_FILE@``,
+  ``--portal-max-bytes`` and ``--portal-request-timeout``, and a top-level
+  ``portal.fetch`` block (apply true, ``max_items``, ``max_bytes_total``); the engine
+  turns that into ``--portal-download --portal-max-items --portal-total-bytes``. Every
+  value is a placeholder and required, so a render without the egress file or any cap
+  is refused. Nothing selects this plan unless an operator names it as a target.
+
 Each stage is
 ``docker exec -u CONTAINER_USER CONTAINER env PYTHONPATH=ENGINE
 CONTAINER_PYTHON -m campaign_tool.records.run_stages STAGE --project PROJECT
@@ -81,7 +89,24 @@ TEMPLATES = {
 }
 
 
-def plan(mode="test", ocr=None):
+# PORTAL-ARGV-1: opt-in portal byte download for a LIVE plan. The engine owns the switch:
+# ``stage_argv`` (run_orchestrator.py) refuses a hand-written --portal-download and adds
+# --portal-download, --portal-max-items and --portal-total-bytes itself from the plan's
+# top-level ``portal.fetch`` block, and only when the portal stage argv also carries the
+# approval file and --portal-egress-file. So the portal variant adds exactly: the egress
+# file and two per-request limits to the portal stage argv, plus ``portal.fetch`` with
+# apply true and the two run caps. Every value is a placeholder, so a render without the
+# egress file or any cap is refused (fail closed). The two integer placeholders are bare
+# (unquoted) in the committed template because ``portal.fetch`` wants JSON integers.
+# Nothing selects this plan unless an operator names it as a target.
+PORTAL_ARGS = ["--portal-egress-file", "@PORTAL_EGRESS_FILE@",
+               "--portal-max-bytes", "@PORTAL_MAX_BYTES@",
+               "--portal-request-timeout", "@PORTAL_REQUEST_TIMEOUT@"]
+PORTAL_FETCH = {"apply": True, "max_items": "@PORTAL_MAX_ITEMS@", "max_bytes_total": "@PORTAL_TOTAL_BYTES@"}
+PORTAL_TEMPLATE = "live-portal-container.json.in"
+
+
+def plan(mode="test", ocr=None, portal=False):
     if mode not in MODES:
         raise ValueError(f"mode: expected one of {sorted(MODES)}")
     # DOC-1: every LIVE plan OCRs scans (tesseract receipts) on the run that
@@ -90,8 +115,12 @@ def plan(mode="test", ocr=None):
         ocr = "ocr"
     if ocr is not None and (ocr not in OCR_EXTRACT or mode != "live"):
         raise ValueError(f"ocr: expected one of {sorted(OCR_EXTRACT)} on a live plan")
+    if portal and mode != "live":
+        raise ValueError("portal: downloads exist only on a live plan")
     stages = []
     for name, timeout, on_fail, extra in STAGES:
+        if name == "portal" and portal:
+            extra = [*extra, *PORTAL_ARGS]
         if name == "extract" and ocr is not None:
             timeout, on_fail, extra = OCR_EXTRACT[ocr]
         argv = EXEC + [name, "--project", "@CONTAINER_PROJECT_DIR@", "--timeout", str(timeout - 10),
@@ -99,11 +128,17 @@ def plan(mode="test", ocr=None):
         if mode == "test":
             argv = [TEST_NAMES.get(item, item) for item in argv]
         stages.append({"name": name, "argv": argv, "timeout_seconds": timeout, "on_fail": on_fail})
-    return {"target_config_version": 1, "target": "@TARGET_NAME@", "mode": mode, "stages": stages}
+    value = {"target_config_version": 1, "target": "@TARGET_NAME@", "mode": mode, "stages": stages}
+    if portal:
+        value["portal"] = {"fetch": dict(PORTAL_FETCH)}
+    return value
 
 
-def render_text(mode="test", ocr=None):
-    return json.dumps(plan(mode, ocr), indent=1) + "\n"
+def render_text(mode="test", ocr=None, portal=False):
+    text = json.dumps(plan(mode, ocr, portal), indent=1) + "\n"
+    for key in ("PORTAL_MAX_ITEMS", "PORTAL_TOTAL_BYTES"):  # JSON integers once rendered
+        text = text.replace(f'"@{key}@"', f"@{key}@")
+    return text
 
 # Opt-in LIVE mail refresh for T17. Existing Phase 1/Phase 2 plans stay pinned.
 LIVE_MAIL_TEMPLATE = "live-mail-container.json.in"
@@ -118,5 +153,6 @@ def live_mail_plan():
 if __name__ == "__main__":
     for filename, (mode, ocr) in TEMPLATES.items():
         (HERE / filename).write_text(render_text(mode, ocr), encoding="utf-8")
+    (HERE / PORTAL_TEMPLATE).write_text(render_text("live", None, True), encoding="utf-8")
     (HERE / LIVE_MAIL_TEMPLATE).write_text(
         json.dumps(live_mail_plan(), indent=1) + "\n", encoding="utf-8")

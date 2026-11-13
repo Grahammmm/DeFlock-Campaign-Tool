@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -299,7 +300,10 @@ class TriggerCrossesContainerTests(unittest.TestCase):
         plans = sorted((REPO / "deploy" / "records-runtime" / "targets").glob("*-container.json.in"))
         self.assertTrue(plans)
         for plan in plans:
-            for stage in json.loads(plan.read_text(encoding="utf-8"))["stages"]:
+            # Bare (unquoted) placeholders stand for JSON integers (e.g. portal caps); render
+            # them to a number so the template decodes. Quoted placeholders stay as strings.
+            text = re.sub(r'(?<!["@\w])@[A-Z][A-Z0-9_]*@(?!["@\w])', "1", plan.read_text(encoding="utf-8"))
+            for stage in json.loads(text)["stages"]:
                 argv = orch.forward_trigger(orch.expand_argv(stage["argv"], RUN, "T"), "arrival")
                 at = argv.index("env")
                 self.assertEqual(argv[at + 1], "RECORDS_RUN_TRIGGER=arrival", (plan.name, stage["name"]))
