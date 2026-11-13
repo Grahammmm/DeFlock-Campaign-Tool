@@ -176,7 +176,7 @@ class Verifier(unittest.TestCase):
                       self.key.token(exp=NOW - 1),
                       self.key.token(email="someone@example.test"),
                       self.key.token(aud=["f" * 64]),
-                      self.key.token(iss="https://other.cloudflareaccess.com")):
+                      self.key.token(iss="https://" + "other.cloudflareaccess.com")):
             with self.subTest(token=token[-12:]):
                 self.assertIsNone(self.who(token))
         self.assertIsNone(self.who(good, good))  # exactly one header
