@@ -47,6 +47,7 @@ COMMANDS = {
     "precedent": ("precedent", "main"),
     "public-updates": ("public_updates", "main"),
     "public-packets": ("public_packets", "main"),
+    "law-package": ("law_package_check", "main"),
     "agency-policies": ("agency_policies", "main"),
     "agency-retention": ("agency_retention", "main"),
     "first-request": ("first_request", "main"),
