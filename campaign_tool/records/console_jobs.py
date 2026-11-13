@@ -86,7 +86,8 @@ def _stamp(value):
 def inspect(unit, runner=system_runner):
     """One job row. ``state`` is a key of SHOWN; only ``ok`` may be rendered as passing."""
     row = {"unit": unit, "state": "unknown", "installed": "unknown", "enabled": "unknown", "last_trigger": "unknown",
-           "last_result": "unknown", "next_run": "unknown", "detail": "systemctl unavailable or output not understood"}
+           "last_result": "unknown", "next_run": "unknown", "active": "unknown",
+           "detail": "systemctl unavailable or output not understood"}
     props = _show(runner, unit, PROPS)
     if props is None:
         return row
@@ -95,7 +96,7 @@ def inspect(unit, runner=system_runner):
                     next_run="n/a", detail="unit file is not installed for this user")
     if props["LoadState"] != "loaded":
         return dict(row, detail="load state %s" % props["LoadState"][:40])
-    row.update(installed="yes", enabled=props.get("UnitFileState") or "unknown",
+    row.update(installed="yes", enabled=props.get("UnitFileState") or "unknown", active=props.get("ActiveState") or "unknown",
                last_trigger=_stamp(props["LastTriggerUSec"]) if "LastTriggerUSec" in props else "n/a (path unit)",
                next_run=_stamp(props["NextElapseUSecRealtime"]) if "NextElapseUSecRealtime" in props
                else "n/a (event driven)")
