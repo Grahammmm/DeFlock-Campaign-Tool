@@ -342,5 +342,108 @@ class CliTests(Base):
             self.assertEqual(done.stdout, "")
 
 
+class AnalysisExportTests(Base):
+    """ANALYSIS-HEALTH-1: the analysis lane and the console export age."""
+
+    def setUp(self):
+        super().setUp()
+        self.lane = self.base / "analysis"
+        (self.lane / ".analysis").mkdir(mode=0o700, parents=True)
+        self.export = self.base / "export"
+        self.run_id = json.loads((self.target_dir / "run-report.json").read_text())["run_id"]
+
+    def touch(self, name, minutes, text=""):
+        path = self.lane / ".analysis" / name
+        path.write_text(text)
+        os.utime(path, ((NOW - timedelta(minutes=minutes)).timestamp(),) * 2)
+
+    def ledger(self, *entries):
+        self.touch("analysis-ledger.jsonl", 1, "".join(json.dumps(entry) + "\n" for entry in entries))
+
+    def exported(self, run_id):
+        folder = self.export / "exports" / ("20261104T220000Z-" + run_id)
+        folder.mkdir(parents=True)
+        (folder / "EXPORT.json").write_text(json.dumps({"schema": "records-console-export-v1", "run_id": run_id}))
+        (self.export / "current").unlink(missing_ok=True)
+        (self.export / "current").symlink_to(Path("exports") / folder.name)
+
+    def item(self, name, **kw):
+        report = self.assess(**dict(dict(analysis_root=self.lane, console_export_root=self.export), **kw))
+        found = self.check(report, name)
+        return found["state"], found["reason_code"]
+
+    def test_unconfigured_is_unknown_and_leaves_the_old_checks_alone(self):
+        report = self.assess()
+        self.assertEqual((self.check(report, "analysis")["state"], self.check(report, "analysis")["reason_code"]),
+                         ("unknown", "analysis_not_configured"))
+        self.assertEqual(self.check(report, "console_export")["reason_code"], "console_export_not_configured")
+        self.assertEqual((report["state"], ph.status_line(report)), ("ok", "Run health: ok - last run 60 min ago, 0 waiting"))
+        self.write_stamp(NOW - timedelta(minutes=31))
+        self.assertNotIn("not_configured", ph.status_line(self.assess()))
+
+    def test_lane_off_fresh_and_stale_tick(self):
+        self.touch("cycle.log", 600)
+        self.assertEqual(self.item("analysis"), ("ok", "lane_off"))
+        self.touch("LANE-ON", 600)
+        self.assertEqual(self.item("analysis"), ("stop", "analysis_stale"))  # switched on, never cycled since
+        self.touch("cycle.log", 5)
+        self.assertEqual(self.item("analysis"), ("ok", "analysis_ticking"))
+        self.touch("cycle.log", 61)
+        self.assertEqual(self.item("analysis"), ("stop", "analysis_stale"))
+        self.assertEqual(self.item("analysis", limits=dict(ph.LIMITS, analysis_max_minutes=90)), ("ok", "analysis_ticking"))
+        report = self.assess(analysis_root=self.lane)
+        self.assertEqual(ph.status_line(report), "Run health: STOPPED - analysis_stale")
+        self.assertEqual(self.item("analysis", analysis_root=self.base / "missing"), ("unknown", "analysis_unreadable"))
+
+    def test_error_line_warns(self):
+        self.touch("LANE-ON", 600)
+        self.touch("cycle.log", 5)
+        self.ledger({"kind": "tick", "agency": "a", "outcome": "ERROR FAILED f3"}, {"kind": "tick", "agency": "b", "outcome": "UNCHANGED"})
+        self.assertEqual(self.item("analysis"), ("warn", "analysis_error"))
+        self.ledger({"kind": "tick", "agency": "a", "outcome": "ERROR FAILED f3"}, {"kind": "tick", "agency": "a", "outcome": "ADVANCED x→y"},
+                    {"kind": "tick", "agency": "b", "outcome": "ERROR LOCKED"})
+        self.assertEqual(self.item("analysis"), ("ok", "analysis_ticking"))
+        self.ledger({"kind": "receive", "run_id": "run_x", "outcome": "EXPORT_INVALID"})
+        self.assertEqual(self.item("analysis"), ("warn", "analysis_error"))
+        self.touch("analysis-ledger.jsonl", 1, "{cut\n")
+        self.assertEqual(self.item("analysis"), ("unknown", "analysis_unreadable"))
+
+    def test_export_matching_pending_and_behind(self):
+        self.assertEqual(self.item("console_export"), ("stop", "console_export_stale"))  # no export at all
+        self.exported(self.run_id)
+        self.assertEqual(self.item("console_export"), ("ok", "console_export_current"))
+        self.exported("run_20261103T000000Z_00000000")
+        self.assertEqual(self.item("console_export"), ("stop", "console_export_stale"))
+        self.assertEqual(self.item("console_export", now=NOW - timedelta(minutes=46)), ("ok", "console_export_pending"))
+        (self.export / "current").unlink()
+        (self.export / "current").mkdir()
+        (self.export / "current" / "EXPORT.json").write_text("[]")
+        self.assertEqual(self.item("console_export"), ("unknown", "console_export_unreadable"))
+
+    def test_alerts_and_cli(self):
+        self.touch("LANE-ON", 600)
+        self.touch("cycle.log", 120)
+        alerts = self.target_dir / "alerts"
+        report = self.assess(analysis_root=self.lane, console_export_root=self.export)
+        self.assertEqual(ph.write_alerts(report, alerts), 2)
+        self.assertEqual(sorted(os.listdir(alerts)), ["health-analysis-analysis_stale.json",
+                                                      "health-console_export-console_export_stale.json"])
+        (self.lane / ".analysis" / "LANE-ON").unlink()
+        self.exported(self.run_id)
+        self.assertEqual(ph.write_alerts(self.assess(analysis_root=self.lane, console_export_root=self.export), alerts), 0)
+        self.assertEqual(sorted(os.listdir(alerts)), ["health-analysis-analysis_stale.cleared.json",
+                                                      "health-console_export-console_export_stale.cleared.json"])
+        done = self.cli("--json", "--analysis-root", str(self.lane), "--console-export-root", str(self.export))
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual([self.check(json.loads(done.stdout), name)["reason_code"] for name in ("analysis", "console_export")],
+                         ["lane_off", "console_export_current"])
+        self.assertEqual(self.cli("--analysis-max-minutes", "0").returncode, 2)
+
+    def cli(self, *extra):
+        cmd = [sys.executable, "-B", "-m", "campaign_tool.records", "pipeline-health", "--runtime-dir", str(self.runtime),
+               "--target", "t", "--root", str(self.root), "--mail-store", str(self.store), "--now", NOW.isoformat(), *extra]
+        return subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=120)
+
+
 if __name__ == "__main__":
     unittest.main()

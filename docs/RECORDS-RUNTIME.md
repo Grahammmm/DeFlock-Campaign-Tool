@@ -45,7 +45,7 @@ intake.
 
 ## Pipeline health watch
 
-`records pipeline-health --runtime-dir ABS --target NAME --root RECORDS_ROOT [--mail-store DIR] [--now ISO] [--json] [--record-alerts]`
+`records pipeline-health --runtime-dir ABS --target NAME --root RECORDS_ROOT [--mail-store DIR] [--analysis-root DIR [--analysis-max-minutes 60]] [--console-export-root DIR] [--now ISO] [--json] [--record-alerts]`
 reads the existing state files and prints one line, `Run health: <state> - <reason>`, for the console, the run summary or a
 Telegram line elsewhere. It never runs, retries, restarts, notifies or clears anything, and reads no credentials. **This unit
 installs no timer or service**; wiring it to one is a separate deploy step. Exit codes: `ok` 0, `warn` 1, `unknown` 2, `stop` 3
@@ -67,6 +67,12 @@ are never touched; a symlinked or foreign-owned alert directory or file is refus
 | `repeated_failures` | stop | The last 3 run reports all ended `fail`. `latest_run_failed` (warn): only the latest did. |
 | `notify_failed` | warn | A `notify-failed-*` alert is newer than the last successful report. |
 | `schedule_missed`, `schedule_failed`, `schedule_stalled`, `schedule_gaps`, `schedule_held` | stop | The slot health from `records health`; `schedule_degraded` is warn, `schedule_never` unknown. |
+| `lane_off` | ok | `--analysis-root` has no `.analysis/LANE-ON`: the analysis lane is switched off, so nothing is expected of it. `analysis_ticking` (ok): on and recent. |
+| `analysis_stale` | stop | LANE-ON exists but `.analysis/cycle.log` (appended by `run-analysis.sh` every cycle it holds the lock; LANE-ON's own time until the first cycle) is older than `--analysis-max-minutes` (60): check `records-analysis.timer`, a lock held by a dead process, docker. |
+| `analysis_error` | warn | In the last 256 KiB of `.analysis/analysis-ledger.jsonl`, the newest entry of some agency tick, packet, received run or run x agency pair failed (`ERROR ...` other than `ERROR LOCKED`, `EXPORT_INVALID`, `EXPORT_CONFLICT`, `TEXT_CONFLICT`, `CONFIG_INVALID`): read `cycle.log`. |
+| `console_export_stale` | stop | `--console-export-root`'s `current/EXPORT.json` (absent counts) names another run than `run-report.json`, which finished over 15 min ago: the console shows an older run; check the run log's `console export` line. `console_export_pending` (ok): within the 15 min. |
+| `analysis_unreadable`, `console_export_unreadable`, `console_export_no_run` | unknown | The analysis root, cycle log or ledger, or the export manifest, cannot be read; or there is no valid run report to compare. |
+| `analysis_not_configured`, `console_export_not_configured` | unknown | The root was not given. These two are listed in `--json` but, unlike the other unknowns, never change the overall state or the line, so a unit rendered before the lane or export exists keeps its old result. `render.py` adds the flags to `records-health.service` when `ANALYSIS_ROOT` / `CONSOLE_EXPORT_DIR` are rendered. |
 
 Historical reports in `reports/` that finished after the assessment clock are ignored by the failure-streak and notify checks and by the oversight run table, so a future-dated success cannot reset a failure streak or suppress a notify alert; they count with the skipped reports. Limits are in `pipeline_health.LIMITS`. A machine-valid report is review-required, not semantic acceptance of the run.
 
