@@ -235,7 +235,8 @@ def _current_units(db, processing, subject, paged=True):
         digest = provenance.get("payload_sha256")
         _need(is_hash(digest) and provenance.get("ordinal") == ordinal, "received_items_payload_binding")
         path = Path(processing) / "artifacts" / "evidence" / digest
-        _need(unit["derived_path"] == str(path), "received_items_payload_path")
+        if unit["derived_path"] != str(path):  # retained/preserved payload: never read, item-level gap
+            return [], ["current_extraction_unavailable", "payload_outside_project_evidence"], None
         raw = read_pinned(path, digest, MAX_UNIT_BYTES)
         consumed += len(raw)
         _need(consumed <= MAX_TEXT_BYTES, "received_items_text_bound")

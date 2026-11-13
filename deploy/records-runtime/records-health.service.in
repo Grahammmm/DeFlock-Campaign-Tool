@@ -10,7 +10,7 @@ UMask=0077
 # problem under RUNTIME_DIR/TARGET/alerts. Exit 1 warn, 2 unknown, 3 stop shows
 # as a failed unit; the alert files are the record.
 Environment=PYTHONPATH=@ENGINE_DIR@
-ExecStart=@HOST_PYTHON@ -B -m campaign_tool.records pipeline-health --runtime-dir @RUNTIME_DIR@ --target @SCHEDULED_TARGET@ --root @RECORDS_ROOT@ --days @HEALTH_DAYS@ --times @HEALTH_TIMES@ --timezone @HEALTH_TIMEZONE@ --record-alerts
+ExecStart=@HOST_PYTHON@ -B -m campaign_tool.records pipeline-health --runtime-dir @RUNTIME_DIR@ --target @SCHEDULED_TARGET@ --root @RECORDS_ROOT@ --days @HEALTH_DAYS@ --times @HEALTH_TIMES@ --timezone @HEALTH_TIMEZONE@ --record-alerts@HEALTH_EXTRA_ARGS@
 TimeoutStartSec=2min
 StandardOutput=null
 StandardError=null

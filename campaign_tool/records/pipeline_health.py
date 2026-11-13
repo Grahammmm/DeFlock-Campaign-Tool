@@ -3,7 +3,9 @@
 ``records health`` knows the configured run calendar (weekdays twice a day by
 default). This module adds what it cannot
 see: mail that arrived but no run consumed, a mail poll that stopped, repeated
-failed runs, a failed notify and a run report that went stale. ``assess`` only
+failed runs, a failed notify, a run report that went stale and (when their roots
+are given) an analysis lane that stopped ticking or a console export left behind
+the newest run. ``assess`` only
 reads existing state files. ``write_alerts`` is the only write: one small alert
 file per open problem under ``<runtime>/<target>/alerts``. Nothing here runs,
 retries, restarts, notifies, clears a hold or writes the ledger, and no timer is
@@ -24,7 +26,13 @@ from . import arrival, run_report, schedule
 SCHEMA = "records-health-v1"
 ALERT_SCHEMA = "records-health-alert-v1"
 LIMITS = {"arrival_max_minutes": 30, "mail_poll_warn_hours": 6, "mail_poll_stop_hours": 24, "run_max_hours": 26,
-          "failure_streak": 3, "report_window": 20}
+          "failure_streak": 3, "report_window": 20, "analysis_max_minutes": 60, "export_grace_minutes": 15}
+# An optional check whose root was not given reports unknown but never moves the overall state or the line.
+NOT_CONFIGURED = frozenset({"analysis_not_configured", "console_export_not_configured"})
+# analysis_bridge.FINAL: any other logged sync outcome (PROFILE_MISSING, TEXT_CONFLICT, CONFIG_INVALID) leaves the pair pending.
+SYNC_FINAL = frozenset({"SYNCED", "UNCHANGED", "NO_AGENCIES", "ANALYSIS_READY_MISSING"})
+# Receive outcomes that refused an export; "ERROR LOCKED" is a busy review lock, retried next tick, and never alarms.
+ANALYSIS_ERRORS = frozenset({"EXPORT_INVALID", "EXPORT_CONFLICT"})
 EXIT = {"ok": 0, "warn": 1, "unknown": 2, "stop": 3}
 TARGET_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 ALERT_RE = re.compile(r"^health-([a-z_]+)-([a-z_]+)\.json$")
@@ -228,10 +236,77 @@ def _schedule(records_root, now, spec):
     return _check("schedule", state, "schedule_" + result["status"])
 
 
+def _ledger_error(path):
+    """True when the newest entry of any tick agency, packet, received run or run x agency pair failed or left its sync
+    pending. The whole ledger is read (analysis-sync does too): a pending sync outcome is logged once, not every cycle."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return False
+    newest = {}
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        for line in filter(bytes.strip, handle):
+            entry = json.loads(line.decode("utf-8"))
+            if not isinstance(entry, dict) or not isinstance(entry.get("outcome"), str):
+                raise ValueError("not a ledger entry")
+            newest[tuple(str(entry.get(key)) for key in ("kind", "agency", "run_id", "agency_id"))] = entry["outcome"]
+    return any((o.startswith("ERROR") and o != "ERROR LOCKED") or o in ANALYSIS_ERRORS or (k[0] == "sync" and o not in SYNC_FINAL)
+               for k, o in newest.items())
+
+
+def _analysis(analysis_root, now, limits):
+    """The records-analysis lane: off, ticking (run-analysis.sh appends to .analysis/cycle.log every cycle), stale or erroring."""
+    if analysis_root is None:
+        return _check("analysis", "unknown", "analysis_not_configured")
+    base = Path(analysis_root) / ".analysis"
+    try:
+        if not Path(analysis_root).is_absolute() or not stat.S_ISDIR(os.lstat(analysis_root).st_mode):
+            raise ValueError("analysis root")
+        if not os.path.exists(base / "LANE-ON"):
+            return _check("analysis", "ok", "lane_off")
+        try:  # a lane switched on that never completed a cycle counts from the LANE-ON switch
+            info = os.lstat(base / "cycle.log")
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("cycle log")
+        except FileNotFoundError:
+            info = os.stat(base / "LANE-ON")
+        tick = datetime.fromtimestamp(info.st_mtime, timezone.utc)
+        if now - tick > timedelta(minutes=limits["analysis_max_minutes"]):
+            return _check("analysis", "stop", "analysis_stale", tick)
+        if _ledger_error(base / "analysis-ledger.jsonl"):
+            return _check("analysis", "warn", "analysis_error")
+    except (ValueError, OSError):
+        return _check("analysis", "unknown", "analysis_unreadable")
+    return _check("analysis", "ok", "analysis_ticking", tick)
+
+
+def _console_export(export_root, latest, now, limits):
+    """Does CONSOLE_EXPORT_DIR/current/EXPORT.json name the newest run report's run (allowing a post-step grace)?"""
+    if export_root is None:
+        return _check("console_export", "unknown", "console_export_not_configured")
+    if latest is None:
+        return _check("console_export", "unknown", "console_export_no_run")
+    try:
+        if not Path(export_root).is_absolute():
+            raise ValueError("export root")
+        manifest = _read_json(Path(export_root) / "current" / "EXPORT.json")
+        exported = None if manifest is None else manifest["run_id"]
+    except (ValueError, KeyError, OSError):
+        return _check("console_export", "unknown", "console_export_unreadable")
+    if exported == latest["run_id"]:
+        return _check("console_export", "ok", "console_export_current")
+    finished = _finished(latest)
+    if now - finished > timedelta(minutes=limits["export_grace_minutes"]):
+        return _check("console_export", "stop", "console_export_stale", finished)
+    return _check("console_export", "ok", "console_export_pending", finished)
+
+
 # ----- assessment and line ----------------------------------------------------------------------
 
 def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limits=LIMITS,
-           spec=None):
+           spec=None, analysis_root=None, console_export_root=None):
     """Read-only health report; unknown is never reported as ok."""
     spec = spec or schedule.configured()
     now = (now or datetime.now(timezone.utc))
@@ -242,8 +317,9 @@ def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limi
     backlog, waiting, age = _arrival_backlog(runtime_dir, now, limits)
     last_run, latest = _last_run(target_dir, now, limits, spec)
     checks = [backlog, _mail_poll(mail_store, now, limits), last_run, _run_failures(target_dir, latest, limits, now),
-              _notify(target_dir, limits, now), _schedule(records_root, now, spec)]
-    states = {item["state"] for item in checks}
+              _notify(target_dir, limits, now), _schedule(records_root, now, spec), _analysis(analysis_root, now, limits),
+              _console_export(console_export_root, latest, now, limits)]
+    states = {item["state"] for item in checks if item["reason_code"] not in NOT_CONFIGURED}
     overall = next(state for state in ("stop", "warn", "unknown", "ok") if state in states)
     report = {"schema": SCHEMA, "now": now.isoformat(), "state": overall, "exit_code": EXIT[overall],
               "waiting": waiting, "oldest_waiting_minutes": None if age is None else int(age.total_seconds() // 60),
@@ -262,7 +338,7 @@ def status_line(report):
     else:
         reasons = []
         for item in report["checks"]:
-            if item["state"] != state:
+            if item["state"] != state or item["reason_code"] in NOT_CONFIGURED:
                 continue
             reason = item["reason_code"]
             if reason == "arrival_not_consumed":
@@ -369,13 +445,20 @@ def main(argv=None):
     parser.add_argument("--now", help="ISO-8601 clock override for tests and reviews")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--record-alerts", action="store_true")
+    parser.add_argument("--analysis-root", help="analysis root of records-analysis (run-analysis.sh ANALYSIS_ROOT)")
+    parser.add_argument("--analysis-max-minutes", type=int, default=LIMITS["analysis_max_minutes"])
+    parser.add_argument("--console-export-root", help="console export directory (run-records.sh CONSOLE_EXPORT_DIR)")
     schedule._add_calendar_flags(parser)
     args = parser.parse_args(argv)
     spec = schedule._spec_from(parser, args)
+    if args.analysis_max_minutes < 1:
+        parser.error("--analysis-max-minutes: expected a positive number of minutes")
     try:
         now = datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now else None
         report = assess(runtime_dir=args.runtime_dir, target=args.target, records_root=args.root,
-                        mail_store=args.mail_store, now=now, spec=spec)
+                        mail_store=args.mail_store, now=now, spec=spec, analysis_root=args.analysis_root,
+                        console_export_root=args.console_export_root,
+                        limits=dict(LIMITS, analysis_max_minutes=args.analysis_max_minutes))
         if args.record_alerts:
             report["alerts_written"] = write_alerts(report, _target_dir(args.runtime_dir, args.target) / "alerts")
     except (HealthError, ValueError) as error:

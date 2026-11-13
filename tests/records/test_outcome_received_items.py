@@ -338,6 +338,49 @@ class ReceivedItemsTests(unittest.TestCase):
                         self.assertIn("REVIEW REQUIRED, not a legal conclusion.", entry["disclaimer"])
                         self.assertNotIn("draft and unreviewed", entry["disclaimer"])
 
+    def test_offroot_current_unit_is_an_unread_item_gap_not_a_writer_failure(self):
+        offroot, _ = self.document(CALTRANS + ["Retention Policy"], "caltrans")
+        normal, _ = self.document([ATASCADERO[2]], "atascadero")
+        self.mail(offroot, "2026-11-02T10:00:00-08:00")
+        with store.ledger(self.database) as con:
+            # The first unit has actionable text; a later off-root unit must discard it too.
+            unit = con.execute("SELECT id,derived_path FROM units WHERE original_sha256=? "
+                               "AND legacy_ordinal=2", (offroot,)).fetchone()
+            expected_path = Path(unit["derived_path"])
+            offroot_path = self.project / "retained-units" / expected_path.name
+            self.private(offroot_path, expected_path.read_bytes())
+            con.execute("UPDATE units SET derived_path=? WHERE id=?", (str(offroot_path), unit["id"]))
+            con.commit()
+        comparison = self.comparison([
+            self.row("caltrans", offroot, "page 1", field="cpra_response_deadline"),
+            self.row("atascadero", normal, "page 1", field="cpra_response_deadline")])
+        self.private(self.project / "run-outputs" / "test-run" / "comparison.json",
+                     json.dumps(comparison).encode())
+        before = self.tree()
+        read_pinned = ri.read_pinned
+
+        def guarded_read(path, digest, limit):
+            self.assertNotIn(Path(path), (offroot_path, expected_path))
+            return read_pinned(path, digest, limit)
+
+        with patch.object(ri, "read_pinned", side_effect=guarded_read):
+            report = ri.write_run_received_items(self.project, "test-run")
+        self.assertEqual(json.loads(self.artifact().read_text()), report)
+        self.assertEqual(self.tree(), before)
+        item = self.item(report, offroot)
+        self.assertEqual(item["extraction_status"], "unavailable")
+        self.assertTrue({"current_extraction_unavailable", "payload_outside_project_evidence"}
+                        <= set(item["diagnostics"]))
+        self.assertEqual(item["kind"], "other")
+        self.assertEqual(item["kind_basis"], {"page": None, "quote": None})
+        self.assertEqual((item["candidates"], item["deadlines"], item["findings"]), ([], [], []))
+        self.assertIsNone(item["ocr_review_status"])
+        control = self.item(report, normal)
+        self.assertEqual((control["extraction_status"], control["kind"]), ("current", "fee"))
+        self.assertEqual(control["kind_basis"], {"page": 1, "quote": ATASCADERO[2]})
+        self.assertEqual(len(control["findings"]), 1)
+        self.assertEqual(control["findings"][0]["citation"]["document_sha256"], normal)
+
     def test_corrupt_current_text_is_a_refusal_not_empty_success(self):
         self.document(CALTRANS, "caltrans")
         for payload in self.evidence.iterdir():
