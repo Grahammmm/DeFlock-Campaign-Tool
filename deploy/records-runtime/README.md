@@ -35,6 +35,9 @@ Files
   `targets/live-ocr-vision-container.json.in`: Phase 2 (T6) LIVE plans from
   the same generator. They are `live-container.json.in` with only the extract
   stage changed (see "Phase 2 OCR plans" below). The same test covers them.
+- `targets/live-portal-container.json.in`: opt-in LIVE plan for portal byte
+  downloads (PORTAL-ARGV-1), same generator; see "Portal download plan" below.
+  Nothing selects it by default.
 - `render.py`: fail-closed renderer for all of the above.
 - Engine side: `campaign_tool/records/run_orchestrator.py`,
   `schemas/records-run-report-v1.json`, `schemas/records-stage-result-v1.json`.
@@ -103,7 +106,14 @@ runs sync at module scope.
 
 Usage
 
-    run-records.sh [--target NAME] [--dry-run] [--scheduled]
+    run-records.sh --target NAME [--dry-run] [--scheduled]
+    run-records.sh --arrival
+
+`--target` is required (except with `--arrival`, which uses `SCHEDULED_TARGET`):
+a bare invocation exits 64 with `TARGET_REQUIRED` and attempts nothing. There is
+no default target; `DEFAULT_TARGET` in VALUES.json is kept for compatibility and
+is no longer used to pick a plan. A TEST plan that names, holds or lies inside a
+LIVE plan's project is refused at render.
 
 - `--dry-run` prints the preflight steps and all 8 stages, with each stage's
   exit code, timeout, failure policy and argv. It takes no lock, calls no
@@ -134,6 +144,44 @@ enables and starts nothing; installing the rendered files and switching the
 timer are separate owner-approved cutover steps. Until the per-run
 ledger+intake backup pre-step lands (planned T17), the operator takes a
 manual ledger and intake backup before each live run.
+
+Portal download plan (PORTAL-ARGV-1)
+
+`live-container.json.in` never downloads portal documents: the portal stage
+does intake and a dry-run fetch only (`PORTAL_FETCH_DRY_RUN_ONLY`). Downloads
+are a separate, opt-in plan, `targets/live-portal-container.json.in`, which is
+the LIVE plan plus the portal download block. Using it is an operator step that
+needs G's portal decision (G-02) and the root-owned egress file; committing the
+template enables nothing. Render it as LIVE in place of the other LIVE plan:
+
+    python3 deploy/records-runtime/render.py --values VALUES.json --out DIR \
+        --target TEST=deploy/records-runtime/targets/test-container.json.in \
+        --target LIVE=deploy/records-runtime/targets/live-portal-container.json.in
+
+Compared with the LIVE plan only the portal stage and a new top-level
+`portal.fetch` block differ. The portal stage argv gains `--portal-egress-file
+@PORTAL_EGRESS_FILE@ --portal-max-bytes @PORTAL_MAX_BYTES@
+--portal-request-timeout @PORTAL_REQUEST_TIMEOUT@`; `portal.fetch` is
+`{"apply": true, "max_items": @PORTAL_MAX_ITEMS@, "max_bytes_total":
+@PORTAL_TOTAL_BYTES@}`. The engine itself (`run_orchestrator.stage_argv`) then
+appends `--portal-download --portal-max-items N --portal-total-bytes B`; a plan
+that spells `--portal-download` in argv is refused.
+
+All five values are required and only this plan accepts them (other plans refuse
+them as unknown placeholders), so a render with the egress file or any cap
+missing is refused: fail closed. `render.py` also refuses out-of-range values
+before anything runs:
+
+| Value | Meaning | Allowed |
+| --- | --- | --- |
+| `PORTAL_EGRESS_FILE` | absolute in-container path of the root-owned `independent-portal-egress` policy (docs/RECORDS-PORTAL.md) | absolute, shell-safe |
+| `PORTAL_MAX_ITEMS` | documents fetched per run | 1 to 1000 |
+| `PORTAL_MAX_BYTES` | largest single body | 1 to 100 MiB, not above the total |
+| `PORTAL_TOTAL_BYTES` | bytes fetched per run | 25 MiB to 1 GiB |
+| `PORTAL_REQUEST_TIMEOUT` | seconds per request | 1 to 120 |
+
+Start with a small `PORTAL_MAX_ITEMS` (for example 5) and raise it after the
+first run. Real values belong in the private `VALUES.json`, never in this repo.
 
 Phase 2 OCR plans (T6)
 

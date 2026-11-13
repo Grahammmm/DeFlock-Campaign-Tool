@@ -33,6 +33,8 @@ class ArrivalRuntime(harness.RuntimeHarness):
     def run_wrapper(self, *args, env=None, timeout=120):
         base = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "RECORDS_NOTIFY_API_BASE": self.api,
                 "ARRIVAL_QUIET_SECONDS": "0"}
+        if not {"--target", "--arrival"} & set(args):
+            args = ("--target", "TEST", *args)  # a bare run is refused (TARGET_REQUIRED)
         return subprocess.run(["/bin/sh", str(self.script), *args], env={**base, **(env or {})},
                               capture_output=True, text=True, timeout=timeout)
 
@@ -260,6 +262,8 @@ class DrainTests(ArrivalRuntime):
         self.write_fixture()
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "RECORDS_NOTIFY_API_BASE": self.api,
                "ARRIVAL_QUIET_SECONDS": "0"}
+        if not {"--target", "--arrival"} & set(args):
+            args = ("--target", "TEST", *args)
         holder = subprocess.Popen(["/bin/sh", str(self.script), *args], env=env,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(holder.kill)

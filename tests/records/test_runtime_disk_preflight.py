@@ -69,6 +69,8 @@ class DiskPreflightTests(RuntimeHarness):
         # Same as the harness, with the fake df first on PATH.
         env = {"PATH": f"{self.bin}:" + os.environ.get("PATH", "/usr/bin:/bin"),
                "RECORDS_NOTIFY_API_BASE": api or self.api}
+        if not {"--target", "--arrival"} & {a.split("=")[0] for a in args}:
+            args = ("--target", "TEST", *args)  # a bare run is refused (TARGET_REQUIRED)
         return subprocess.run(["/bin/sh", str(self.script), *args], env=env,
                               capture_output=True, text=True, timeout=timeout)
 
