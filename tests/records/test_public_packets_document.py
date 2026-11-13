@@ -193,6 +193,25 @@ class ProposeDocumentTests(unittest.TestCase):
         self.received({"received_at": None}, run="run_20261114T070000Z_0a1b2c3d")
         self.refused("DATE_UNAVAILABLE")
 
+    def test_newest_run_without_an_inventory_fails_closed(self):
+        newest = self.project / "run-outputs" / "run_20261114T070000Z_0a1b2c3d"
+        newest.mkdir(mode=0o700)  # the older run's inventory is complete and valid, but it is never consulted
+        self.refused("DATE_UNAVAILABLE")
+        (newest / "outcomes").mkdir(mode=0o700)
+        self.refused("DATE_UNAVAILABLE")
+
+    def test_rejected_packet_is_reproposed_as_a_new_revision(self):
+        self.assertEqual(self.run_main()[0], 0)
+        [first] = self.packets()
+        pp.decide(str(self.project), first["id"], "rejected", "synthetic-reviewer", now=T0 + 1)
+        code, out, _ = self.run_main()
+        self.assertEqual((code, json.loads(out)["result"], json.loads(out)["revision"]), (0, "proposed", 1))
+        self.assertEqual([e["revision"] for e in self.packets()], [0, 1])
+        self.assertEqual([(p["kind"], p["status"]) for p in pp.pending(str(self.project), now=T0 + 60)],
+                         [("document", "proposed")])
+        self.assertEqual(json.loads(self.run_main()[1])["result"], "PACKET_EXISTS", "the open revision is left alone")
+        self.assertEqual(len(self.packets()), 2)
+
     def test_redaction_mismatch(self):
         self.assertEqual(self.refused("REDACTION_MISMATCH", record="f" * 64).detail, "record_id_mismatch")
         rr.record_dir(self.project, "ex-pd", self.sha).joinpath("ELIGIBILITY.json").unlink()

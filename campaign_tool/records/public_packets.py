@@ -344,7 +344,8 @@ def propose(project, packet, now=None, *, only_new=False):
         row = fold(lock.events()).get(ident)
         if row is not None and only_new and row["status"] not in ("rejected", "cancelled"):
             return {"id": ident, "revision": row["revision"], "result": "exists"}
-        if row is not None and row["digest"] == digest and row["status"] != "cancelled":
+        reopen = row is not None and (row["status"] == "cancelled" or (only_new and row["status"] == "rejected"))
+        if row is not None and row["digest"] == digest and not reopen:
             return {"id": ident, "revision": row["revision"], "result": "duplicate"}
         revision = 0 if row is None else row["revision"] + 1
         lock.append("packet", now, id=ident, revision=revision, packet=packet, digest=digest)
@@ -404,14 +405,16 @@ def _check_original(project, sha256):
 def _received_item(project, sha256):
     """The newest run's received-items entry for sha256, or None (an older run is never consulted)."""
     base = os.path.join(project, "run-outputs")
-    for run in sorted((n for n in os.listdir(base) if RUN.fullmatch(n)), reverse=True) if os.path.isdir(base) else ():
-        raw = _read(os.path.join(base, run, "outcomes", "received-items.json"), 64 << 20)
-        if raw is not None:
-            body = _json(raw, "DATE_UNAVAILABLE")
-            items = body.get("items") if isinstance(body, dict) else None
-            return next((i for i in items if isinstance(i, dict) and i.get("original_sha256") == sha256),
-                        None) if isinstance(items, list) else None
-    return None
+    runs = sorted((n for n in os.listdir(base) if RUN.fullmatch(n)), reverse=True) if os.path.isdir(base) else ()
+    if not runs:
+        return None
+    raw = _read(os.path.join(base, runs[0], "outcomes", "received-items.json"), 64 << 20)  # the newest run only
+    if raw is None:
+        return None  # its inventory is missing: fail closed (no older run's metadata is used)
+    body = _json(raw, "DATE_UNAVAILABLE")
+    items = body.get("items") if isinstance(body, dict) else None
+    return next((i for i in items if isinstance(i, dict) and i.get("original_sha256") == sha256),
+                None) if isinstance(items, list) else None
 
 
 def propose_document(project, sha256, record_id, *, store=None, title=None, use_restriction=False, now=None):
