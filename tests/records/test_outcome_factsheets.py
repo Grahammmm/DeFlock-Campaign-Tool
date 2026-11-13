@@ -353,10 +353,56 @@ class FactSheetsTests(unittest.TestCase):
         with store.ledger(self.database) as con:
             con.execute("UPDATE units SET derived_path='/not-admitted/source' WHERE original_sha256=?", (subject,))
             con.commit()
+        # An off-root payload path is no longer a writer failure: it is an unread item-level gap.
         with patch.object(fs, "read_pinned", wraps=fs.read_pinned) as reader:
-            with self.assertRaisesRegex(ValueError, "factsheet_payload_path"):
-                self.collect()
+            report = self.collect()
         self.assertFalse(any(str(call.args[0]) == "/not-admitted/source" for call in reader.call_args_list))
+        self.assertEqual(self.sheet(report)["gaps"], [
+            {"document_sha256": subject, "code": "current_extraction_unavailable"},
+            {"document_sha256": subject, "code": "payload_outside_project_evidence"}])
+
+    def test_offroot_current_unit_is_an_unread_item_gap_not_a_writer_failure(self):
+        subject, _ = self.docs[0]
+        other = self.docs[1][0]
+        with store.ledger(self.database) as con:
+            # Page 1 carries statements; a later off-root unit must discard them too.
+            unit = con.execute("SELECT id,derived_path FROM units WHERE original_sha256=? "
+                               "AND legacy_ordinal=2", (subject,)).fetchone()
+            expected_path = Path(unit["derived_path"])
+            offroot_path = self.project / "retained-units" / expected_path.name
+            self.private(offroot_path, expected_path.read_bytes())
+            con.execute("UPDATE units SET derived_path=? WHERE id=?", (str(offroot_path), unit["id"]))
+            con.commit()
+        reads = []
+        read_pinned = fs.read_pinned
+
+        def guarded_read(path, digest, limit):
+            reads.append(Path(path))
+            return read_pinned(path, digest, limit)
+
+        with patch.object(fs, "read_pinned", side_effect=guarded_read):
+            report = self.collect()
+        self.assertNotIn(offroot_path, reads)
+        self.assertNotIn(expected_path, reads)
+        sheet = self.sheet(report)
+        self.assertEqual(sheet["document_sha256s"], [subject])
+        self.assertEqual(sheet["gaps"], [
+            {"document_sha256": subject, "code": "current_extraction_unavailable"},
+            {"document_sha256": subject, "code": "payload_outside_project_evidence"}])
+        for field, value in sheet["fields"].items():
+            self.assertEqual((value["status"], value["statements"]), ("NOT FOUND", []), field)
+        control = self.sheet(report, "cedar")
+        self.assertEqual(control["gaps"], [])
+        self.assertTrue(any(v["statements"] for v in control["fields"].values()))
+        self.assertTrue(all(s["citation"]["document_sha256"] == other
+                            for v in control["fields"].values() for s in v["statements"]))
+        # The outputs stage writes both files instead of failing with FACTSHEETS_UNAVAILABLE.
+        output = self.project / "run-outputs" / "test-run"
+        output.parent.mkdir(mode=0o700)
+        fs.write_run_factsheets(self.processing, output, "test-run")
+        written = json.loads((output / "agency-factsheets.json").read_text())
+        self.assertEqual(self.sheet(written)["gaps"], sheet["gaps"])
+        self.assertIn("payload&#95;outside&#95;project&#95;evidence", (output / "agency-factsheets.md").read_text())
 
     def test_typed_request_mismatch_does_not_cross_agencies(self):
         with store.ledger(self.database) as con:
