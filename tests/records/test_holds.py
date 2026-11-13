@@ -18,7 +18,7 @@ from campaign_tool.records import holds  # noqa: E402
 from campaign_tool.records.ledger.migrations import v001  # noqa: E402
 
 RUN = "run_20261113T150000Z_0a1b2c3d"
-PRIVATE = "/home/coder/private/Agency Records/jane.doe@example.org Subject line.pdf"
+PRIVATE = "/srv/records/Agency Records/jane.doe@example.org Subject line.pdf"
 REFUSED = "extract:{}:extraction_check_refused:accept_status_rejected"
 
 
