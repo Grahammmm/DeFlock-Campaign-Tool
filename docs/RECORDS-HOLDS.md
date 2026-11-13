@@ -98,8 +98,9 @@ endless retry). Nothing is deleted, moved or re-extracted, and no other column o
 contract; there a repeat failure reopens the alert with its retained count.)
 
 Which documents: the listing's own set (in-scope, extract `pending`, preserved) whose every holding
-alert classifies as `--code`. A document that another code holds as well is not released (a reset
-would not free it) and is counted as `held_by_other_code`. Order is the extract stage's own order;
+alert classifies as `--code`. Release assumes OCR is off, as `native_extract` does by default, so an
+OCR-runtime-only alert (`AWAITING_OCR`) counts as holding. A document that another code holds as well is
+not released (a reset would not free it) and is counted as `held_by_other_code`. Order is the extract stage's own order;
 `--max N` (1-25) takes the first N, so a second call releases the next ones.
 
 Refusals (stderr, exit status; nothing is changed):

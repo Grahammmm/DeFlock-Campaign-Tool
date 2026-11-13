@@ -236,7 +236,7 @@ def candidates(snapshot, code):
         for row in ne.open_alerts(snapshot, subject) if preserved else ():
             codes = ne.alert_codes(row["key"])
             outcome = ne.classify_codes(codes)
-            if not ne.ocr_released(codes) and (outcome not in ne.RETRYABLE or row["count"] >= ne.MAX_ATTEMPTS):
+            if outcome not in ne.RETRYABLE or row["count"] >= ne.MAX_ATTEMPTS:  # OCR off: an OCR-only alert holds
                 holding.append((outcome, row["key"], int(row["count"])))
         mine = [(key, count) for outcome, key, count in holding if outcome == code]
         other += bool(mine) and len(mine) < len(holding)

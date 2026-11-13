@@ -1,4 +1,5 @@
 """HOLD-INSPECT-1: ``records holds`` lists held extract documents from a read-only ledger snapshot."""
+import contextlib
 from contextlib import closing, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 import fcntl
@@ -335,6 +336,38 @@ class ReleaseTests(unittest.TestCase):
             db.commit()
         doc = holds.release(self.project, "EXTRACT_ERROR")
         self.assertEqual((doc["eligible"], doc["held_by_other_code"]), (2, 1))
+
+    def test_an_ocr_only_hold_is_another_holding_code(self):
+        # native_extract holds an OCR-runtime-only alert while OCR is off, so the error reset would not free it.
+        with closing(sqlite3.connect(self.processing / "ledger.sqlite")) as db:
+            db.execute("INSERT INTO alerts VALUES ('x',?,'t','t',1,'runtime','open')",
+                       (f"extract:{digest(1)}:ocr_runtime_unconfigured",))
+            db.commit()
+        doc = holds.release(self.project, "EXTRACT_ERROR")
+        self.assertEqual((doc["eligible"], doc["held_by_other_code"]), (2, 1))
+        self.assertNotIn(digest(1)[:12], [i["sha256_prefix"] for i in doc["items"]])
+        pipeline = records_run.Pipeline.__new__(records_run.Pipeline)
+        pipeline.root = records_run.Root(self.processing)
+        self.assertEqual(ne.held_outcome(pipeline, digest(1)), ne.AWAITING_OCR)  # native_extract still holds it
+
+    def test_a_newer_run_between_the_report_check_and_the_locks_is_refused(self):
+        taken = holds._locked
+
+        @contextlib.contextmanager
+        def newer_run_completes_while_waiting(*args):
+            with taken(*args) as state:
+                (self.processing / "runs" / "extract-run_20261113T150001Z_0a1b2c3d.json").write_text("{}")
+                yield state
+
+        before = tree(self.project)
+        with mock.patch.object(holds, "_locked", newer_run_completes_while_waiting):
+            with self.assertRaises(holds.Refused) as caught:
+                self.apply(2)
+        self.assertEqual(caught.exception.args, (2, "REPORT_NOT_LATEST"))
+        self.assertEqual(sorted(self.counts().values()), [1, 3, 3, 3])
+        self.assertFalse(self.receipts.exists())
+        (self.processing / "runs" / "extract-run_20261113T150001Z_0a1b2c3d.json").unlink()
+        self.assertEqual(tree(self.project), before)
 
     def test_a_released_document_is_retried_then_held_again(self):
         self.apply(1)
