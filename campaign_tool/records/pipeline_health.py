@@ -29,9 +29,10 @@ LIMITS = {"arrival_max_minutes": 30, "mail_poll_warn_hours": 6, "mail_poll_stop_
           "failure_streak": 3, "report_window": 20, "analysis_max_minutes": 60, "export_grace_minutes": 15}
 # An optional check whose root was not given reports unknown but never moves the overall state or the line.
 NOT_CONFIGURED = frozenset({"analysis_not_configured", "console_export_not_configured"})
-# Analysis ledger outcomes that mean a step failed (analysis_bridge); "ERROR LOCKED" is a busy review lock, retried next tick.
-ANALYSIS_ERRORS = frozenset({"EXPORT_INVALID", "EXPORT_CONFLICT", "TEXT_CONFLICT", "CONFIG_INVALID"})
-LEDGER_TAIL = 256 * 1024
+# analysis_bridge.FINAL: any other logged sync outcome (PROFILE_MISSING, TEXT_CONFLICT, CONFIG_INVALID) leaves the pair pending.
+SYNC_FINAL = frozenset({"SYNCED", "UNCHANGED", "NO_AGENCIES", "ANALYSIS_READY_MISSING"})
+# Receive outcomes that refused an export; "ERROR LOCKED" is a busy review lock, retried next tick, and never alarms.
+ANALYSIS_ERRORS = frozenset({"EXPORT_INVALID", "EXPORT_CONFLICT"})
 EXIT = {"ok": 0, "warn": 1, "unknown": 2, "stop": 3}
 TARGET_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 ALERT_RE = re.compile(r"^health-([a-z_]+)-([a-z_]+)\.json$")
@@ -236,24 +237,23 @@ def _schedule(records_root, now, spec):
 
 
 def _ledger_error(path):
-    """True when, in the ledger tail, the newest entry of any tick agency, packet, received run or run x agency pair failed."""
+    """True when the newest entry of any tick agency, packet, received run or run x agency pair failed or left its sync
+    pending. The whole ledger is read (analysis-sync does too): a pending sync outcome is logged once, not every cycle."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     except FileNotFoundError:
         return False
-    with os.fdopen(fd, "rb") as handle:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError("not a regular file")
-        handle.seek(max(0, info.st_size - LEDGER_TAIL))
-        lines = handle.read(LEDGER_TAIL).split(b"\n")[1 if info.st_size > LEDGER_TAIL else 0:]  # drop a cut first line
     newest = {}
-    for line in filter(bytes.strip, lines):
-        entry = json.loads(line.decode("utf-8"))
-        if not isinstance(entry, dict) or not isinstance(entry.get("outcome"), str):
-            raise ValueError("not a ledger entry")
-        newest[tuple(str(entry.get(key)) for key in ("kind", "agency", "run_id", "agency_id"))] = entry["outcome"]
-    return any((o.startswith("ERROR") and o != "ERROR LOCKED") or o in ANALYSIS_ERRORS for o in newest.values())
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        for line in filter(bytes.strip, handle):
+            entry = json.loads(line.decode("utf-8"))
+            if not isinstance(entry, dict) or not isinstance(entry.get("outcome"), str):
+                raise ValueError("not a ledger entry")
+            newest[tuple(str(entry.get(key)) for key in ("kind", "agency", "run_id", "agency_id"))] = entry["outcome"]
+    return any((o.startswith("ERROR") and o != "ERROR LOCKED") or o in ANALYSIS_ERRORS or (k[0] == "sync" and o not in SYNC_FINAL)
+               for k, o in newest.items())
 
 
 def _analysis(analysis_root, now, limits):
