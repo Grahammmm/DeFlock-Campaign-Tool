@@ -335,6 +335,11 @@ def entries(model, today, horizon_days=90, since=None):
     return build(model, today, horizon_days, since)[0]
 
 
+def no_clock_count(model, today, horizon_days=90):
+    """Open requests with no usable statutory date: the calendar cannot list them, so its counts may be low."""
+    return sum(int(m.group(1)) for n in build(model, today, horizon_days)[1] if (m := re.match(r"no clock: (\d+) ", n)))
+
+
 # ---- .ics --------------------------------------------------------------------------------------------
 
 PATHS = re.compile(r"(?<![\w])(?:[A-Za-z]:[\\/]|~[\\/]?|\.{1,2}[\\/]|[\\/])[^\s)\]'\",;]*"
@@ -395,6 +400,15 @@ def _month(text, today):
     return date(int(m.group(1)), int(m.group(2)), 1) if m else (None if text else today.replace(day=1))
 
 
+_CODED = re.compile(r"^(.*): unavailable \((\w+)\)$")
+
+
+def _plain_note(note):
+    """'name: unavailable (code)' -> 'name: unavailable. <one plain sentence>' (S2-02); other notes unchanged."""
+    m = _CODED.match(note)
+    return console_layout.unavailable_note(m.group(1), m.group(2)) if m else note
+
+
 def render(model, today, first):
     last = date(first.year + (first.month == 12), first.month % 12 + 1, 1) - timedelta(days=1)
     horizon = max(90, (last - today).days)
@@ -415,7 +429,7 @@ def render(model, today, first):
         out.insert(1, banner)
     prefix = "follow-up drafting is off for this agency: "
     off = [n[len(prefix):] for n in notes if n.startswith(prefix)]
-    out += ['<p class="diag" role="status">%s</p>' % esc(n) for n in notes if not n.startswith(prefix)]
+    out += ['<p class="diag" role="status">%s</p>' % esc(_plain_note(n)) for n in notes if not n.startswith(prefix)]
     if off:
         out.append('<details class="diag"><summary>Follow-up drafting is off for %d agenc%s</summary><ul>%s</ul></details>' % (
             len(off), "y" if len(off) == 1 else "ies", "".join("<li>%s</li>" % esc(n) for n in off)))

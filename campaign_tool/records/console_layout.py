@@ -10,21 +10,32 @@ STYLE = """
 *{box-sizing:border-box}body{margin:0;padding:1rem;background:white;color:#222;font:16px/1.5 system-ui,sans-serif;
 display:grid;grid-template-columns:11rem minmax(0,1fr);gap:1rem}
 body>header{grid-column:1/-1}body>header .notice{margin:0}
-.skip{position:absolute;left:-999px}.skip:focus{position:static;grid-column:1/-1}
+.skip{position:absolute;left:-999px;display:inline-flex;align-items:center;min-height:44px}.skip:focus{position:static;grid-column:1/-1}
 .scroll{overflow-x:auto;max-width:100%}.side{display:flex;flex-direction:column;align-self:start;gap:.4rem}
 .side>a{display:block}.side .more{font-size:.85rem}.side .more a{display:inline}
-main{min-width:0}a{color:#174b76}a[aria-current=page]{font-weight:700}
+main{min-width:0;overflow-wrap:anywhere}a{color:#174b76}a[aria-current=page]{font-weight:700}
 table{width:100%;border-collapse:collapse}th,td{padding:.25rem .5rem;text-align:left;vertical-align:top;
 border-bottom:1px solid #ccc;overflow-wrap:anywhere}pre,code,q{white-space:pre-wrap;overflow-wrap:anywhere}
 .overdue{color:#b00020;font-weight:700}.muted{color:#555}.diag{border-left:4px solid #804000;padding:.5rem}
 textarea,input[type=text]{width:100%;font:inherit}button{min-height:44px;padding:.5rem 1rem;font:inherit}
 .draft{border:1px solid #aaa;padding:.75rem;margin:.75rem 0}:focus-visible{outline:3px solid #804000}
 """
+# Phone layout (under 700 px): one column; every link, button, field and summary at least 44 px (about a thumb);
+# tables scroll inside themselves instead of squeezing every column to one letter or widening the page.
+MOBILE = (
+    'body{grid-template-columns:minmax(0,1fr)}.side{grid-column:1;flex-direction:row;flex-wrap:wrap;column-gap:.25rem}'
+    '.side a,.side .more a,main a{display:inline-flex;align-items:center;min-height:44px;min-width:44px}'
+    '.side>a{padding:0 .5rem}.side .more{flex-basis:100%;margin:0}'
+    'main a{margin-right:.25rem}summary{min-height:44px;padding:.6rem 0}'
+    'main table{display:block;overflow-x:auto;max-width:100%}th,td{overflow-wrap:break-word}'
+    'input:not([type=radio]):not([type=checkbox]):not([type=hidden]):not([type=submit]),select{min-height:44px}'
+    'input[type=radio],input[type=checkbox]{width:1.5rem;height:1.5rem}')
 END = "</main></body></html>"
 PLAIN = {"timeline": "the request timeline", "queue": "the approval queue", "public": "public updates",
          "packets": "update packets", "sends": "sent-mail results", "calendar": "the calendar",
          "waiting": "waiting on agencies", "received": "received documents", "links": "release links",
-         "followup": "the follow-up register", "tiers": "the response reading"}
+         "followup": "the follow-up register", "tiers": "the response reading", "proposals": "finding proposals",
+         "response": "the response items", "textstate": "the document text status", "aliases": "agency name aliases"}
 
 
 # One plain sentence per internal source code: what happened and what to do (S2-02).
@@ -50,12 +61,17 @@ UNAVAILABLE = {
     "console_model_missing": "The export has no copy of this data (console_model_missing); export again.",
     "console_model_invalid": "The export's copy of this data is not valid (console_model_invalid); export again.",
     "console_model_mismatch": "The export's copy of this data is from another project (console_model_mismatch).",
+    "no_response_items": "The response items for this run have not been created yet.",
+    "board_unreadable": "The agencies board could not be read.",
+    "calendar_unreadable": "The calendar could not be read.",
+    "reminders_unreadable": "Reminder status could not be read.",
 }
 
 
 def reason(code):
-    """Plain wording for an internal source code; unknown codes get a generic sentence."""
-    return UNAVAILABLE.get(code) or "It could not be read; ask the operator to check the file."
+    """Plain wording for an internal source code; an unknown code gets a generic sentence that still names the code."""
+    return UNAVAILABLE.get(code) or ("It could not be read; ask the operator to check the file (%s)." % code if code
+                                     else "It could not be read; ask the operator to check the file.")
 
 
 def unavailable_note(name, code):
@@ -91,9 +107,7 @@ def start(title, active=None):
     return ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             '<meta name="robots" content="noindex,nofollow"><title>' + esc(title) +
-            '</title><style>' + STYLE + '</style><style media="(max-width:699px)">'
-            'body{grid-template-columns:minmax(0,1fr)}.side{grid-column:1}'
-            '.side a,.side .more a{display:inline-flex;align-items:center;min-height:44px}'
+            '</title><style>' + STYLE + '</style><style media="(max-width:699px)">' + MOBILE +
             '</style></head><body><a class="skip" href="#content">Skip to content</a>'
             '<header><p class="notice">' + esc(BANNER) + '</p></header>' + nav(active) +
             '<main id="content" tabindex="-1">')

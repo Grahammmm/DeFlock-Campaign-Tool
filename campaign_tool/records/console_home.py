@@ -35,7 +35,8 @@ def load(project, run_id, run_report_path=None, now=None, *, send_config=None, m
         else:
             today = model["now"].date()
             entries = console_calendar.entries(calendar, today, horizon_days=7)
-            model["calendar"] = {"state": "ok", "rows": sorted(
+            no_clock = console_calendar.no_clock_count(calendar, today, horizon_days=7)
+            model["calendar"] = {"state": "ok", "no_clock": no_clock, "rows": sorted(
                 (e for e in entries if e["kind"] != "overdue" and today <= e["date"] <= today + timedelta(days=7)),
                 key=lambda e: (e["date"], e["kind"]))}
     except Exception:
@@ -187,7 +188,8 @@ def waiting_rows(board, today):
 def render_waiting(state, today):
     out = ['<section id="waiting"><h2>Waiting on agencies</h2>']
     if state["state"] != "ok":
-        return "\n".join(out + ['<p role="status">Waiting on agencies: unavailable (%s).</p></section>' % esc(state.get("code"))])
+        return "\n".join(out + ['<p role="status">%s</p></section>' % esc(
+            console_layout.unavailable_note("Waiting on agencies", state.get("code")))])
     rows = state["rows"]
     out.append('<table><thead><tr>' + ''.join('<th scope="col">%s</th>' % h for h in
                ("Agency", "Request", "Asked on", "Due (basis)", "Status", "Reminder")) + '</tr></thead><tbody>')
@@ -261,7 +263,7 @@ def render_progress(model, today):
     out = ['<section id="timeline"><h2>Timeline (all agencies)</h2>']
     available = model["timeline"]["state"] == "ok"
     if not available:
-        out.append('<p role="status">Timeline: unavailable (%s).</p>' % esc(model["timeline"].get("code")))
+        out.append('<p role="status">%s</p>' % esc(console_layout.unavailable_note("Timeline", model["timeline"].get("code"))))
     else:
         rows = timeline_rows(model, today)
         for row in rows[:30]:
@@ -283,9 +285,9 @@ def render_progress(model, today):
     if drafts:
         out.append('<p><a href="/next-steps">%d suggested drafts waiting</a></p>' % len(drafts))
     if not available:
-        out.append('<p role="status">Next actions: unavailable (timeline).</p>')
+        out.append('<p role="status">Next actions: unavailable until the request timeline loads.</p>')
     if model["queue"]["state"] != "ok":
-        out.append('<p role="status">Suggested drafts: unavailable (%s).</p>' % esc(model["queue"].get("code")))
+        out.append('<p role="status">%s</p>' % esc(console_layout.unavailable_note("Suggested drafts", model["queue"].get("code"))))
     refusals = model.get("refusals", {"state": "unavailable"})
     count = sum(r["reply"] == "not_drafted" for r in refusals.get("entries", [])) if refusals["state"] == "available" else 0
     if count:
@@ -308,12 +310,16 @@ def render_home(model, token):
     decision_count = str(len(rows)) if not {"queue", "public", "packets", "sends"} & set(missing) else "unknown"
     calendar = model["calendar"]
     week = calendar.get("rows", [])
-    week_count = str(len(week)) if calendar["state"] == "ok" else "unknown"
+    known = calendar["state"] == "ok" and "timeline" not in missing  # the calendar is built from the timeline
+    week_count = str(len(week)) if known else "unknown"
+    no_clock = calendar.get("no_clock", 0) if known else 0
     waiting = model["waiting"]
     waiting_count = ("%d waiting on agencies (%d overdue)" % (len(waiting["rows"]), sum(bool(r["overdue"]) for r in waiting["rows"]))
                      if waiting["state"] == "ok" and "received" not in missing else "waiting on agencies: unknown")
     out = ([console_layout.sources_banner(console_layout.plain(missing))] if missing else []) + [
-           "<h1>Home</h1>", '<p role="status">%s need your decision · %s due in the next 7 days · %s</p>' % (decision_count, week_count, waiting_count),
+           "<h1>Home</h1>", '<p role="status">%s need your decision · %s due in the next 7 days · %s</p>' % (decision_count, week_count, waiting_count)
+           + ('<p role="status" class="diag">%d open request%s no usable due date, so the 7-day count may be low.</p>' % (
+              no_clock, " has" if no_clock == 1 else "s have") if no_clock else ""),
            '<section id="decide"><h2>Needs your decision</h2>']
     counts = ["%s %d" % (label, count) for group, label in zip(GROUPS, LABELS)
               if (count := sum(r["kind_group"] == group for r in rows))]
@@ -325,10 +331,19 @@ def render_home(model, token):
             out.append('<p role="status">%s</p>' % esc(console_layout.unavailable_note(*console_layout.plain([source]), state.get("code"))))
     if model["packets"]["state"] == "ok" and not model["packets"]["rows"]:
         out.append("<p>No packets pending.</p>")
+    if decision_count == "unknown" and not rows:
+        out.append('<p role="status">Cannot tell what needs your decision: the notes above say what could not be loaded.</p>')
+    seen, total = {}, {}
+    for row in rows:
+        total[(row["agency"], row["what"])] = total.get((row["agency"], row["what"]), 0) + 1
     out.append('<table><thead><tr>' + "".join('<th scope="col">%s</th>' % title for title in
                ("Agency", "What", "Waiting since", "Open")) + '</tr></thead><tbody>')
     for row in rows:
         what = esc(row["what"])
+        key = (row["agency"], row["what"])
+        if total[key] > 1:  # identical rows differ only by their link target: say which of several this is (S2-11)
+            seen[key] = seen.get(key, 0) + 1
+            what += " (%sitem %d of %d)" % (esc(row["request"]) + ", " if row["request"] else "", seen[key], total[key])
         if row["overdue_days"] is not None:
             what += ' <span class="overdue">OVERDUE %d days</span> (on our records; not a legal finding)' % row["overdue_days"]
         if row["kind"] in (*followup_clock.REMINDERS, followup_clock.NOTICE):
@@ -341,9 +356,13 @@ def render_home(model, token):
     out.append('</tbody></table></section><section id="week"><h2>Next 7 days</h2>')
     out.append("<p>%s</p>" % esc(cb.COMPUTED_LEGEND))
     if calendar["state"] != "ok":
-        out.append('<p role="status">Calendar: unavailable (%s).</p>' % esc(calendar.get("code")))
+        out.append('<p role="status">%s</p>' % esc(console_layout.unavailable_note("Calendar", calendar.get("code"))))
+    elif not known:
+        out.append('<p role="status">Next 7 days: unknown, because the request timeline could not be loaded.</p>')
     elif not week:
-        out.append('<p>Nothing due in the next 7 days.</p>')
+        out.append('<p>Nothing due in the next 7 days.</p>' if not no_clock else
+                   '<p>Nothing dated in the next 7 days (%d open request%s no usable due date).</p>' % (
+                       no_clock, " has" if no_clock == 1 else "s have"))
     else:
         out.append('<ul>')
         for entry in week[:20]:
