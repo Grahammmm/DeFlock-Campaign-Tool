@@ -496,15 +496,23 @@ def main(argv=None):
         "Update packets for documents, summaries and findings. Writes a site-content change file on G's signed approval; "
         "publishes and deploys nothing; ships OFF."))
     parser.add_argument("action", choices=("init", "status", "propose", "payload", "approve", "reject", "cancel", "write",
-                                           "switch-payload", "enable", "off"))
+                                           "switch-payload", "enable", "off", "export-changes"))
     parser.add_argument("--project", required=True)
+    parser.add_argument("--out", help="private host export directory; export-changes only")
     parser.add_argument("--packet-file")
     parser.add_argument("--id")
     parser.add_argument("--signature-file")
     parser.add_argument("--actor", default="console")
     args = parser.parse_args(argv)
     try:
-        if args.action == "init":
+        if args.action == "export-changes":
+            from .packet_changes import export_changes
+            _need(args.out, "out_required")
+            try:
+                out = export_changes(args.project, args.out)
+            except OSError:
+                raise PacketError("export_io_error") from None
+        elif args.action == "init":
             out = {"switch": init(args.project)}
         elif args.action == "status":
             out = status(args.project)
