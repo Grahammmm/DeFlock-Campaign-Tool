@@ -346,9 +346,12 @@ class ReleaseTests(unittest.TestCase):
         doc = holds.release(self.project, "EXTRACT_ERROR")
         self.assertEqual((doc["eligible"], doc["held_by_other_code"]), (2, 1))
         self.assertNotIn(digest(1)[:12], [i["sha256_prefix"] for i in doc["items"]])
+        with closing(sqlite3.connect(self.processing / "ledger.sqlite")) as db:  # what a reset would have done
+            db.execute("UPDATE alerts SET count=0 WHERE key=?", (f"extract:{digest(1)}:extraction_stage_error",))
+            db.commit()
         pipeline = records_run.Pipeline.__new__(records_run.Pipeline)
         pipeline.root = records_run.Root(self.processing)
-        self.assertEqual(ne.held_outcome(pipeline, digest(1)), ne.AWAITING_OCR)  # native_extract still holds it
+        self.assertEqual(ne.held_outcome(pipeline, digest(1)), ne.AWAITING_OCR)  # still held by native_extract
 
     def test_a_newer_run_between_the_report_check_and_the_locks_is_refused(self):
         taken = holds._locked
