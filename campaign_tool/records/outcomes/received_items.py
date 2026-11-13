@@ -517,6 +517,7 @@ def write_run_received_items(project, run_id):
     Writes only run-outputs/<run>/outcomes/received-items.json (0700/0600).
     Identical replay is a no-op; a different existing artifact is refused.
     """
+    from ...law import load_package
     from ..run_stages import LedgerBusy, snapshot_ro
     try:
         _need(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", run_id) is not None, "received_items_run_id")
@@ -529,6 +530,18 @@ def write_run_received_items(project, run_id):
         links, bad_links = read_links(project)
         with snapshot_ro(processing / "ledger.sqlite") as db:
             report = collect(db, processing, comparison, run_id=run_id, comparison_sha256=digest, links=links)
+        try:
+            status = load_package("us-ca")["status"]
+            _need(status in ("draft", "reviewed"), "law_package_status_unreadable")
+        except (OSError, ValueError, KeyError, TypeError):
+            status = "draft"
+            report["diagnostics"].append("law_package_status_unreadable")
+        report["law_package_status"] = status
+        if status == "reviewed":
+            report["disclaimer"] = DISCLAIMER.replace("draft and unreviewed", "reviewed")
+        for item in report["items"]:
+            for finding in item["findings"]:
+                finding.update(law_package_status=status, disclaimer=report["disclaimer"])
         if bad_links:
             report["diagnostics"].append("message_links_invalid")
         report["diagnostics"] = sorted(set(report["diagnostics"]))
