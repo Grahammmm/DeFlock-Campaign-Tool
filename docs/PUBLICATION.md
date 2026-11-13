@@ -506,6 +506,49 @@ stay in the file untouched, `--check` still accepts them, and the review queue l
 its hash. Nothing stamps them automatically. A clean gate does not prove an artefact is fit to publish: redaction
 sign-off, the privacy lint and the legal-claim notes are separate conditions.
 
+## Records published as received (`records public-packets propose-document`, DOC-PUBLISH-1)
+
+A record an agency sent can reach the site only as a `document` update packet, and the only pipeline path that proposes
+one is:
+
+```
+records public-packets propose-document --project P --sha256 S --redaction-record R [--store STORE] [--title T] [--use-restriction]
+```
+
+`S` is the original's SHA-256. `R` is the **redaction record id**: the SHA-256 of the record's `ELIGIBILITY.json` bytes,
+made by the organizer with `tools/flock_redact.py` (see [REDACTION.md](REDACTION.md)). `STORE` is the redaction store the
+record was made in, given as the same absolute path (default: the project). The command reads, in this order, and refuses
+with one code (stderr; exit 1; never record text):
+
+| Code | Refused when |
+| --- | --- |
+| `ORIGINAL_UNKNOWN` | `S` is not an admitted original in the live ledger (`processing-v1/ledger.sqlite`, read-only snapshot): unknown, excluded or not an agency original. |
+| `NOT_PRESERVED` | its `preserve` stage is not `done`, or its stored bytes no longer hash to `S`. |
+| `NOT_EXTRACTED` | its `extract` stage is not `done`, or the received item's extraction is not `current`. |
+| `DATE_UNAVAILABLE` | the newest run's `outcomes/received-items.json` has no item for `S` or no real `received_at` day. |
+| `AGENCY_UNATTRIBUTED` | that item names no single agency (the packet and the record path are keyed by it). |
+| `REDACTION_MISMATCH <reason>` | no record at `STORE/agencies/<agency>/redaction/S/`, its `ELIGIBILITY.json` does not hash to `R`, or it is for another original. |
+| `REDACTION_UNVERIFIED <reason>` | the record does not verify afresh: modes or schema (`proposal_mismatch`), `unsigned`, `signer_untrusted` (the same root-owned trust file as every approval), `derivative_missing`, `derivative_mismatch`, or `not_required` (a no-redaction proposal names no derivative, so there is nothing to publish). |
+| `PRIVACY_LINT <where>` | the redacted derivative (`derivative: <categories>`) or the packet title/text still matches the shared email, phone or plate patterns: the record did not cover it. |
+| `LEDGER_UNAVAILABLE` | the ledger cannot be read without touching it (busy, missing). |
+
+When every check passes it calls `propose` once: the packet is `{"kind": "document", "documents": [{"sha256": S,
+"date_received": <day>, "source_request": <request>, "redaction_ids": [R], "use_restriction": <flag>}], "title", "text",
+"citations": []}` with source `received-S`, and it waits as **pending** in `/packets`. A second call answers
+`PACKET_EXISTS` and writes nothing while that packet is open or approved (cancel or reject it to propose again). Nothing
+else in the project changes: no record bytes are copied anywhere and the derivative text never enters the journal.
+Approval stays G's signed `approve` in the console (scope `public-packet-v1`); the signed payload includes `R`, so the
+signature binds the exact derivative bytes. `write_change` is unchanged and deploys nothing.
+
+**Which bytes the site may publish.** For a written document change, the site side (S18 PUB-BRIDGE-1) resolves each
+`documents[]` entry to `STORE/agencies/<agency_key>/redaction/<sha256>/ELIGIBILITY.json`, checks that file still hashes to
+`redaction_ids[0]`, re-runs `campaign_tool.records.redaction_record.verified_derivative` (fresh signature and derivative
+check) and publishes only the file at its `derivative_path` (the `<S>.redacted.txt` that `flock_redact.py apply` writes),
+whose bytes must hash to `derivative_sha256`. The original is never published. Limits: the redaction tools redact UTF-8
+text only, so a record whose original is a PDF or image cannot get a record whose `source_sha256` is `S` until a page or
+visual redaction path exists; and the patterns have the blind spots listed in REDACTION.md, under G's review, not
+instead of it.
+
 ## Not done
 
 Offline review signatures are optional (see Signed receipts above) and only prove a receipt was made with a key in the

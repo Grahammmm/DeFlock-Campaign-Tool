@@ -5,7 +5,8 @@ private journal ``<project>/public-packets.jsonl``. G approves each packet with 
 (``campaign_tool.approval``, the REC-AUTO-4 verifier, bound to the revision). Only then, and only while the switch file
 ``public-packets.json`` says ``enabled`` (it ships ``false``) and ``public-packets.KILL`` is absent, may ``write_change`` write
 ``<project>/site-changes/<id>-r<rev>.json``: an input for a reviewed campaign-site PR. The production deploy stays the
-existing manual workflow. Agencies, campaign and jurisdiction are data.
+existing manual workflow. Agencies, campaign and jurisdiction are data. ``propose-document`` (DOC-PUBLISH-1) is the only
+pipeline path that proposes a ``document`` packet: a received original plus its verified, applied redaction record.
 
 Refused at proposal and again at write: privacy-pattern matches, legal-violation wording, unverified citations, documents
 without a redaction record, findings that are not approved for public, a packet older than ``EXPIRY_SECONDS``, or a revision
@@ -45,11 +46,11 @@ PUBLIC_STATE = "approved for public"
 
 
 class PacketError(Exception):
-    """Content-free refusal; ``code`` is stable."""
+    """Content-free refusal; ``code`` is stable; ``detail`` (optional) is a stable reason or category list, never text."""
 
-    def __init__(self, code):
+    def __init__(self, code, detail=None):
         super().__init__(code)
-        self.code = code
+        self.code, self.detail = code, detail
 
 
 def _need(condition, code):
@@ -332,14 +333,17 @@ def turn_off(project, actor, now=None):
 
 # ---- packet life cycle -------------------------------------------------------------------------
 
-def propose(project, packet, now=None):
-    """Add a packet. Identical content is a duplicate (no event); changed content is a new revision that voids any approval."""
+def propose(project, packet, now=None, *, only_new=False):
+    """Add a packet. Identical content is a duplicate (no event); changed content is a new revision that voids any approval.
+    only_new (propose-document): an existing packet under this id that is not rejected or cancelled is left alone (exists)."""
     now = time.time() if now is None else now
     packet = clean(packet)
     ident = packet_id(packet)
     digest = hashlib.sha256(_canon(packet).encode()).hexdigest()
     with _Locked(project, create=True) as lock:
         row = fold(lock.events()).get(ident)
+        if row is not None and only_new and row["status"] not in ("rejected", "cancelled"):
+            return {"id": ident, "revision": row["revision"], "result": "exists"}
         if row is not None and row["digest"] == digest and row["status"] != "cancelled":
             return {"id": ident, "revision": row["revision"], "result": "duplicate"}
         revision = 0 if row is None else row["revision"] + 1
@@ -353,6 +357,102 @@ def from_queue(project, row, source_run_id=None, now=None):
     return propose(project, {"kind": "site_update", "agency_key": row.get("agency_id"), "request_id": "" if row.get(
         "request_id") == "agency-wide" else row.get("request_id"), "source": f"queue-{row.get('id')}",
         "title": f"Site update for {row.get('agency_id')}", "text": row.get("body")}, now=now)
+
+
+# ---- a received record as a document packet (DOC-PUBLISH-1) -----------------------------------
+
+RUN = re.compile(r"run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}")  # run ids sort by time
+
+
+def _file_sha256(path):
+    """SHA-256 of a regular file's current bytes, or None (missing, unreadable, link or special file)."""
+    try:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return None
+            digest = hashlib.sha256()
+            for block in iter(lambda: stream.read(1 << 20), b""):
+                digest.update(block)
+            return digest.hexdigest()
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _check_original(project, sha256):
+    """Admitted, preserved (current bytes still hash to sha256) and extracted, from a read-only live-ledger snapshot."""
+    import sqlite3
+    from .ledger import store
+    from .ledger_catalog import scope_excluded
+    from .outcomes.received_items import ADMITTED_ROLES
+    from .run_stages import LedgerBusy, snapshot_ro
+    try:
+        with snapshot_ro(os.path.join(project, "processing-v1", "ledger.sqlite")) as db:
+            db.row_factory = sqlite3.Row
+            try:
+                original = store.effective_original(db, sha256)
+            except ValueError:
+                original = None
+            stages = {r["stage"]: r["status"] for r in db.execute(
+                "SELECT stage,status FROM stage_state WHERE original_sha256=?", (sha256,))}
+    except (sqlite3.Error, LedgerBusy, OSError):
+        raise PacketError("LEDGER_UNAVAILABLE") from None
+    _need(original is not None and not scope_excluded(original) and original["role"] in ADMITTED_ROLES, "ORIGINAL_UNKNOWN")
+    _need(stages.get("preserve") == "done" and _file_sha256(original["storage_path"]) == sha256, "NOT_PRESERVED")
+    _need(stages.get("extract") == "done", "NOT_EXTRACTED")
+
+
+def _received_item(project, sha256):
+    """The newest run's received-items entry for sha256, or None (an older run is never consulted)."""
+    base = os.path.join(project, "run-outputs")
+    for run in sorted((n for n in os.listdir(base) if RUN.fullmatch(n)), reverse=True) if os.path.isdir(base) else ():
+        raw = _read(os.path.join(base, run, "outcomes", "received-items.json"), 64 << 20)
+        if raw is not None:
+            body = _json(raw, "DATE_UNAVAILABLE")
+            items = body.get("items") if isinstance(body, dict) else None
+            return next((i for i in items if isinstance(i, dict) and i.get("original_sha256") == sha256),
+                        None) if isinstance(items, list) else None
+    return None
+
+
+def propose_document(project, sha256, record_id, *, store=None, title=None, use_restriction=False, now=None):
+    """A received record -> one pending ``document`` packet, only with a verified, applied redaction record. Proposes only:
+    the record bytes are never copied; the packet names the original and the record id (which pins the derivative)."""
+    from . import redaction_record
+    _need(isinstance(sha256, str) and SHA.fullmatch(sha256) is not None, "ORIGINAL_UNKNOWN")
+    _check_original(project, sha256)
+    try:
+        item = _received_item(project, sha256)
+    except (PacketError, OSError):
+        item = None
+    _need(item is None or item.get("extraction_status") == "current", "NOT_EXTRACTED")
+    day = item["received_at"][:10] if item is not None and isinstance(item.get("received_at"), str) else ""
+    try:
+        _need(DAY.fullmatch(day) is not None, "DATE_UNAVAILABLE")
+        datetime.strptime(day, "%Y-%m-%d")  # a real calendar day
+    except ValueError:
+        raise PacketError("DATE_UNAVAILABLE") from None
+    agency, request = item.get("agency_id"), item.get("request_id") or ""
+    _need(isinstance(agency, str) and KEY.fullmatch(agency) is not None, "AGENCY_UNATTRIBUTED")
+    try:
+        _, data = redaction_record.verified_derivative(os.path.abspath(store or project), agency, sha256, record_id)
+        found = privacy_patterns.categories(data.decode("utf-8"))
+    except redaction_record.RedactionError as error:
+        raise PacketError(error.code, error.reason) from None
+    except UnicodeError:
+        raise PacketError("REDACTION_UNVERIFIED", "derivative_not_text") from None
+    if found:  # the published text still matches a pattern: the record did not cover it
+        raise PacketError("PRIVACY_LINT", "derivative: " + ", ".join(found))
+    packet = {"kind": "document", "agency_key": agency, "request_id": request, "source": "received-" + sha256,
+              "title": title or f"Record received from {agency} on {day}",
+              "text": (f"A record received from {agency} on {day}, published as received with personal details removed "
+                       f"under redaction record {record_id[:12]}."),
+              "documents": [{"sha256": sha256, "date_received": day, "source_request": request,
+                             "redaction_ids": [record_id], "use_restriction": use_restriction is True}], "citations": []}
+    try:
+        got = propose(project, packet, now=now, only_new=True)
+    except PacketError as error:
+        raise PacketError("PRIVACY_LINT", "title or text") if error.code == "privacy_lint" else error from None
+    return dict(got, result="PACKET_EXISTS" if got["result"] in ("exists", "duplicate") else got["result"])
 
 
 def _get(rows, ident, revision=None):
@@ -496,16 +596,25 @@ def main(argv=None):
         "Update packets for documents, summaries and findings. Writes a site-content change file on G's signed approval; "
         "publishes and deploys nothing; ships OFF."))
     parser.add_argument("action", choices=("init", "status", "propose", "payload", "approve", "reject", "cancel", "write",
-                                           "switch-payload", "enable", "off"))
+                                           "switch-payload", "enable", "off", "propose-document"))
     parser.add_argument("--project", required=True)
     parser.add_argument("--packet-file")
     parser.add_argument("--id")
     parser.add_argument("--signature-file")
     parser.add_argument("--actor", default="console")
+    parser.add_argument("--sha256", help="propose-document: the received original's SHA-256")
+    parser.add_argument("--redaction-record", help="propose-document: SHA-256 of the applied record's ELIGIBILITY.json")
+    parser.add_argument("--store", help="propose-document: redaction store holding agencies/<agency>/redaction/ "
+                                        "(default: the project)")
+    parser.add_argument("--title", help="propose-document: packet title (default: names the agency and the day)")
+    parser.add_argument("--use-restriction", action="store_true", help="propose-document: mark a use restriction")
     args = parser.parse_args(argv)
     try:
         if args.action == "init":
             out = {"switch": init(args.project)}
+        elif args.action == "propose-document":
+            out = propose_document(args.project, args.sha256, args.redaction_record, store=args.store, title=args.title,
+                                   use_restriction=args.use_restriction)
         elif args.action == "status":
             out = status(args.project)
         elif args.action == "propose":
@@ -529,7 +638,7 @@ def main(argv=None):
         print(json.dumps(out, sort_keys=True))
         return 0
     except PacketError as error:
-        print(error.code, file=sys.stderr)
+        print(error.code + (" " + error.detail if error.detail else ""), file=sys.stderr)
         return 1
 
 
