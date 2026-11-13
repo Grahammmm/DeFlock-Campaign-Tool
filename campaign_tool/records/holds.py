@@ -213,7 +213,8 @@ def main(argv=None):
         return 2
     if args.json:
         print(json.dumps(doc, indent=1, sort_keys=True))
-        sys.stderr.write("".join(line + "\n" for line in findings(doc)))
+        for line in findings(doc):
+            print(line, file=sys.stderr)
     else:
         print("\n".join(render(doc)))
     return 0
