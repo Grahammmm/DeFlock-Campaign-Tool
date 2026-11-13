@@ -42,6 +42,7 @@ COMMANDS = {
     "playbook": ("playbook", "main"),
     "ask-parity": ("ask_parity", "main"),
     "items": ("item_tiers", "main"),
+    "holds": ("holds", "main"),
     "followup-draft": ("followup_drafter", "main"),
     "precedent": ("precedent", "main"),
     "public-updates": ("public_updates", "main"),
