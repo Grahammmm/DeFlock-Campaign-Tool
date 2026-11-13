@@ -158,6 +158,13 @@ class Automation(unittest.TestCase):
         self.assertEqual(model["timers"][0]["state"], "unknown")
         self.assertIn("trigger is not active", ca.render(model))
 
+    def test_stopped_console_is_a_gap_but_idle_oneshot_is_not(self):
+        runner = fake({"records-run.service": service(), "records-console.service": service()})
+        model = ca.load(self.path, units=[], runner=runner, now=NOW)
+        alarms = ca.render(model).split('<h2>Stages</h2>')[0]
+        self.assertIn('records-console.service</td><td>INACTIVE', alarms)
+        self.assertNotIn('records-run.service</td><td>INACTIVE', alarms)
+
 
 class AutomationHttp(HttpBase):
     request = http_fixture.ManualEvents.request

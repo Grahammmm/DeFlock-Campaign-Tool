@@ -122,9 +122,10 @@ def load(path=None, *, units=None, runner=jobs.system_runner, now=None):
 
 def _table(caption, headers, rows):
     width = ' style="min-width:48rem"' if len(headers) > 3 else ''
+    column = ' style="min-width:10rem"' if width else ''
     return ('<div class="scroll" role="region" tabindex="0" aria-label="%s"><table%s><caption>%s</caption>'
             '<thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>') % (
-                esc(caption), width, esc(caption), "".join('<th scope="col">%s</th>' % esc(h) for h in headers),
+                esc(caption), width, esc(caption), "".join('<th scope="col"%s>%s</th>' % (column, esc(h)) for h in headers),
                 "".join("<tr>%s</tr>" % "".join("<td>%s</td>" % esc(v) for v in row) for row in rows))
 
 
@@ -140,7 +141,8 @@ def render(model):
         if row["state"] != "ok":
             problems.append((row["unit"], jobs.SHOWN[row["state"]] + ": " + row["detail"]))
     for row in model["services"]:
-        if row["state"] in ("UNKNOWN", "FAILED", "NOT INSTALLED"):
+        if (row["state"] in ("UNKNOWN", "FAILED", "NOT INSTALLED")
+                or row["unit"] != "records-run.service" and row["state"] != "RUNNING"):
             problems.append((row["unit"], row["state"]))
     if data:
         problems += [(s["name"], s["error_code"] or s["status"]) for s in data["stages"] if s["status"] != "ok"]
@@ -152,7 +154,7 @@ def render(model):
         problems.append(("Notify failure markers", str(alarm["notify_markers"]) + " (historical; resolution unknown)"))
     out.append(_table("Alarm codes and evidence gaps", ("Source", "Problem"), problems) if problems else
                '<p>No problems in the available sources. This does not prove all automation is running.</p>')
-    out.append('<h2>Stages</h2>')
+    out.append('<h2>Stages</h2><p>Wide tables scroll sideways inside their labelled regions (touch or keyboard).</p>')
     if data:
         out.append('<p>Configured report: run %s; overall %s; finished %s. %s</p>' % (
             esc(data["run_id"]), esc(data["overall_status"]), esc(data["finished_at"]),
