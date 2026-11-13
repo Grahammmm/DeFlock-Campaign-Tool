@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -121,6 +122,36 @@ class MailArrivalTests(unittest.TestCase):
         self.assertEqual((poll["state"], poll["reason_code"]), ("ok", "mail_poll_recent"))
         # Other health checks stay unknown in this empty synthetic runtime.
         self.assertEqual(result.returncode, report["exit_code"])
+
+    def test_daily_poll_health_grace_boundaries_and_failed_poll_stall(self):
+        self.status_fixture(count=0)
+        script = self.render()
+        self.hook(script)
+        before = self.state.read_bytes()
+        updated = datetime.fromisoformat(json.loads(before)["updated_at"])
+        self.status_fixture(count=0, failures=1)
+        self.assertEqual(self.hook(script).stderr, "MAIL_POLL_FAILED\n")
+        self.assertEqual(self.state.read_bytes(), before)
+        unit = (self.out / "records-health.service").read_text()
+        command = shlex.split(next(line.removeprefix("ExecStart=") for line in unit.splitlines()
+                                   if line.startswith("ExecStart=")))
+        command.remove("--record-alerts")
+        command.append("--json")
+        # Normal daily gaps, including fall-back's 25h day; then one/two missed polls.
+        for age, expected in ((timedelta(hours=7), "ok"), (timedelta(hours=23), "ok"),
+                              (timedelta(hours=25), "ok"), (timedelta(hours=26), "ok"),
+                              (timedelta(hours=26, seconds=1), "warn"),
+                              (timedelta(hours=50), "warn"), (timedelta(hours=50, seconds=1), "stop")):
+            with self.subTest(age=age):
+                result = subprocess.run([*command, "--now", (updated + age).isoformat()], cwd=ROOT,
+                                        capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.stderr, "")
+                report = json.loads(result.stdout)
+                poll = next(check for check in report["checks"] if check["check"] == "mail_poll")
+                self.assertEqual((poll["state"], poll["reason_code"]),
+                                 (expected, "mail_poll_recent" if expected == "ok" else "mail_poll_stale"))
+                self.assertEqual(result.returncode, report["exit_code"])
+        self.assertEqual(self.state.read_bytes(), before)  # assessments never refresh the success clock
 
     def test_unreadable_or_invalid_status_is_one_fixed_line_without_writes(self):
         script = self.render()

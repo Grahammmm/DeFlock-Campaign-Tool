@@ -592,7 +592,15 @@ is the key read by `pipeline_health._mail_poll`. This is a runtime health
 sidecar, not the native mail poller's UID/cursor store; never share this
 location with a native mail poller. The rendered health unit now passes
 `--mail-store RUNTIME_DIR`, so a fresh state yields `mail_poll: ok` /
-`mail_poll_recent`, not `mail_poll_not_configured`. Failed polls emit
+`mail_poll_recent`, not `mail_poll_not_configured`. The unit also supplies
+`--mail-poll-warn-hours 26 --mail-poll-stop-hours 50` for the daily mail job:
+age up to 26 hours is OK (including a 25-hour fall-back day plus grace), age
+strictly over 26 hours warns, and age strictly over 50 hours stops. Thus one
+missed daily poll warns and two missed polls stop; hourly assessment adds up
+to an hour plus its randomized delay before the alert appears. Direct CLI/API
+users retain the existing 6/24-hour defaults unless they supply overrides.
+CLI overrides must be positive integer hours with warning below stop.
+Failed polls emit
 `MAIL_POLL_FAILED` and **do not refresh** the last-success timestamp: health
 can still detect a stalled downloader. Invalid input also leaves state alone.
 State/stamp failures emit `MAIL_STATE_UNWRITABLE` / `MAIL_STAMP_FAILED`
