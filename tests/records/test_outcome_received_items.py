@@ -290,6 +290,54 @@ class ReceivedItemsTests(unittest.TestCase):
         self.assertEqual(result["error_code"], "OUTPUTS_WRITE_FAILED")
         self.assertEqual(path.read_bytes(), original + b" ")
 
+    def test_law_package_status_is_loaded_once_and_written_fail_closed(self):
+        from campaign_tool import law
+        package = law.load_package("us-ca")
+        original_disclaimer = (
+            "Private documentary screening; REVIEW REQUIRED, not a legal conclusion. The us-ca law "
+            "package is draft and unreviewed. A rating is the existing comparison row status and "
+            "never a finding of compliance or violation. Not for publication.")
+        policy, _ = self.document(["Retention Policy\nRecords are kept 30 days."], "caltrans")
+        base = self.project / "law-fixture"
+        target = base / "us-ca" / "package.json"
+        target.parent.mkdir(parents=True)
+        cases = ("reviewed", "draft", "missing", "bogus", None, ["reviewed"], "malformed", "unreadable")
+        for index, status in enumerate(cases):
+            with self.subTest(status=status):
+                fixture = dict(package, status=status, reviewed_by=["Synthetic Reviewer"], reviewed_at="2041-01-01")
+                target.write_text("{" if status == "malformed" else json.dumps(fixture))
+                if status == "missing":
+                    target.unlink()
+                run_id = "law-" + str(index)
+                run = self.project / "run-outputs" / run_id
+                run.mkdir(parents=True)
+                comparison = self.comparison([self.row("caltrans", policy, "page 1", field=field)
+                                              for field in ("retention", "audit_process")])
+                comparison["run_id"] = run_id
+                comparison_path = run / "comparison.json"
+                comparison_path.write_text(json.dumps(comparison))
+                comparison_bytes = comparison_path.read_bytes()
+                failure = PermissionError("fixture") if status == "unreadable" else None
+                with patch.object(law, "JURISDICTIONS", base), patch.object(
+                        law, "load_package", wraps=law.load_package, side_effect=failure) as load:
+                    report = ri.write_run_received_items(self.project, run_id)
+                load.assert_called_once_with("us-ca")
+                self.assertEqual(json.loads((run / "outcomes" / "received-items.json").read_text()), report)
+                self.assertEqual(comparison_path.read_bytes(), comparison_bytes)
+                expected = status if status in ("draft", "reviewed") else "draft"
+                self.assertEqual("law_package_status_unreadable" in report["diagnostics"], status not in ("draft", "reviewed"))
+                findings = report["items"][0]["findings"]
+                self.assertEqual(len(findings), 2)
+                for entry in [report, *findings]:
+                    self.assertEqual(entry["law_package_status"], expected)
+                    self.assertIs(entry["review_required"], True)
+                    self.assertIs(entry["legal_conclusion"], False)
+                    if expected == "draft":
+                        self.assertEqual(entry["disclaimer"].encode(), original_disclaimer.encode())
+                    else:
+                        self.assertIn("REVIEW REQUIRED, not a legal conclusion.", entry["disclaimer"])
+                        self.assertNotIn("draft and unreviewed", entry["disclaimer"])
+
     def test_offroot_current_unit_is_an_unread_item_gap_not_a_writer_failure(self):
         offroot, _ = self.document(CALTRANS + ["Retention Policy"], "caltrans")
         normal, _ = self.document([ATASCADERO[2]], "atascadero")
