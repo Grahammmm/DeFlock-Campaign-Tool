@@ -100,6 +100,28 @@ class BacklogTests(unittest.TestCase):
         self.assertIn("VALID | no", out)
         self.assertNotIn("EXTRACT_ERROR", out)
 
+    def test_malformed_run_id_is_never_echoed(self):
+        for bad in ("private\nbacklog | forged | VALID | yes", "run_x", 7, None):
+            for valid in (True, False):
+                report = backlog_report()
+                report["run_id"] = bad
+                if not valid:
+                    del report["needs_g"]
+                for extra in ((), ("--json",)):
+                    _, out, _ = self.run_main(report, *extra)
+                    self.assertNotIn("private", out)
+                    self.assertNotIn("forged", out)
+                    if not extra:
+                        self.assertTrue(all(line.startswith("backlog | ") for line in out.splitlines()))
+                        self.assertIn("backlog | unknown |", out)
+                    else:
+                        self.assertEqual(json.loads(out)["run_id"], "unknown")
+
+    def test_well_formed_run_id_is_kept(self):
+        report = backlog_report()
+        report["run_id"] = "run_20261113T150008Z_6547f4f8"
+        self.assertIn("run_20261113T150008Z_6547f4f8", self.run_main(report)[1])
+
     def test_unreadable_and_missing_input(self):
         self.assertEqual(self.run_main(None, raw=b"not json")[0], 1)
         err = io.StringIO()

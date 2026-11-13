@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.run_report_review import Refused, load, read_file  # noqa: E402
+from tools.run_report_review import RUN_ID, Refused, _field, load, read_file  # noqa: E402
 
 SCHEMA = "run-report-backlog-v1"
 NOTE = "listing only; clears nothing; machine-valid is review-required, not semantic acceptance"
@@ -40,7 +40,7 @@ HELD = (
 
 def facts(report, diagnostic):
     """Return (facts, exit status)."""
-    run_id = report.get("run_id") if isinstance(report, dict) and isinstance(report.get("run_id"), str) else "unknown"
+    run_id = _field(report, "run_id", RUN_ID) or "unknown"  # strict shape, else never echoed
     if diagnostic is not None:
         return {"schema": SCHEMA, "run_id": run_id, "valid": False, "diagnostic": diagnostic, "held": []}, 1
     owed = {(i["stage"], i["code"]): i["count"] for i in report["needs_g"]}
