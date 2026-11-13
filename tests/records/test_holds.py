@@ -226,6 +226,7 @@ class ReleaseTests(unittest.TestCase):
                                                       (3, True, "extraction_stage_error", 3), (4, True, REFUSED, 1),
                                                       (5, False, None, 0)], initialized=True)
         (self.processing / "runs").mkdir()
+        (self.processing / "run.lock").touch()  # as on a project that has run (root_lock creates it)
         (self.processing / "runs" / f"extract-{RUN}.json").write_text(json.dumps({
             "schema": "records-extract-outcomes-v1", "run_id": RUN, "documents": []}))
         self.report = self.root / "run-report.json"
