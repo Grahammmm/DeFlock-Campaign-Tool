@@ -230,6 +230,13 @@ class RuntimeHarness(unittest.TestCase):
     def run_script(self, *args, api=None, timeout=90):
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                "RECORDS_NOTIFY_API_BASE": api or self.api}
+        if not {"--target", "--arrival"} & {a.split("=")[0] for a in args}:
+            args = ("--target", "TEST", *args)
+        return self.run_bare(*args, env=env, timeout=timeout)
+
+    def run_bare(self, *args, env=None, timeout=90):
+        env = env or {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                      "RECORDS_NOTIFY_API_BASE": self.api}
         return subprocess.run(["/bin/sh", str(self.script), *args], env=env,
                               capture_output=True, text=True, timeout=timeout)
 
@@ -514,7 +521,7 @@ class OrchestratedRunTests(RuntimeHarness):
         self.stage_spec("sync").update(sleep_seconds=3)
         self.write_fixture()
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "RECORDS_NOTIFY_API_BASE": self.api}
-        first = subprocess.Popen(["/bin/sh", str(self.script)], env=env,
+        first = subprocess.Popen(["/bin/sh", str(self.script), "--target", "TEST"], env=env,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             for _ in range(50):
@@ -534,6 +541,14 @@ class OrchestratedRunTests(RuntimeHarness):
         for args in (["--bogus"], ["--target"], ["--target", "test"], ["--target", "../X"]):
             with self.subTest(args=args):
                 self.assertEqual(self.run_script(*args).returncode, 64)
+        self.assertEqual(self.calls(), [])
+
+    def test_bare_invocation_refuses_target_required(self):
+        for args in ([], ["--dry-run"], ["--scheduled"]):
+            with self.subTest(args=args):
+                result = self.run_bare(*args)
+                self.assertEqual(result.returncode, 64)
+                self.assertIn("TARGET_REQUIRED", result.stderr)
         self.assertEqual(self.calls(), [])
 
     def test_unknown_target_refuses_78_with_receipt(self):
