@@ -1,11 +1,12 @@
 """``records holds``: per-item list of held extract documents, metadata only (HOLD-INSPECT-1).
 
-Read-only: the ledger is opened only through ``run_stages.snapshot_ro``; no evidence payload,
-original, unit text, mail or path is read or printed (12-hex hash prefixes and fixed codes only).
-``--report`` compares counts with a run report's needs_g (``COUNT_MISMATCH``, a finding). Exit 0 on a
-readable ledger, 2 with ``LEDGER_UNREADABLE <reason>`` otherwise. Contract: docs/RECORDS-HOLDS.md.
+Read-only: the ledger is opened only through ``run_stages.snapshot_ro``; no evidence payload, original,
+unit text, mail or path is read or printed (12-hex hash prefixes and fixed codes only). Counts are reconciled
+with the newest run outcome list, or with a run report's needs_g under ``--report`` (``COUNT_MISMATCH`` is a
+finding). Exit 0 on a readable ledger, 2 with ``LEDGER_UNREADABLE <reason>``. Contract: docs/RECORDS-HOLDS.md.
 """
 import argparse
+from collections import Counter
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -57,12 +58,6 @@ def _alert_hold(snapshot, subject):
     return first
 
 
-def _alert_detail(outcome, key):
-    if outcome == ne.NOT_ACCEPTED:
-        return ne.held_refusal_detail(key)["refusal_code"]
-    return ",".join(sorted({_code(code) for code in ne.alert_codes(key)}))
-
-
 def _run_list(processing, run_id):
     """``{sha256: (outcome, detail_code)}`` from the run's private outcome list, or None."""
     path = Path(processing) / "runs" / f"extract-{ne.safe_run_name(run_id)}.json"
@@ -81,12 +76,18 @@ def _run_list(processing, run_id):
         return None
 
 
-def collect(project, run_id=None):
-    """``(items, run_list_used)`` for every held extract document; raises ``Unreadable``."""
-    from .run_stages import LedgerBusy, snapshot_ro
+def latest_run_id(processing):
+    """Newest run ID with an extract outcome list in ``processing-v1/runs`` (file names only), or None."""
+    try:
+        names = [p.name[len("extract-"):-len(".json")] for p in (processing / "runs").glob("extract-run_*.json")]
+    except OSError:
+        return None
+    return max((name for name in names if RUN_ID_RE.fullmatch(name)), default=None)
 
-    processing = Path(project) / "processing-v1"
-    listed = _run_list(processing, run_id) if run_id else None
+
+def collect(processing, listed):
+    """Every held extract document, coded with the run outcome list ``listed`` when given; raises ``Unreadable``."""
+    from .run_stages import LedgerBusy, snapshot_ro
     items = []
     try:
         with snapshot_ro(processing / "ledger.sqlite") as db:
@@ -107,7 +108,9 @@ def collect(project, run_id=None):
                     if run and not holds and run[0] != ne.EXTRACTED:
                         item.update(code=run[0], detail_code=run[1])  # what the latest run counted
                     elif outcome is not None:
-                        item.update(code=outcome, detail_code=_alert_detail(outcome, row["key"]))
+                        item.update(code=outcome, detail_code=ne.held_refusal_detail(row["key"])["refusal_code"]
+                                    if outcome == ne.NOT_ACCEPTED else
+                                    ",".join(sorted({_code(code) for code in ne.alert_codes(row["key"])})))
                     else:
                         continue  # pending, not held: parsed on the next run
                     if row is not None:
@@ -121,7 +124,7 @@ def collect(project, run_id=None):
     except (sqlite3.Error, OSError, ValueError, KeyError, TypeError, IndexError) as error:
         raise Unreadable("missing" if "database_missing" in str(error) else "error") from error
     order = {code: index for index, code in enumerate(ne.OUTCOMES)}
-    return sorted(items, key=lambda i: (order.get(i["code"], 99), i["sha256_prefix"])), listed is not None
+    return sorted(items, key=lambda i: (order.get(i["code"], 99), i["sha256_prefix"]))
 
 
 def load_report(path):
@@ -138,42 +141,40 @@ def load_report(path):
     return run_id, needs
 
 
-def compare(counts, needs):
-    """``(mismatches, not_in_ledger)`` between ledger item counts and a report's needs_g."""
-    from .run_stages import EXTRACT_NEEDS
-
-    mismatches = []
-    for outcome, code, _ in EXTRACT_NEEDS:
-        ledger, report = counts.get(outcome, 0), needs.get(("extract", code), 0)
-        if ledger != report:
-            mismatches.append({"code": outcome, "ledger": ledger, "report": report})
-    not_in_ledger = {code: n for (stage, code), n in sorted(needs.items()) if stage == "adoption" and code in ADOPTION}
-    return mismatches, not_in_ledger
+def compare(counts, needs, extract_needs):
+    """``(mismatches, not_in_ledger)`` between ledger item counts and needs_g counts."""
+    mismatches = [{"code": o, "ledger": counts.get(o, 0), "report": needs.get(("extract", c), 0)}
+                  for o, c, _ in extract_needs if counts.get(o, 0) != needs.get(("extract", c), 0)]
+    return mismatches, {c: n for (s, c), n in sorted(needs.items()) if s == "adoption" and c in ADOPTION}
 
 
 def build(project, report_path=None, code=None):
+    """The document; baseline: ``--report``'s needs_g, else the newest run outcome list (its needs_g source)."""
+    from .run_stages import EXTRACT_NEEDS
+    processing = Path(project) / "processing-v1"
     report = load_report(report_path) if report_path else None
-    items, run_list = collect(project, report[0] if report else None)
-    counts = {}
-    for item in items:
-        counts[item["code"]] = counts.get(item["code"], 0) + 1
-    doc = {"schema": SCHEMA, "counts": counts, "items": [i for i in items if code in (None, i["code"])],
-           "report": None, "run_list_used": run_list, "note": "listing only; clears nothing; review-required"}
-    if report_path and report is None:
-        doc["report"] = {"readable": False}
-    elif report:
-        mismatches, not_in_ledger = compare(counts, report[1])
-        doc["report"] = {"readable": True, "run_id": report[0], "mismatches": mismatches,
-                         "not_in_ledger": not_in_ledger}
-    return doc
+    run_id = report[0] if report else latest_run_id(processing)
+    listed = _run_list(processing, run_id) if run_id else None
+    items = collect(processing, listed)
+    counts = dict(Counter(item["code"] for item in items))
+    tally = Counter(outcome for outcome, _ in (listed or {}).values())
+    needs = report[1] if report else None if listed is None else {("extract", c): tally[o] for o, c, _ in EXTRACT_NEEDS}
+    source = "report" if report else "run_list" if needs is not None else None
+    mismatches, gaps = compare(counts, needs, EXTRACT_NEEDS) if needs is not None else ([], {})
+    baseline = dict(source=source, run_id=run_id if source else None, mismatches=mismatches, not_in_ledger=gaps,
+                    report_file="none" if not report_path else "read" if report else "unreadable")
+    return {"schema": SCHEMA, "counts": counts, "items": [i for i in items if code in (None, i["code"])],
+            "report": baseline, "run_list_used": listed is not None,
+            "note": "listing only; clears nothing; review-required"}
 
 
 def findings(doc):
-    """Fixed finding lines for the report comparison."""
-    report = doc["report"]
-    if report is None or not report["readable"]:
-        return [] if report is None else ["REPORT_UNREADABLE"]
-    lines = [f"COUNT_MISMATCH {m['code']} {m['ledger']} {m['report']}" for m in report["mismatches"]]
+    """Fixed finding lines; a missing baseline is printed, never a silent zero."""
+    report, lines = doc["report"], []
+    lines += ["REPORT_UNREADABLE"] if report["report_file"] == "unreadable" else []
+    lines += [] if doc["run_list_used"] else ["RUN_LIST_MISSING (unalerted pending documents are not coded)"]
+    lines += [] if report["source"] else ["NOT_RECONCILED (no run report and no run outcome list)"]
+    lines += [f"COUNT_MISMATCH {m['code']} {m['ledger']} {m['report']}" for m in report["mismatches"]]
     return lines + [f"NOT_IN_LEDGER {code} {n} (per-message view: adopt-mail dry run)"
                     for code, n in report["not_in_ledger"].items()]
 
@@ -191,10 +192,9 @@ def render(doc, now=None):
     now = now or datetime.now(timezone.utc)
     lines = ["sha256_prefix code attempts age_days last_run detail_code preserved disposition"]
     for i in doc["items"]:
-        lines.append(" ".join(str(v) for v in (i["sha256_prefix"], i["code"], i["attempts"],
-                                                _age_days(i["first_run"], now), i["last_run"] or "-",
-                                                i["detail_code"] or "-", "yes" if i["preserved"] else "no",
-                                                i["disposition"])))
+        lines.append(" ".join(str(v) for v in (
+            i["sha256_prefix"], i["code"], i["attempts"], _age_days(i["first_run"], now), i["last_run"] or "-",
+            i["detail_code"] or "-", "yes" if i["preserved"] else "no", i["disposition"])))
     lines.append("counts " + (" ".join(f"{c}={n}" for c, n in doc["counts"].items()) or "none"))
     return lines + findings(doc) + [doc["note"]]
 
@@ -202,7 +202,7 @@ def render(doc, now=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="records holds", description="Read-only list of held extract documents.")
     parser.add_argument("--project", required=True, help="records project (reads processing-v1/ledger.sqlite)")
-    parser.add_argument("--report", help="latest run report: compare counts with its needs_g")
+    parser.add_argument("--report", help="run report: compare with its needs_g (default: newest run outcome list)")
     parser.add_argument("--code", help="list only items with this code (counts stay complete)")
     parser.add_argument("--json", action="store_true", help="print one records-holds-v1 document")
     args = parser.parse_args(argv)
@@ -213,8 +213,7 @@ def main(argv=None):
         return 2
     if args.json:
         print(json.dumps(doc, indent=1, sort_keys=True))
-        for line in findings(doc):
-            print(line, file=sys.stderr)
+        sys.stderr.write("".join(line + "\n" for line in findings(doc)))
     else:
         print("\n".join(render(doc)))
     return 0
