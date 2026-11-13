@@ -1,16 +1,11 @@
 """Synthetic bridge boundaries: no live records, trust files, containers or network."""
 import contextlib
-import hashlib
 import io
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
-import tempfile
 import unittest
-from unittest import mock
 
 from campaign_tool.records import packet_changes as bridge
 from campaign_tool.records import public_packets as pp
@@ -124,6 +119,8 @@ class ExportTests(Base):
         for altered in ({**change, "record_bytes": "secret"}, {**change, "target": "../../outside"},
                         {**change, "revision": True}, {**change, "approved_at": "2026-02-31T00:00:00Z"},
                         {**change, "text": "person@example.invalid"},
+                        {**change, "text": "https://example.invalid/download?token=synthetic"},
+                        {**change, "documents": [{**change["documents"][0], "source_request": "805-555-1234"}]},
                         {**change, "documents": [{**change["documents"][0], "redaction_ids": []}]}):
             with self.subTest(fields=set(altered)):
                 with self.assertRaises(pp.PacketError):

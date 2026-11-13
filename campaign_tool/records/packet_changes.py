@@ -58,8 +58,13 @@ def public_change(change):
     pp._need(change["target"] == f"content/updates/{packet['agency_key']}/{stamp[:10]}-{ident}.json", "change_invalid")
     # No signer, campaign config, arbitrary note, input target, private provenance or
     # record bytes enter the site. A hash is a locator, never a download clearance.
-    return {"schema": "records-public-update-v1", "packet": ident, "revision": rev, "approved_at": stamp,
-            **{key: packet[key] for key in ("kind", "agency_key", "request_id", "title", "text", "documents", "citations")}}
+    public = {"schema": "records-public-update-v1", "packet": ident, "revision": rev, "approved_at": stamp,
+              **{key: packet[key] for key in ("kind", "agency_key", "request_id", "title", "text", "documents", "citations")}}
+    # Recheck all public metadata, not only the producer's title/text/citations.
+    rendered = pp._canon(public)
+    pp._lint(rendered)
+    pp._need(not re.search(r"token\s*=|https?://[^\s<>\"']*[?#]", rendered, re.I), "private_locator")
+    return public
 
 
 def export_changes(project, out):
