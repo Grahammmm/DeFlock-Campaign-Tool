@@ -1,5 +1,8 @@
 """HOLD-INSPECT-1: ``records holds`` lists held extract documents from a read-only ledger snapshot."""
 from contextlib import closing, redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
+import fcntl
+import hashlib
 import io
 import json
 import os
@@ -15,6 +18,9 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from campaign_tool.records import holds  # noqa: E402
+from campaign_tool.records import native_extract as ne  # noqa: E402
+from campaign_tool.records import run as records_run  # noqa: E402
+from campaign_tool.records.ledger import store  # noqa: E402
 from campaign_tool.records.ledger.migrations import v001  # noqa: E402
 
 RUN = "run_20261113T150000Z_0a1b2c3d"
@@ -26,12 +32,19 @@ def digest(n):
     return f"{n:x}" * 64  # n < 16: distinct 64-hex digests and distinct 12-hex prefixes
 
 
-def make_project(root, docs):
-    """docs: (n, preserved, alert_key_suffix or None, alert_count)."""
+def make_project(root, docs, initialized=False):
+    """docs: (n, preserved, alert_key_suffix or None, alert_count); ``initialized``: a store.initialize ledger."""
     processing = Path(root) / "processing-v1"
-    processing.mkdir(parents=True)
+    processing.mkdir(parents=True, mode=0o700)
+    if initialized:
+        mask = os.umask(0o077)
+        try:
+            store.initialize(processing / "ledger.sqlite")
+        finally:
+            os.umask(mask)
     with closing(sqlite3.connect(processing / "ledger.sqlite")) as db:
-        db.executescript(v001.SQL)
+        if not initialized:
+            db.executescript(v001.SQL)
         db.execute("INSERT INTO runs VALUES ('r1','records-runner','2026-11-01T00:00:00Z',NULL,'e',NULL,NULL,"
                    "NULL,'completed','{}')")
         for n, preserved, suffix, count in docs:
@@ -191,6 +204,128 @@ class HoldsTests(unittest.TestCase):
                               cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("--project", done.stdout)
+
+
+NOW = datetime(2026, 11, 13, 16, 0, tzinfo=timezone.utc)  # one hour after RUN
+
+
+def tree(root):
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(Path(root).rglob("*")) if p.is_file()}
+
+
+class ReleaseTests(unittest.TestCase):
+    """HOLD-RELEASE-1: ``records holds release`` resets retryable attempt counters with a receipt."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.project = self.root / "project"
+        self.processing = make_project(self.project, [(1, True, "extraction_stage_error", 3),
+                                                      (2, True, "extraction_stage_error", 3),
+                                                      (3, True, "extraction_stage_error", 3), (4, True, REFUSED, 1),
+                                                      (5, False, None, 0)], initialized=True)
+        (self.processing / "runs").mkdir()
+        (self.processing / "runs" / f"extract-{RUN}.json").write_text(json.dumps({
+            "schema": "records-extract-outcomes-v1", "run_id": RUN, "documents": []}))
+        self.report = self.root / "run-report.json"
+        write_report(self.report, [("extract", "EXTRACT_ERROR", 3)])
+        self.receipts = self.root / "receipts"
+
+    def apply(self, limit, **kwargs):
+        options = dict(apply=True, limit=limit, receipt=self.receipts, report=self.report, now=NOW)
+        return holds.release(self.project, "EXTRACT_ERROR", **{**options, **kwargs})
+
+    def counts(self):
+        with closing(sqlite3.connect(self.processing / "ledger.sqlite")) as db:
+            return {key.split(":")[1][:1]: n for key, n in db.execute("SELECT key,count FROM alerts ORDER BY key")}
+
+    def refused(self, status, code, **kwargs):
+        before = tree(self.project)
+        with self.assertRaises(holds.Refused) as caught:
+            self.apply(**{"limit": 2, **kwargs})
+        self.assertEqual(caught.exception.args, (status, code))
+        self.assertEqual(tree(self.project), before)
+
+    def test_dry_run_lists_and_changes_no_byte(self):
+        before = tree(self.project)
+        code, out, err = run_main(["release", "--project", str(self.project), "--code", "EXTRACT_ERROR"])
+        self.assertEqual((code, err), (0, ""))
+        lines = out.splitlines()
+        self.assertEqual([line.split()[1:] for line in lines[1:4]], [["EXTRACT_ERROR", "3"]] * 3)
+        self.assertIn("eligible 3 selected 3 held_by_other_code 0", lines)
+        self.assertTrue(lines[-1].startswith("DRY_RUN nothing changed"))
+        self.assertEqual(tree(self.project), before)
+        self.assertFalse(self.receipts.exists())
+
+    def test_apply_resets_at_most_max_with_a_receipt_then_the_rest(self):
+        doc = self.apply(2)
+        self.assertEqual((doc["released"], doc["eligible"]), (2, 3))
+        self.assertEqual(self.counts(), {"1": 0, "2": 0, "3": 3, "4": 1})
+        receipt = (self.receipts / doc["receipt_file"]).read_text()
+        rows = [json.loads(line) for line in receipt.splitlines()]
+        self.assertEqual([r["sha256_prefix"] for r in rows], [digest(1)[:12], digest(2)[:12]])
+        self.assertEqual({(r["code"], r["attempts_before"], r["released_at"]) for r in rows},
+                         {("EXTRACT_ERROR", 3, NOW.isoformat())})
+        self.assertEqual(rows[0]["run_report_sha256"], hashlib.sha256(self.report.read_bytes()).hexdigest())
+        self.assertNotIn("/", receipt)
+        self.assertNotIn(digest(1), receipt)
+        self.assertEqual(oct(self.receipts.stat().st_mode & 0o777), "0o700")
+        self.assertEqual(oct((self.receipts / doc["receipt_file"]).stat().st_mode & 0o777), "0o600")
+        second = self.apply(2)
+        self.assertEqual((second["released"], [i["sha256_prefix"] for i in second["items"]]), (1, [digest(3)[:12]]))
+        self.assertEqual(self.counts(), {"1": 0, "2": 0, "3": 0, "4": 1})
+        self.assertEqual((self.apply(2)["released"], len(list(self.receipts.iterdir()))), (0, 2))
+
+    def test_refusals_change_nothing(self):
+        for argv, code in ((["--code", "EXTRACT_NOT_ACCEPTED"], "CODE_NOT_RETRYABLE"),
+                           (["--code", "EXTRACT_INCOMPLETE"], "CODE_NOT_RETRYABLE"),
+                           (["--code", "PRESERVE_PENDING"], "CODE_CUSTODIAN"),
+                           (["--code", "EXTRACT_ERROR", "--apply"], "MAX_REQUIRED"),
+                           (["--code", "EXTRACT_ERROR", "--apply", "--max", "26"], "MAX_OUT_OF_RANGE")):
+            with self.subTest(code=code):
+                self.assertEqual(run_main(["release", "--project", str(self.project), *argv])[::2], (2, code + "\n"))
+        self.refused(2, "REPORT_REQUIRED", report=None)
+        self.refused(2, "REPORT_STALE", now=NOW + timedelta(hours=25))
+        write_report(self.root / "old.json", [])
+        old = json.loads((self.root / "old.json").read_text())
+        (self.root / "old.json").write_text(json.dumps({**old, "run_id": "run_20261113T080000Z_0a1b2c3d"}))
+        self.refused(2, "REPORT_NOT_LATEST", report=self.root / "old.json")
+        self.refused(2, "RECEIPT_UNSAFE", receipt=self.project / "receipts")
+        stale = [(digest(1), [(f"extract:{digest(1)}:extraction_stage_error", 2)])]  # the ledger moved since the read
+        with mock.patch.object(holds, "candidates", return_value=(stale, 0)):
+            self.refused(3, "LEDGER_CHANGED")
+        self.assertEqual(list(self.receipts.iterdir()), [])  # the staged receipt was removed
+        self.assertEqual(self.counts(), {"1": 3, "2": 3, "3": 3, "4": 1})
+
+    def test_held_locks_refuse_ledger_busy(self):
+        lock = self.root / "run-records.lock"
+        lock.touch()
+        for path in (lock, self.processing / "run.lock"):
+            with self.subTest(lock=path.name), open(path, "a") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                self.refused(3, "LEDGER_BUSY", runtime_lock=lock)
+        self.refused(2, "RUNTIME_LOCK_UNREADABLE", runtime_lock=self.root / "absent.lock")
+        self.assertEqual(self.apply(1, runtime_lock=lock)["runtime_lock"], "held")
+        self.assertEqual(sorted(self.counts().values()), [0, 1, 3, 3])
+
+    def test_another_holding_code_is_not_released(self):
+        with closing(sqlite3.connect(self.processing / "ledger.sqlite")) as db:
+            db.execute("INSERT INTO alerts VALUES ('x',?,'t','t',1,'runtime','open')", (REFUSED.format(digest(1)),))
+            db.commit()
+        doc = holds.release(self.project, "EXTRACT_ERROR")
+        self.assertEqual((doc["eligible"], doc["held_by_other_code"]), (2, 1))
+
+    def test_a_released_document_is_retried_then_held_again(self):
+        self.apply(1)
+        pipeline = records_run.Pipeline.__new__(records_run.Pipeline)
+        pipeline.root = records_run.Root(self.processing)
+        subject = digest(1)
+        for attempt in range(ne.MAX_ATTEMPTS):
+            self.assertIsNone(ne.held_outcome(pipeline, subject), attempt)  # parsed again on this run
+            ne._hold(pipeline, subject, ne.ERROR_CODE)  # ... and failed again
+        self.assertEqual(ne.held_outcome(pipeline, subject), ne.ERROR)  # held after MAX_ATTEMPTS: no loop
+        self.assertEqual(holds.release(self.project, "EXTRACT_ERROR")["eligible"], 3)
 
 
 if __name__ == "__main__":
