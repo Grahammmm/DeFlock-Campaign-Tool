@@ -81,8 +81,12 @@ Add `--report <run-report.json visible in the container>` for the adoption count
 python3 -B -m campaign_tool.records holds release --project PROJECT --code EXTRACT_ERROR|EXTRACT_TIMEOUT \
   [--max N] [--json]                                                     # dry run: lists, changes nothing
 python3 -B -m campaign_tool.records holds release --project PROJECT --code EXTRACT_ERROR \
-  --apply --max N --receipt DIR --report RUN-REPORT.json [--runtime-lock RUNTIME_DIR/run-records.lock]
+  --apply --max N --receipt DIR --report RUN-REPORT.json --runtime-lock RUNTIME_DIR/run-records.lock
 ```
+
+`--runtime-lock` is required with `--apply`: it is the records wrapper's overlap lock, which the wrapper
+holds across its preflight and every stage. The extract stage's own `processing-v1/run.lock` is held only
+while extraction runs, so it alone cannot keep an apply out of an active run.
 
 `native_extract` retries an `EXTRACT_ERROR` or `EXTRACT_TIMEOUT` document on later runs until its open
 `extract:` alert has counted `MAX_ATTEMPTS` (3) runs; after that the document is held and counted every
@@ -104,18 +108,19 @@ Refusals (stderr, exit status; nothing is changed):
 |---|---|---|
 | `CODE_CUSTODIAN` | 2 | `PRESERVE_PENDING`: the Flock coordinator preserves originals |
 | `CODE_NOT_RETRYABLE` | 2 | any other code (`EXTRACT_NOT_ACCEPTED`, `CORRUPT_DOCUMENT`, `EXTRACT_INCOMPLETE`, ...): not retryable by design |
-| `MAX_REQUIRED`, `RECEIPT_REQUIRED`, `REPORT_REQUIRED` | 2 | `--apply` without them |
+| `MAX_REQUIRED`, `RECEIPT_REQUIRED`, `REPORT_REQUIRED`, `RUNTIME_LOCK_REQUIRED` | 2 | `--apply` without them |
 | `MAX_OUT_OF_RANGE` | 2 | `--max` outside 1-25 |
 | `REPORT_UNREADABLE`, `REPORT_STALE`, `REPORT_NOT_LATEST` | 2 | the report is unreadable, its `run_id` is more than 24 h old (a release with no run after it retries nothing), or it is not the newest run with an extract outcome list |
 | `RECEIPT_UNSAFE` | 2 | the receipt directory is inside the project, not a directory, not owned by the caller or not 0700-only |
-| `RUNTIME_LOCK_UNREADABLE` | 2 | `--runtime-lock` names no openable file (it is never created) |
+| `RUNTIME_LOCK_UNREADABLE` | 2 | `--runtime-lock` names no openable regular file (it is never created; a symlink is refused) |
 | `LEDGER_UNREADABLE missing\|error` | 2 | as for the listing |
-| `LEDGER_BUSY` | 3 | `run-records.lock` (when given) or the extract stage's `processing-v1/run.lock` is held, or the ledger has a pending WAL or journal |
+| `LEDGER_BUSY` | 3 | `run-records.lock` or the extract stage's `processing-v1/run.lock` is held (or cannot be locked), or the ledger has a pending WAL or journal |
 | `LEDGER_CHANGED` | 3 | an alert's count changed between the read and the write: the transaction is rolled back |
 | `RELEASE_FAILED` | 1 | the write failed: rolled back |
 
-The lock check sees locks only, not systemd: run it between slots. The extract stage's root lock and
-the given `run-records.lock` are held for the whole apply, so no run starts during it.
+The lock check sees locks only, not systemd: run it between slots. Both locks are taken first and held
+from the report check through the receipt's publication, so no run starts during the apply and the
+report checked is still the newest one when the counts are reset.
 
 Receipt: one new file `DIR/holds-release-<UTC>-<rand>.jsonl` (0600) per apply that released anything,
 one line per document: `{"schema": "records-holds-release-v1", "sha256_prefix", "code",
@@ -128,7 +133,8 @@ Rollback: a released document that fails again holds itself after `MAX_ATTEMPTS`
 lists every reset with its count before. No data changes, so there is nothing else to undo.
 
 Live use [ATTENDED, operator, between slots]: dry run first and record the counts; then apply with
-`--max 10`, a receipt directory owned by the container user and the newest run report. The next slot's
+`--max 10`, a receipt directory owned by the container user, the newest run report and the wrapper's
+`run-records.lock` (a path visible where the command runs). The next slot's
 report shows `EXTRACT_ERROR` falling by the number that now extract; the rest come back as
 `EXTRACT_ERROR` with internal codes for a diagnosis card. If a clear would need deleting or
 re-extracting an original into another path, stop: that is a G data decision, not this command.

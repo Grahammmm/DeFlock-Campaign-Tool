@@ -278,29 +278,32 @@ def _receipt_dir(value, project):
 
 @contextlib.contextmanager
 def _locked(processing, runtime_lock):
-    """The wrapper's ``run-records.lock`` (opened, never created) and the extract stage's root lock."""
+    """The wrapper's ``run-records.lock`` (required; opened, never created), then the extract stage's root
+    lock. The wrapper holds the first across preflight and every stage, the extract stage only the second,
+    so the first is what keeps an apply out of an active run; without it the apply fails closed."""
     from .run import RunError, root_lock
-    fd = None
+    if runtime_lock is None:
+        raise Refused(2, "RUNTIME_LOCK_REQUIRED")
     try:
-        if runtime_lock is not None:
-            try:
-                fd = os.open(runtime_lock, os.O_RDONLY | os.O_NOFOLLOW)
-            except OSError:
-                raise Refused(2, "RUNTIME_LOCK_UNREADABLE") from None
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise Refused(3, "LEDGER_BUSY") from None
+        fd = os.open(runtime_lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        raise Refused(2, "RUNTIME_LOCK_UNREADABLE") from None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise Refused(2, "RUNTIME_LOCK_UNREADABLE")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:  # BlockingIOError when held; any other error cannot prove it free
+            raise Refused(3, "LEDGER_BUSY") from None
         if not (processing / "ledger.sqlite").is_file():
             raise Refused(2, "LEDGER_UNREADABLE missing")
         try:
             with root_lock(processing):
-                yield "held" if fd is not None else "not_checked"
+                yield "held"
         except RunError:
             raise Refused(3, "LEDGER_BUSY") from None
     finally:
-        if fd is not None:
-            os.close(fd)
+        os.close(fd)
 
 
 def _write_receipt(path, text):
@@ -357,13 +360,15 @@ def release(project, code, *, apply=False, limit=None, receipt=None, report=None
     processing, now = Path(project) / "processing-v1", now or datetime.now(timezone.utc)
     doc = {"schema": RELEASE_SCHEMA, "mode": "apply" if apply else "dry_run", "code": code, "released": 0,
            "receipt_file": None, "run_id": None, "runtime_lock": "not_checked"}
-    for value, missing in ((limit, "MAX_REQUIRED"), (receipt, "RECEIPT_REQUIRED"), (report, "REPORT_REQUIRED")):
+    for value, missing in ((limit, "MAX_REQUIRED"), (receipt, "RECEIPT_REQUIRED"), (report, "REPORT_REQUIRED"),
+                           (runtime_lock, "RUNTIME_LOCK_REQUIRED")):
         if apply and value is None:
             raise Refused(2, missing)
-    if apply:
-        doc["run_id"], report_sha = _report(report, processing, now)
-        directory = _receipt_dir(receipt, project)
+    # Both locks are held from the report check through the receipt's publication: no run starts in between.
     with _locked(processing, runtime_lock) if apply else contextlib.nullcontext("not_checked") as lock:
+        if apply:
+            doc["run_id"], report_sha = _report(report, processing, now)
+            directory = _receipt_dir(receipt, project)
         try:
             with snapshot_ro(processing / "ledger.sqlite") as db:
                 db.row_factory = sqlite3.Row
@@ -387,11 +392,13 @@ def release_main(argv):
         "them. Dry run unless --apply. Never deletes, moves or re-extracts."))
     parser.add_argument("--project", required=True, help="records project (processing-v1/ledger.sqlite)")
     parser.add_argument("--code", required=True, help="EXTRACT_ERROR or EXTRACT_TIMEOUT")
-    parser.add_argument("--apply", action="store_true", help="write; needs --max, --receipt and --report")
+    parser.add_argument("--apply", action="store_true",
+                        help="write; needs --max, --receipt, --report and --runtime-lock")
     parser.add_argument("--max", type=int, help=f"release at most N documents (1..{MAX_PER_CALL})")
     parser.add_argument("--receipt", help="owner-only receipt directory outside the project")
     parser.add_argument("--report", help="the newest run's run report, younger than 24 h")
-    parser.add_argument("--runtime-lock", help="the wrapper's run-records.lock, held during the reset")
+    parser.add_argument("--runtime-lock", help="the wrapper's RUNTIME_DIR/run-records.lock (required with "
+                        "--apply; held from the report check to the receipt)")
     parser.add_argument("--json", action="store_true", help="print one records-holds-release-v1 document")
     args = parser.parse_args(argv)
     try:
@@ -404,7 +411,8 @@ def release_main(argv):
     lines.append(f"eligible {doc['eligible']} selected {len(doc['items'])} held_by_other_code {doc['held_by_other_code']}")
     lines.append(f"RELEASED {doc['released']} receipt {doc['receipt_file']} run {doc['run_id']} runtime_lock "
                  f"{doc['runtime_lock']}; the next run retries them" if args.apply else
-                 "DRY_RUN nothing changed (apply: --apply --max N --receipt DIR --report RUN-REPORT)")
+                 "DRY_RUN nothing changed (apply: --apply --max N --receipt DIR --report RUN-REPORT "
+                 "--runtime-lock RUNTIME_DIR/run-records.lock)")
     print(json.dumps(doc, indent=1, sort_keys=True) if args.json else "\n".join(lines))
     return 0
 

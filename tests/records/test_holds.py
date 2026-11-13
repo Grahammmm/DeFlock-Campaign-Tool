@@ -232,9 +232,12 @@ class ReleaseTests(unittest.TestCase):
         self.report = self.root / "run-report.json"
         write_report(self.report, [("extract", "EXTRACT_ERROR", 3)])
         self.receipts = self.root / "receipts"
+        self.lock = self.root / "run-records.lock"  # the wrapper's overlap lock, outside the project
+        self.lock.touch()
 
     def apply(self, limit, **kwargs):
-        options = dict(apply=True, limit=limit, receipt=self.receipts, report=self.report, now=NOW)
+        options = dict(apply=True, limit=limit, receipt=self.receipts, report=self.report,
+                       runtime_lock=self.lock, now=NOW)
         return holds.release(self.project, "EXTRACT_ERROR", **{**options, **kwargs})
 
     def counts(self):
@@ -300,15 +303,31 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(self.counts(), {"1": 3, "2": 3, "3": 3, "4": 1})
 
     def test_held_locks_refuse_ledger_busy(self):
-        lock = self.root / "run-records.lock"
-        lock.touch()
+        lock = self.lock
         for path in (lock, self.processing / "run.lock"):
             with self.subTest(lock=path.name), open(path, "a") as handle:
                 fcntl.flock(handle, fcntl.LOCK_EX)
                 self.refused(3, "LEDGER_BUSY", runtime_lock=lock)
         self.refused(2, "RUNTIME_LOCK_UNREADABLE", runtime_lock=self.root / "absent.lock")
+        self.refused(2, "RUNTIME_LOCK_UNREADABLE", runtime_lock=self.root)  # not a regular file
         self.assertEqual(self.apply(1, runtime_lock=lock)["runtime_lock"], "held")
         self.assertEqual(sorted(self.counts().values()), [0, 1, 3, 3])
+
+    def test_apply_without_runtime_lock_fails_closed_while_the_wrapper_runs(self):
+        # The wrapper holds run-records.lock across preflight and every stage; between stages the extract
+        # stage's run.lock is free. The normal apply with --runtime-lock omitted must not write.
+        with open(self.lock, "a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            self.refused(2, "RUNTIME_LOCK_REQUIRED", runtime_lock=None)
+            before = tree(self.project)
+            argv = ["release", "--project", str(self.project), "--code", "EXTRACT_ERROR", "--apply", "--max", "2",
+                    "--receipt", str(self.receipts), "--report", str(self.report)]
+            self.assertEqual(run_main(argv)[::2], (2, "RUNTIME_LOCK_REQUIRED\n"))
+            self.assertEqual(tree(self.project), before)
+            # The lock is taken before the report is checked: a held wrapper lock wins over a stale report.
+            self.refused(3, "LEDGER_BUSY", now=NOW + timedelta(hours=25))
+        self.assertFalse(self.receipts.exists())
+        self.assertEqual(self.counts(), {"1": 3, "2": 3, "3": 3, "4": 1})
 
     def test_another_holding_code_is_not_released(self):
         with closing(sqlite3.connect(self.processing / "ledger.sqlite")) as db:
