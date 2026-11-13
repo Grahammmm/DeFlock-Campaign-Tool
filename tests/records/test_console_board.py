@@ -326,7 +326,7 @@ class AgencySections(unittest.TestCase):
                     self.assertNotIn("<td>Sent</td>", section)
         with patch.object(cb.denial_log.approval_queue, "load_queue", return_value=[dict(base, status="pending")] * 2), \
                 patch.object(cb.denial_log.mail_send, "results", return_value=[]):
-            self.assertIn("Refusals unavailable (denial_log_invalid_source)", cb.render_agency(self.model(), "alpha-pd"))
+            self.assertIn("Refusals: unavailable. ", cb.render_agency(self.model(), "alpha-pd"))
 
     def test_retention_sources_scopes_other_vendor_and_exact_agency_match(self):
         flock = self.statement()
@@ -357,7 +357,8 @@ class AgencySections(unittest.TestCase):
                 code = "denial_log_source_missing"
             self.write_retention([self.statement()])
             page = cb.render_agency(self.model(), "alpha-pd")
-            self.assertIn("Refusals unavailable (%s)" % code, page)
+            self.assertIn("Refusals: unavailable. ", page)
+            self.assertIn(code, page)
             self.assertIn("30 days", page)
         self.write_retention([self.statement(), self.statement()])
         model = self.model()

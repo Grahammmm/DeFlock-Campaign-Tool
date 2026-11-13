@@ -56,6 +56,22 @@ ACTION_STATUS = {"unknown_id": 404, "invalid_transition": 409, "approval_require
 REASONS = {400: "Bad request", 403: "Refused", 404: "Not found", 405: "Method not allowed", 408: "Request timed out",
            409: "Conflict: the draft is not in a state that allows this", 411: "Length required",
            413: "Request too large", 415: "Unsupported media type", 503: "A source is unavailable"}
+NOTHING = "Nothing was saved or decided."
+DETAIL = {  # one plain sentence per refusal: what happened and what to do (S2-03 beyond the review page)
+    400: "The form was incomplete or not in the expected shape. " + NOTHING + " Go back, check the form and try again.",
+    403: "The console refused this request. " + NOTHING + " Reload the page and try again; if it keeps happening, the page was opened from another address.",
+    404: "That page or item does not exist (it may have been replaced by a newer run). Go back to Home.",
+    405: "This page does not accept that kind of request. " + NOTHING,
+    408: "The request took too long to arrive. " + NOTHING + " Try again.",
+    409: "The draft is not in a state that allows this. " + NOTHING + " Reload the draft to see where it stands.",
+    411: "The form arrived without a length. " + NOTHING + " Reload the page and try again.",
+    413: "The text was too large. " + NOTHING + " Shorten it and try again.",
+    415: "The form arrived in an unsupported format. " + NOTHING + " Reload the page and try again.",
+    503: "A file this page needs could not be read, or this console is view-only. " + NOTHING + " Ask the operator to check the export.",
+    "read_only_export": "This console is view-only: it shows the records but does not accept decisions. " + NOTHING,
+    "export_unavailable": "The data this console reads is not available right now. " + NOTHING + " Try again in a few minutes.",
+    "journal_unavailable": "The place that records decisions is not available. " + NOTHING + " Ask the operator to check it.",
+}
 STYLE = console_layout.STYLE
 
 
@@ -774,9 +790,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def _fail(self, status, text=None):
+    def _fail(self, status, text=None, detail=None):
+        """Plain error page: the reason, one sentence on what happened and what to do, and a way back."""
         text = text or REASONS.get(status, "Error")
-        self._send(status, console_layout.shell(text, "<h1>%s</h1><p><a href=\"/\">Back to the dashboard</a></p>" % esc(text)))
+        detail = detail or DETAIL.get(text) or DETAIL.get(status) or NOTHING
+        self._send(status, console_layout.shell(text, "<h1>%s</h1><p>%s</p><p><a href=\"/\">Back to Home</a> "
+                   "<a href=\"/dashboard\">Dashboard</a></p>" % (esc(text), esc(detail))))
 
     def _stale(self, ident):
         """409 for an edit made from an older page: nothing was saved; the submitted text is not echoed."""
@@ -961,7 +980,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not value.strip():
             if back == "review":
                 return console_review.refuse(self, ident, EMPTY_FIELD[action], (names[2], value))
-            return self._fail(400)
+            return self._fail(400, detail="%s. %s Go back and fill it in." % (EMPTY_FIELD[action], NOTHING))
         link = None
         try:
             row = next((r for r in self.options["source"].queue_rows() if r["id"] == ident), None)

@@ -78,7 +78,7 @@ class Outstanding(unittest.TestCase):
                 self.assertEqual(co.outstanding(model), [])
                 page = home.render_home(model, "unused")
                 self.assertIn("<h1>Home</h1>", page)
-                self.assertIn("No outstanding items" if mode == "empty" else "unavailable (no_response_items)", page)
+                self.assertIn("No outstanding items" if mode == "empty" else "The response items for this run have not been created yet.", page)
 
 
 if __name__ == "__main__":

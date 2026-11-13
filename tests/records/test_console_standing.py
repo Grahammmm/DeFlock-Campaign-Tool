@@ -76,7 +76,7 @@ class Standing(unittest.TestCase):
         (self.project / "run-outputs" / RUN / "outcomes/timeline.json").unlink()
         page = home.render_home(home.load(self.project, RUN, now=NOW), "x")
         self.assertIn('id="standing"', page)
-        self.assertIn("timeline: unavailable (missing); no agency rows", page)
+        self.assertIn("The request timeline: unavailable. This file has not been created yet; run the records step that writes it. No agency rows can be shown.", page)
         self.assertIn("Needs your decision", page)
 
     def test_roster(self):
