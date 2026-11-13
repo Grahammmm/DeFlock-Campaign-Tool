@@ -727,6 +727,14 @@ def check_actor(actor):
     return actor
 
 
+ACCESS_REFUSED = "Refused: decisions here need the Access sign-in. Nothing was saved or decided."
+
+
+def access_actor(email):
+    """The actor label of a decision taken with a verified Access identity (DFB-11)."""
+    return "%s via Access" % email
+
+
 ROUTES = {"/approvals/approve": ("approve", ("csrf_token", "id", "signature")),
           "/approvals/reject": ("reject", ("csrf_token", "id", "reason")),
           "/approvals/edit": ("edit", ("csrf_token", "id", "body", "expected_revision"))}
@@ -753,7 +761,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     sys_version = ""
     protocol_version = "HTTP/1.0"
     timeout = SOCKET_TIMEOUT
-    options = pin = None  # set per request by _begin
+    options = pin = actor = None  # set per request by _begin (actor: by do_POST)
 
     def log_message(self, *args):  # request lines and bodies may carry record text or tokens
         pass
@@ -884,6 +892,25 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _refuse_method(self):
         self._fail(405)
 
+    def _access_actor(self):
+        """DFB-11, with --access-keys: a POST is taken only on the public Host with an Access token whose claims match and
+        whose RS256 signature verifies; its email becomes this request's actor. Loopback POSTs are refused (decisions need
+        the Access sign-in). False: the refusal was sent and nothing was read or written."""
+        if self.headers.get_all("Host") != [self.server.public_pair[0]]:
+            self._fail(403, ACCESS_REFUSED)
+            return False
+        try:
+            who = console_access.identity(self.headers, self.server.access_cfg, self.server.access_keys,
+                                          self.server.access_clock())
+        except ValueError:
+            self._fail(503, "Access keys unavailable: nothing was saved or decided")
+            return False
+        if who is None:
+            self._fail(403, ACCESS_REFUSED)
+            return False
+        self.actor = access_actor(who)
+        return True
+
     do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = do_TRACE = do_CONNECT = _refuse_method
 
     def _body(self):
@@ -920,6 +947,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not console_origin.request_ok(self, post=True):
             return self._fail(403)
+        self.actor = self.server.actor
+        if self.server.access_keys is not None and not self._access_actor():
+            return
         if self.server.pinner is not None:
             journal = self.server.decisions_dir is not None
             if journal and self.path == "/send":
@@ -979,7 +1009,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if console_journal.queue(self, action, ident, value, row, fields.get("expected_revision"), choice):
                 self._send(303, "", location="/review?id=" + urllib.parse.quote(ident) if back == "review" else back)
             return
-        project, actor = self.server.options["project"], self.server.actor
+        project, actor = self.server.options["project"], self.actor or self.server.actor
         hook = False
         try:
             if action == "approve":
@@ -1030,14 +1060,35 @@ def _access_cfg(public_origin, access_config):
         raise PanelError("access_config_invalid") from None
 
 
+def _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg):
+    """DFB-11: a decision journal behind the public origin needs the Access keys file; the file needs a public origin.
+    The file is read once here so a bad one stops the start; requests re-read it (a refresh needs no restart)."""
+    if access_keys is None:
+        if public_origin is not None and decisions_dir is not None:
+            raise PanelError("access_keys_required")
+        return
+    if public_origin is None:
+        raise PanelError("access_keys_unused")
+    try:
+        console_access.load_keys(access_keys)
+    except ValueError:
+        raise PanelError("access_keys_invalid") from None
+    try:
+        check_actor(access_actor(access_cfg["email"]))
+    except PanelError:
+        raise PanelError("access_config_invalid") from None  # the email is too long to label a decision
+
+
 def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
                  timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None,
                  access_config=None, access_clock=None, manual_events_dir=None, meetings_dir=None, export_root=None,
-                 decisions_dir=None):
+                 decisions_dir=None, access_keys=None):
     """Unstarted loopback-only server; the caller serves and closes it.
 
     export_root (DFGL-16A) with run_id "auto" serves the one real export DIR/current points at, pinned per request.
     decisions_dir (DFGL-16B, needs export_root) journals decisions there instead of refusing every POST.
+    access_keys (DFB-11, needs public_origin; required with public_origin and decisions_dir): owner-only JWKS file; every
+    POST then needs the public Host and a signature-verified Access token, whose email is the decision's actor.
     """
     check_run_id(run_id)
     check_actor(actor)
@@ -1070,9 +1121,11 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
     except ValueError:
         raise PanelError("manual_events_dir_invalid") from None
     access_cfg = _access_cfg(public_origin, access_config)
+    _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg)
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
     server.public_pair = public_pair
     server.access_cfg = access_cfg
+    server.access_keys = access_keys
     server.access_clock = access_clock or time.time
     server.csrf_token = secrets.token_urlsafe(32)
     server.manual_event_key = secrets.token_urlsafe(32)
@@ -1118,6 +1171,9 @@ def main(argv=None):
                         help="owner-only send.json: enables the Approve and send button (still off until enabled)")
     parser.add_argument("--access-config", metavar="FILE",
                         help="owner-only JSON {aud,email,team_domain}; required with --public-origin")
+    parser.add_argument("--access-keys", metavar="FILE",
+                        help="owner-only JWKS copy of the Access signing keys; with --public-origin every POST needs a "
+                             "signature-verified Access token (required with --decisions-dir)")
     args = parser.parse_args(argv)
     timers = tuple(args.timer_unit) if args.timer_unit else DEFAULT_TIMERS
     try:
@@ -1161,7 +1217,7 @@ def main(argv=None):
                               timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config,
                               send_config=args.send_config, public_origin=args.public_origin,
                               access_config=access, manual_events_dir=args.manual_events, meetings_dir=args.meetings_dir,
-                              export_root=args.export_root, decisions_dir=args.decisions_dir)
+                              export_root=args.export_root, decisions_dir=args.decisions_dir, access_keys=args.access_keys)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required", "_unused", "_needs_export")) else 1

@@ -433,7 +433,7 @@ def post(handler):
         if console_journal.oversight(handler, handler.path.rpartition("/")[2], fields.get("id")):
             handler._send(303, "", location="/public-updates")
         return True
-    project, actor = handler.server.options["project"], _journal_actor(handler.server.actor)
+    project, actor = handler.server.options["project"], _journal_actor(handler.actor or handler.server.actor)
     try:
         if handler.path == "/public-updates/retract":
             if not re.fullmatch(r"[0-9a-f]{16}", fields["id"]):
