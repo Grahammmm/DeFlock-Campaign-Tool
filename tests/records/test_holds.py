@@ -149,6 +149,34 @@ class HoldsTests(unittest.TestCase):
                               "--code", "AWAITING_OCR", "--json"])
         self.assertEqual([i["code"] for i in json.loads(out)["items"]], ["AWAITING_OCR"])
 
+    def test_project_only_uses_newest_run_list_and_reconciles(self):
+        # No --report: 8 is an image with no alert (AWAITING_OCR in the newest list); 11 is a held error;
+        # 12 was extracted since that run, so the run counted 2 AWAITING_OCR and the ledger holds 1.
+        make_project(self.root / "p3", [(8, True, None, 0), (11, True, "extraction_stage_error", 3)])
+        runs = self.root / "p3" / "processing-v1" / "runs"
+        runs.mkdir()
+        old = "run_20261112T150000Z_0a1b2c3d"
+        for run_id, docs in ((old, [(8, "DEFERRED_RUN_BUDGET")]),
+                             (RUN, [(8, "AWAITING_OCR"), (11, "EXTRACT_ERROR"), (12, "AWAITING_OCR")])):
+            (runs / f"extract-{run_id}.json").write_text(json.dumps({
+                "schema": "records-extract-outcomes-v1", "run_id": run_id, "documents": [
+                    {"original_sha256": digest(n), "form": "png", "outcome": o} for n, o in docs]}))
+        (runs / f"extract-failures-{RUN}.json").write_text("{}")
+        code, out, err = run_main(["--project", str(self.root / "p3"), "--json"])
+        self.assertEqual(code, 0)
+        doc = json.loads(out)
+        self.assertEqual(doc["counts"], {"AWAITING_OCR": 1, "EXTRACT_ERROR": 1})
+        self.assertEqual((doc["report"]["source"], doc["report"]["run_id"]), ("run_list", RUN))
+        self.assertEqual(doc["report"]["mismatches"], [{"code": "AWAITING_OCR", "ledger": 1, "report": 2}])
+        self.assertEqual(err.splitlines(), ["COUNT_MISMATCH AWAITING_OCR 1 2"])
+        _, out, _ = run_main(["--project", str(self.root / "p3")])
+        self.assertIn("COUNT_MISMATCH AWAITING_OCR 1 2", out.splitlines())
+        # No outcome list and no report: said so, never a silent complete listing.
+        code, _, err = run_main(["--project", str(self.project), "--json"])
+        self.assertEqual((code, err.splitlines()), (0, [
+            "RUN_LIST_MISSING (unalerted pending documents are not coded)",
+            "NOT_RECONCILED (no run report and no run outcome list)"]))
+
     def test_unreadable_ledger_exits_2(self):
         code, out, err = run_main(["--project", str(self.root / "absent")])
         self.assertEqual((code, out), (2, ""))

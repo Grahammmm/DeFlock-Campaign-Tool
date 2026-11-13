@@ -408,6 +408,20 @@ class AnalysisExportTests(Base):
         self.touch("analysis-ledger.jsonl", 1, "{cut\n")
         self.assertEqual(self.item("analysis"), ("unknown", "analysis_unreadable"))
 
+    def test_pending_sync_warns_until_the_pair_syncs(self):
+        self.touch("LANE-ON", 600)
+        self.touch("cycle.log", 5)  # run-analysis.sh refreshes cycle.log even when analysis-sync exits 1
+        alerts, pair = self.target_dir / "alerts", {"kind": "sync", "run_id": "run_x", "agency_id": "AG-1"}
+        missing = [dict(pair, outcome="PROFILE_MISSING")] + [{"kind": "tick", "agency": "a", "outcome": "UNCHANGED"}] * 6000
+        self.ledger(*missing)  # logged once, then followed by far more than 256 KiB of healthy ticks
+        self.assertEqual(self.item("analysis"), ("warn", "analysis_error"))
+        self.assertEqual(ph.write_alerts(self.assess(analysis_root=self.lane), alerts), 1)
+        self.assertEqual(os.listdir(alerts), ["health-analysis-analysis_error.json"])
+        self.ledger(*missing, dict(pair, outcome="SYNCED"))
+        self.assertEqual(self.item("analysis"), ("ok", "analysis_ticking"))
+        self.assertEqual(ph.write_alerts(self.assess(analysis_root=self.lane), alerts), 0)
+        self.assertEqual(os.listdir(alerts), ["health-analysis-analysis_error.cleared.json"])
+
     def test_export_matching_pending_and_behind(self):
         self.assertEqual(self.item("console_export"), ("stop", "console_export_stale"))  # no export at all
         self.exported(self.run_id)
