@@ -958,6 +958,7 @@ _MODULES = {
         records.outcomes.textstate records.outcomes.unmatched records.pipeline_health records.project_init records.portal.download records.portal.engine records.portal.ledger_adapter
         records.portal.store records.console_apply records.console_journal records.console_manual_events records.public_packets records.packet_changes records.public_updates records.publish records.queue_runtime records.recovery.backup
         records.recovery.backup_v2 records.recovery.publication records.quiescence_audit records.records_backup records.review_bundle records.review_retirement
+        records.holds
         records.run records.run_orchestrator records.run_stages records.runner.canonical_mail records.runner.core
         records.runner.export_proof records.runtime records.schedule records.systemd_control records.unattended
         records.understanding.cli records.understanding.digest records.worker_lifecycle""",
@@ -1108,6 +1109,7 @@ MODULE_FUNCTIONS = {
     'records.mail_poll': ('_poll_receipt', '_write_once', 'poll',),
     'records.records_backup': ('backup_main', 'check_main',),  # backup_main appends DIR/backup-digests.jsonl (0600) after a verified local backup set; check_main is read-only on the backup dir and writes only the pipeline-health alert files in the separate <into>-alerts dir; never off-box
     'records.quiescence_audit': ('main',),  # writes only the 0600 evidence file --out, outside the project
+    'records.holds': ('_commit', '_write_receipt',),  # HOLD-RELEASE-1: one new 0600 receipt (sha256 prefixes and codes) in an owner-only dir outside the project; the ledger write is attempt counters only
     'records.mail_resolution_census': ('inventory',),
     'records.native_extract': ('_write_private', 'run', 'write_awaiting_ocr', 'write_failure_manifest', 'write_private_list',),
     'records.ocr_closure': ('load_cas_page', 'load_cas_vision',),
