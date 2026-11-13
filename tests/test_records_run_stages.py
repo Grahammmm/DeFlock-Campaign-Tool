@@ -999,6 +999,31 @@ class TemplateTests(unittest.TestCase):
         mail["stages"][0]["argv"] = mail["stages"][0]["argv"][:-2]
         self.assertEqual(mail, json.loads(live_text))
 
+    def test_committed_portal_plan_matches_generator_and_differs_only_in_portal(self):
+        # PORTAL-ARGV-1: the opt-in plan is live plus the portal download flags; live is untouched.
+        directory, module = self._load_generator()
+        committed = (directory / module.PORTAL_TEMPLATE).read_text(encoding="utf-8")
+        self.assertEqual(committed, module.render_text("live", None, True))
+        self.assertNotIn("--portal-download", (directory / "live-container.json.in").read_text(encoding="utf-8"))
+        self.assertEqual(module.render_text("live", None, False),
+                         (directory / "live-container.json.in").read_text(encoding="utf-8"))
+        live = json.loads((directory / "live-container.json.in").read_text(encoding="utf-8"))
+        text = committed.replace("@PORTAL_MAX_ITEMS@", '"x"').replace("@PORTAL_TOTAL_BYTES@", '"x"')
+        plan = json.loads(text)
+        self.assertEqual(plan["portal"], {"fetch": {"apply": True, "max_items": "x", "max_bytes_total": "x"}})
+        for stage, base in zip(plan["stages"], live["stages"]):
+            if stage["name"] == "portal":
+                self.assertEqual(stage["argv"][:len(base["argv"])], base["argv"])
+                self.assertEqual(stage["argv"][len(base["argv"]):],
+                                 ["--portal-egress-file", "@PORTAL_EGRESS_FILE@",
+                                  "--portal-max-bytes", "@PORTAL_MAX_BYTES@",
+                                  "--portal-request-timeout", "@PORTAL_REQUEST_TIMEOUT@"])
+                self.assertEqual(stage["timeout_seconds"], base["timeout_seconds"])
+            else:
+                self.assertEqual(stage, base)
+        with self.assertRaises(ValueError):
+            module.plan("test", None, True)
+
     def test_committed_ocr_plans_match_generator_and_differ_only_in_extract(self):
         # T6-plan: Phase 2 LIVE plans. Only the extract stage differs from the Phase 1 LIVE plan.
         directory, module = self._load_generator()
