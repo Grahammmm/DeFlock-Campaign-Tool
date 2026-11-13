@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import unittest
+from unittest import mock
 
 from campaign_tool.records import packet_changes as bridge
 from campaign_tool.records import public_packets as pp
@@ -69,6 +70,10 @@ class ExportTests(Base):
         self.assertEqual(self.code(bridge.export_changes, self.project, self.out()), "change_hash_mismatch")
         self.assertFalse(self.out().exists())
         file.write_bytes(raw)
+        with mock.patch.object(bridge.os, "link", side_effect=OSError("synthetic interrupted copy")):
+            with self.assertRaises(OSError):
+                bridge.export_changes(self.project, self.out())
+        self.assertEqual(list(self.out().iterdir()), [])  # no partial final or manifest
         bridge.export_changes(self.project, self.out())
         (self.out() / file.name).write_bytes(b"conflict")
         self.assertEqual(self.code(bridge.export_changes, self.project, self.out()), "export_conflict")

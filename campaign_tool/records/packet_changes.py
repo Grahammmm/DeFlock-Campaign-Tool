@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import tempfile
 
 from . import public_packets as pp
 
@@ -103,17 +104,25 @@ def export_changes(project, out):
         pp._need(existing is None or existing == raw, "export_conflict")
         if existing is None:
             new.append((name, raw))
-    for name, raw in new:
-        fd = os.open(out_path / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
     manifest = {"schema": MANIFEST_SCHEMA, "changes": [
         {"file": name, "sha256": hashlib.sha256(raw).hexdigest()} for name, raw in sorted(prepared)]}
-    # An active manifest excludes old exports after supersession/cancellation. An
-    # interrupted export is resumable; the previous complete manifest stays valid.
-    pp._replace(str(out_path / MANIFEST), (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode())
+    writes = new + [(MANIFEST, (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode())]
+    for name, raw in writes:
+        # Publish complete files only. A crash can leave an ignored private temp,
+        # never a partial final. The active manifest is replaced atomically last.
+        fd, temporary = tempfile.mkstemp(prefix=".change-", dir=out_path)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            if name == MANIFEST:
+                os.replace(temporary, out_path / name)
+            else:
+                os.link(temporary, out_path / name, follow_symlinks=False)
+        finally:
+            if os.path.lexists(temporary):
+                os.unlink(temporary)
     return {"exported": len(new), "existing": len(prepared) - len(new), "active": len(prepared)}
 
 
