@@ -4,8 +4,11 @@
 # runtime, never in this repository.
 #
 # Usage: run-records.sh [--target NAME] [--dry-run] [--scheduled | --arrival]
-#   --target NAME  stage plan RUNTIME_DIR/targets/NAME.json (default
-#                  @DEFAULT_TARGET@); receipts go to RUNTIME_DIR/NAME/
+#   --target NAME  stage plan RUNTIME_DIR/targets/NAME.json; receipts go to
+#                  RUNTIME_DIR/NAME/. REQUIRED (except with --arrival):
+#                  there is no default target, a bare run is refused
+#                  (TARGET_REQUIRED, exit 64). The rendered DEFAULT_TARGET
+#                  value (@DEFAULT_TARGET@) is documentation only.
 #   --dry-run      print the preflight steps and every stage, then exit;
 #                  takes no lock, calls no docker, writes nothing
 #   --scheduled    set by the systemd unit; report mode "scheduled"
@@ -64,7 +67,7 @@ DOCKER_WAIT_DEADLINE=@DOCKER_WAIT_DEADLINE@
 NOTIFY_TIMEOUT=@NOTIFY_TIMEOUT@
 RUN_BUDGET_SECONDS=@RUN_BUDGET_SECONDS@
 MIN_FREE_BYTES=@MIN_FREE_BYTES@
-TARGET=@DEFAULT_TARGET@
+TARGET=
 SCHEDULED_TARGET=@SCHEDULED_TARGET@
 RECORDS_DROP_DIR=@RECORDS_DROP_DIR@
 # Arrival coalescing: wait for a quiet moment, but never longer than the
@@ -108,6 +111,10 @@ if [ "$ARRIVAL" -eq 1 ]; then
   TARGET=$SCHEDULED_TARGET
 fi
 [ "$ARRIVAL" -eq 1 ] || [ "$FOLLOWUP" -eq 0 ] || usage
+if [ "$TARGET_EXPLICIT" -eq 0 ] && [ "$ARRIVAL" -eq 0 ]; then
+  printf '%s\n' "run-records: refused (TARGET_REQUIRED): pass --target NAME; there is no default target" >&2
+  exit 64
+fi
 case "$TARGET" in ""|[!A-Z]*|*[!A-Z0-9_]*) usage;; esac
 [ "${#TARGET}" -le 32 ] || usage
 

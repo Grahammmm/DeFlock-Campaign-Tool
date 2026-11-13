@@ -103,7 +103,14 @@ runs sync at module scope.
 
 Usage
 
-    run-records.sh [--target NAME] [--dry-run] [--scheduled]
+    run-records.sh --target NAME [--dry-run] [--scheduled]
+    run-records.sh --arrival
+
+`--target` is required (except with `--arrival`, which uses `SCHEDULED_TARGET`):
+a bare invocation exits 64 with `TARGET_REQUIRED` and attempts nothing. There is
+no default target; `DEFAULT_TARGET` in VALUES.json is kept for compatibility and
+is no longer used to pick a plan. A TEST plan that names, holds or lies inside a
+LIVE plan's project is refused at render.
 
 - `--dry-run` prints the preflight steps and all 8 stages, with each stage's
   exit code, timeout, failure policy and argv. It takes no lock, calls no
