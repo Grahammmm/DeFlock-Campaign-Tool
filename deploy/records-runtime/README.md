@@ -466,7 +466,10 @@ zone flags come from the same `TIMER_*` values as the run timer, so the check
 judges the schedule the run timer actually uses. The check is read-only apart
 from one alert file per open problem (and a `.cleared` file once resolved) under
 `RUNTIME_DIR/TARGET/alerts`: no successful run, repeated failures, arrival backlog,
-stale mail poll, notify failure or a missed slot. Exit 1 (warn), 2 (unknown) or 3
+stale mail poll, notify failure or a missed slot; and, when the values are
+rendered, a stalled or erroring analysis lane (`ANALYSIS_ROOT` adds
+`--analysis-root`) or a console export behind the newest run report
+(`CONSOLE_EXPORT_DIR` adds `--console-export-root`). Exit 1 (warn), 2 (unknown) or 3
 (stop) shows as a failed unit; the alert files are the record. Telegram delivery
 is unchanged.
 

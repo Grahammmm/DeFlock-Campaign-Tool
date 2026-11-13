@@ -1021,8 +1021,11 @@ class RendererTests(unittest.TestCase):
         self.assertEqual({"run-analysis.sh", "records-analysis.service", "records-analysis.timer"},
                          set(written) - {p.relative_to(plain).as_posix() for p in plain.rglob("*") if p.is_file()})
         for path in plain.rglob("*"):
-            if path.is_file():
+            if path.is_file() and path.name != "records-health.service":
                 self.assertEqual(path.read_bytes(), (with_dir / path.relative_to(plain)).read_bytes(), path.name)
+        # ANALYSIS-HEALTH-1: the health unit is the one other file that changes; it gains only --analysis-root.
+        self.assertEqual((with_dir / "records-health.service").read_text(), (plain / "records-health.service").read_text()
+                         .replace("--record-alerts\n", "--record-alerts --analysis-root /srv/analysis\n"))
         timer = (with_dir / "records-analysis.timer").read_text().splitlines()
         for line in ("OnBootSec=10min", "OnUnitActiveSec=15min", "Persistent=false"):
             self.assertIn(line, timer)
@@ -1387,6 +1390,14 @@ class RendererTests(unittest.TestCase):
                         "TIMER_TIMEZONE": "America/Chicago"})
         service = (self.tmp / "out" / "records-health.service").read_text()
         self.assertIn("--days daily --times 06:30 --timezone America/Chicago --record-alerts", service)
+
+    def test_health_unit_gains_the_console_export_root(self):  # ANALYSIS-HEALTH-1
+        self.do_render({**self.values, "CONSOLE_EXPORT_DIR": "/srv/export", "CONTAINER_USER": "records",
+                        "CONTAINER_ENGINE_DIR": "/srv/engine", "CONTAINER_PYTHON": "/usr/bin/python3",
+                        "CONTAINER_PROJECT_DIR": "/srv/project"})
+        service = (self.tmp / "out" / "records-health.service").read_text().splitlines()
+        start = next(line for line in service if line.startswith("ExecStart="))
+        self.assertTrue(start.endswith(" --record-alerts --console-export-root /srv/export"), start)
 
     def test_health_units_refuse_a_missing_or_unsafe_records_root(self):
         values = dict(self.values)

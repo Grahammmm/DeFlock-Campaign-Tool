@@ -97,7 +97,10 @@ MIN_FREE_BYTES_CEILING = 1024 ** 5
 DF_PROBE_SECONDS = 10 + 2
 TARGET_NAMES = {"DEFAULT_TARGET", "SCHEDULED_TARGET"}
 # Supplied per target by the renderer, never by VALUES.json.
-RESERVED = {"RUN_ANALYSIS_SH", "TARGET_NAME", "TIMER_ONCALENDAR", "HEALTH_DAYS", "HEALTH_TIMES", "HEALTH_TIMEZONE"}
+RESERVED = {"RUN_ANALYSIS_SH", "TARGET_NAME", "TIMER_ONCALENDAR", "HEALTH_DAYS", "HEALTH_TIMES", "HEALTH_TIMEZONE",
+            "HEALTH_EXTRA_ARGS"}
+# Health-unit flags derived from optional values (ANALYSIS-HEALTH-1): each check runs only once its root is rendered.
+HEALTH_FLAGS = (("ANALYSIS_ROOT", "--analysis-root"), ("CONSOLE_EXPORT_DIR", "--console-export-root"))
 # Optional timer calendar inputs; absent means the default weekday schedule.
 TIMER_KEYS = ("TIMER_DAYS", "TIMER_TIMES", "TIMER_TIMEZONE")
 # Safety placeholders a template must keep: a wrapper template that dropped
@@ -305,7 +308,8 @@ def render(values, targets, out):
         used.update(found)
         extra = {"TIMER_ONCALENDAR": "\n".join("OnCalendar=" + line for line in timer.on_calendar()),
                  "HEALTH_DAYS": timer.days_spec, "HEALTH_TIMES": timer.times_spec,
-                 "HEALTH_TIMEZONE": timer.timezone}
+                 "HEALTH_TIMEZONE": timer.timezone,
+                 "HEALTH_EXTRA_ARGS": "".join(f" {flag} {values[key]}" for key, flag in HEALTH_FLAGS if key in values)}
         if "CONSOLE_EXPORT_DIR" not in values:  # the post-step exists only when its target is given
             text = CONSOLE_BLOCK.sub("", text)
         if "DECISIONS_DIR" not in values:
