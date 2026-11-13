@@ -28,7 +28,7 @@ MOBILE = (
     '.side>a{padding:0 .5rem}.side .more{flex-basis:100%;margin:0}'
     'main a{margin-right:.25rem}summary{min-height:44px;padding:.6rem 0}'
     'main table{display:block;overflow-x:auto;max-width:100%}th,td{overflow-wrap:break-word}'
-    'select,input[type=text],input[type=password],input[type=search]{min-height:44px}'
+    'input:not([type=radio]):not([type=checkbox]):not([type=hidden]):not([type=submit]),select{min-height:44px}'
     'input[type=radio],input[type=checkbox]{width:1.5rem;height:1.5rem}')
 END = "</main></body></html>"
 PLAIN = {"timeline": "the request timeline", "queue": "the approval queue", "public": "public updates",
