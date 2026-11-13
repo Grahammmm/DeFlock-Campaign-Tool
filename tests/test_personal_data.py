@@ -956,7 +956,7 @@ _MODULES = {
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
         records.analysis_export records.outcomes.analysis_ready records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register records.outcomes.timeline
         records.outcomes.textstate records.outcomes.unmatched records.pipeline_health records.project_init records.portal.download records.portal.engine records.portal.ledger_adapter
-        records.portal.store records.console_apply records.console_journal records.console_manual_events records.public_packets records.public_updates records.publish records.queue_runtime records.recovery.backup
+        records.portal.store records.console_apply records.console_journal records.console_manual_events records.public_packets records.packet_changes records.public_updates records.publish records.queue_runtime records.recovery.backup
         records.recovery.backup_v2 records.recovery.publication records.quiescence_audit records.records_backup records.review_bundle records.review_retirement
         records.run records.run_orchestrator records.run_stages records.runner.canonical_mail records.runner.core
         records.runner.export_proof records.runtime records.schedule records.systemd_control records.unattended
@@ -977,6 +977,7 @@ MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for modul
 
 # Every write-capable function of a module with no catalog store, by identity; a new or renamed one fails until it is listed here.
 MODULE_FUNCTIONS = {
+    'records.packet_changes': ('export_changes',),  # PUB-BRIDGE-1: 0600 approved-change copies + active manifest in a private host export; never record objects, project writes or publication
     'records.ask_parity': ('main',),  # TSV/JSON to stdout only; reads local drafts, writes no store or confirmation
     'git_exposure': ('_exposure',),  # doctor --checklist: read-only git queries (check-ignore/ls-files) on stdin; writes nothing
     'launch_check': ('launch_checks',),  # doctor --launch: scratch-tree rehearsal, removed in finally; no campaign writes or sends
