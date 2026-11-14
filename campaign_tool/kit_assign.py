@@ -156,16 +156,27 @@ def _read_leaf(kit_fd, bad):
             raise bad("larger than 1 MiB")
         handle = os.fdopen(fd, "rb")  # on success the stream owns the descriptor
     except OSError:
-        os.close(fd)
+        _close_secondary(fd)  # the raw descriptor has this one cleanup owner; its close error never replaces the cause
         raise bad("file changed or could not be read") from None
     except BaseException:  # includes the ValueError refusals above, and MemoryError from the constructor
-        os.close(fd)
+        _close_secondary(fd)
+        raise
+    # The stream now owns the descriptor: it is closed exactly once, by handle.close(), never by os.close(fd).
+    try:
+        data = handle.read(MAX_BYTES + 1)
+    except BaseException as exc:
+        try:
+            handle.close()
+        except OSError:
+            pass  # a subordinate close OSError is dropped; the read failure keeps its classification
+        if isinstance(exc, OSError):
+            raise bad("file changed or could not be read") from None
         raise
     try:
-        with handle:
-            return handle.read(MAX_BYTES + 1)
-    except OSError:
+        handle.close()
+    except OSError:  # a close-only failure is a refusal, never success and never the raw close text
         raise bad("file changed or could not be read") from None
+    return data
 
 
 def _load(kit_fd):
