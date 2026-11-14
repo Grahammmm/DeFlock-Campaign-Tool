@@ -21,7 +21,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import arrival, run_report, schedule
+from . import arrival, run_report, schedule, schedule_snapshot
 
 SCHEMA = "records-health-v1"
 ALERT_SCHEMA = "records-health-alert-v1"
@@ -227,13 +227,15 @@ def _notify(target_dir, limits, now):
     return _check("notify", "ok", "notify_ok")
 
 
-def _schedule(records_root, now, spec):
+def _schedule(records_root, now, spec, snapshot=None):
     try:
-        result = schedule.health(records_root, now=now, spec=spec)
+        result = (schedule_snapshot.health(_read_json(snapshot), now, spec) if snapshot is not None
+                  else schedule.health(records_root, now=now, spec=spec))
         state = SCHEDULE_STATE[result["status"]]
     except Exception:  # fail closed: an unreadable ledger is never ok
         return _check("schedule", "unknown", "schedule_unreadable")
-    return _check("schedule", state, "schedule_" + result["status"])
+    return _check("schedule", state, "missed_slot" if snapshot is not None and result["status"] == "missed"
+                  else "schedule_" + result["status"])
 
 
 def _ledger_error(path):
@@ -306,7 +308,7 @@ def _console_export(export_root, latest, now, limits):
 # ----- assessment and line ----------------------------------------------------------------------
 
 def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limits=LIMITS,
-           spec=None, analysis_root=None, console_export_root=None):
+           spec=None, analysis_root=None, console_export_root=None, schedule_snapshot_path=None):
     """Read-only health report; unknown is never reported as ok."""
     spec = spec or schedule.configured()
     now = (now or datetime.now(timezone.utc))
@@ -317,7 +319,7 @@ def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limi
     backlog, waiting, age = _arrival_backlog(runtime_dir, now, limits)
     last_run, latest = _last_run(target_dir, now, limits, spec)
     checks = [backlog, _mail_poll(mail_store, now, limits), last_run, _run_failures(target_dir, latest, limits, now),
-              _notify(target_dir, limits, now), _schedule(records_root, now, spec), _analysis(analysis_root, now, limits),
+              _notify(target_dir, limits, now), _schedule(records_root, now, spec, schedule_snapshot_path), _analysis(analysis_root, now, limits),
               _console_export(console_export_root, latest, now, limits)]
     states = {item["state"] for item in checks if item["reason_code"] not in NOT_CONFIGURED}
     overall = next(state for state in ("stop", "warn", "unknown", "ok") if state in states)
@@ -441,6 +443,7 @@ def main(argv=None):
     parser.add_argument("--runtime-dir", required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--root", required=True, help="records root holding ledger.sqlite")
+    parser.add_argument("--schedule-snapshot", help="host-readable schedule metadata; no ledger fallback if unreadable")
     parser.add_argument("--mail-store")
     parser.add_argument("--mail-poll-warn-hours", type=int, default=LIMITS["mail_poll_warn_hours"])
     parser.add_argument("--mail-poll-stop-hours", type=int, default=LIMITS["mail_poll_stop_hours"])
@@ -461,7 +464,7 @@ def main(argv=None):
         now = datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now else None
         report = assess(runtime_dir=args.runtime_dir, target=args.target, records_root=args.root,
                         mail_store=args.mail_store, now=now, spec=spec, analysis_root=args.analysis_root,
-                        console_export_root=args.console_export_root,
+                        console_export_root=args.console_export_root, schedule_snapshot_path=args.schedule_snapshot,
                         limits=dict(LIMITS, analysis_max_minutes=args.analysis_max_minutes,
                                     mail_poll_warn_hours=args.mail_poll_warn_hours,
                                     mail_poll_stop_hours=args.mail_poll_stop_hours))

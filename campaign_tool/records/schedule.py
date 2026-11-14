@@ -271,6 +271,15 @@ def health(root, now=None, lookback=3, spec=None):
         report.update(status="never", reason="ledger_missing", slots=[], exit_code=2)
         return report
     runs, open_alerts, blocked = _runs(database)
+    report.update(health_from_runs(runs, open_alerts, blocked, now=now, lookback=lookback, spec=spec))
+    return report
+
+
+def health_from_runs(runs, open_alerts, blocked, *, now, lookback=3, spec=None):
+    """Assess ledger-shaped metadata at the current clock (also used by host snapshots)."""
+    spec = spec or configured()
+    now = _aware(now, spec)
+    report = {}
     report.update(open_alerts=open_alerts, blocked_stages=blocked,
                   last_run=({k: runs[0][k] for k in ("run_id", "started_at", "ended_at", "status")} if runs else None))
     if not runs:
