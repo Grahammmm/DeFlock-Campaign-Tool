@@ -11,10 +11,11 @@ import time
 
 CATEGORIES = frozenset(("originals", "ledger", "rules", "receipts"))
 CHUNK = 1024 * 1024
+# Bounds sized for the live records project with at least 5x headroom (BACKUP-FIT-1); constants, never caller-set.
 MAX_FILE = 256 * 1024 * 1024
-MAX_TOTAL = 1024 * 1024 * 1024
-MAX_ENTRIES = 1000
-MAX_MANIFEST = 1024 * 1024
+MAX_TOTAL = 8 * 1024 * 1024 * 1024
+MAX_ENTRIES = 20000
+MAX_MANIFEST = 16 * 1024 * 1024
 
 
 class RecoveryError(ValueError):

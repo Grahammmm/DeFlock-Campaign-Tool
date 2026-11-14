@@ -21,12 +21,13 @@ REQUIRED_ROLES = frozenset(("canonical_ledger", "intake_ledger", "original_blob"
                             "receipt", "cursor", "review_bundle"))
 ROLES = REQUIRED_ROLES | frozenset(("rules", "configuration", "derived_resume",
                                    "queue_store", "publication_store", "resolution_policy"))
-EXCLUSIONS = frozenset(("credential", "sqlite_sidecar", "process_state", "rebuildable"))
+EXCLUSIONS = frozenset(("credential", "sqlite_sidecar", "process_state", "rebuildable", "prior_backup",
+                        "out_of_scope_legacy"))
 NAME = re.compile(r"[a-z][a-z0-9_-]{0,79}")
 HASH = re.compile(r"[0-9a-f]{64}")
 MAX_REFS = 10000
 BOUNDARY_SECONDS = 120
-OPERATION_SECONDS = 60
+OPERATION_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,9 @@ class Profile:
     roots: tuple
     stores: tuple
     directories: tuple = ()  # declared structural (possibly empty) directories; any other directory is unknown
+    # Declared out-of-scope entries (files or directories inside a root) the walk never enters or opens. Each is
+    # recorded in the manifest as an ``out_of_scope_legacy`` exclusion, so a set never claims to cover them.
+    outside: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -84,14 +88,14 @@ def _private(info, directory=False):
         require(info.st_nlink == 1, "hardlink_rejected")
 
 
-def _inventory(root):
-    """FD-anchored metadata walk; never opens excluded file contents."""
+def _inventory(root, skip=frozenset()):
+    """FD-anchored metadata walk; never opens excluded file contents and never enters a ``skip`` path."""
     found = {}
     def visit(fd, p):
         _private(os.fstat(fd), True)
         found[str(p)] = ("directory", fingerprint(os.fstat(fd)))
         with os.scandir(fd) as entries:
-            names = sorted(entry.name for entry in entries)
+            names = sorted(entry.name for entry in entries if str(p / entry.name) not in skip)
         require(len(found) + len(names) <= MAX_ENTRIES * 4, "scope_entry_bound")
         for name in names:
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
@@ -198,17 +202,28 @@ def _profile(profile):
         if not item.included and item.exclusion == "sqlite_sidecar":
             require(any(item.source == str(db) + suffix for db in databases
                         for suffix in ("-wal", "-shm", "-journal")), "unpaired_sqlite_sidecar")
+    require(type(profile.outside) is tuple and len(profile.stores) + len(profile.outside) <= MAX_ENTRIES,
+            "declared_outside_invalid")
+    outside = set()
+    for o in map(_absolute, profile.outside):
+        require(sum(_inside(o, r) for r in roots) == 1 and o not in roots and o not in sources and o not in outside
+                and not _credential(o), "declared_outside_invalid")
+        outside.add(o)
+    # Nothing declared may sit under an out-of-scope entry: the walk would never see it.
+    require(not any(q in outside for p in (*sources, *outside) for q in p.parents), "declared_outside_invalid")
+    skip = frozenset(str(o) for o in outside)
     inventories = {}
     for r in roots:
-        inventories.update(_inventory(r))
+        inventories.update(_inventory(r, skip))
     expected = set(str(p) for p in sources)
     expected_dirs = set(str(r) for r in roots)
-    for p in sources:
+    for p in (*sources, *outside):
         r = next(r for r in roots if _inside(p, r))
         expected_dirs.update(str(q) for q in p.parents if _inside(q, r))
     require(type(profile.directories) is tuple and len(profile.directories) <= MAX_ENTRIES * 4, "declared_directories_invalid")
     for d in map(_absolute, profile.directories):
         require(sum(_inside(d, r) for r in roots) == 1 and d not in roots, "store_outside_scope")
+        require(d not in outside and not any(q in outside for q in d.parents), "declared_outside_invalid")
         expected_dirs.update(str(q) for q in (d, *d.parents) if any(_inside(q, r) for r in roots))
     require(set(inventories) == expected | expected_dirs, "unknown_or_missing_scope_store")
     require(all(inventories[str(p)][0] == "file" for p in sources), "store_must_be_regular_file")
@@ -412,10 +427,15 @@ def backup_v2(destination, profile, *, quiescence):
         _deadline(started + OPERATION_SECONDS)
         _closure(rows, references)
         _deadline(started + OPERATION_SECONDS)
+        names = {item.name for item in profile.stores}
+        for index, source in enumerate(sorted(profile.outside)):
+            name = "outside-%05d" % index
+            require(name not in names, "duplicate_store")
+            excluded.append({"name": name, "source": source, "reason": "out_of_scope_legacy"})
         after = {}
         for r in roots:
             _deadline(started + OPERATION_SECONDS)
-            after.update(_inventory(r))
+            after.update(_inventory(r, frozenset(profile.outside)))
             _deadline(started + OPERATION_SECONDS)
         require(before == after, "scope_changed_during_backup")
         _boundary(quiescence, roots)

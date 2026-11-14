@@ -57,31 +57,53 @@ def _incomplete(error):
     return _emit(error.code, **error.counts, **({"reason": error.reason} if error.reason else {}))
 
 
-def _check_profile(project):
-    report = {}
+def _scope_lines(report, detail, explain):
+    """Plain count lines after the JSON line: names (collapsed patterns) and counts only, never contents."""
+    legacy = report.get("out_of_scope_legacy")
+    if legacy is not None:
+        print("out_of_scope_legacy: files %d, bytes %d" % (legacy["files"], legacy["bytes"]))
+    outside = report.get("referenced_outside_set")
+    print("referenced_outside_set: %s" % ("not_checked" if outside is None else outside))
+    if explain:
+        for family, (files, size) in sorted(detail.get("unclassified", {}).items()):
+            print("unclassified: %s files %d, bytes %d" % (family, files, size))
+        for where, refs in sorted(detail.get("referenced_outside", {}).items()):
+            print("referenced_outside: %s refs %d" % (where, refs))
+
+
+def _check_profile(project, explain=False):
+    report, detail = {}, {}
     try:
-        v2._profile(build_profile(project, report))
+        v2._profile(build_profile(project, report, detail))
     except ProfileIncomplete as error:
-        return _incomplete(error)
+        code = _incomplete(error)
     except sqlite3.Error:
-        return _emit("PROFILE_INCOMPLETE", reason="database_unreadable", **report)
+        code = _emit("PROFILE_INCOMPLETE", reason="database_unreadable", **report)
     except (RecoveryError, OSError, ValueError, KeyError) as error:
         code = "LIMIT_ENTRIES" if str(error) == "scope_entry_bound" else "PROFILE_INCOMPLETE"
-        return _emit(code, reason=str(error) if isinstance(error, RecoveryError) else "scan_failed", **report)
-    return _emit("OK", **report)
+        code = _emit(code, reason=str(error) if isinstance(error, RecoveryError) else "scan_failed", **report)
+    else:
+        code = _emit("OK", **report)
+    _scope_lines(report, detail, explain)
+    return code
 
 
 def backup_main(argv=None):
     parser = argparse.ArgumentParser(prog="records backup", description=__doc__.split("\n")[0])
     parser.add_argument("--project", required=True)
     parser.add_argument("--check-profile", action="store_true", help="print coverage counts only; write nothing")
+    parser.add_argument("--explain", action="store_true",
+                        help="with --check-profile: also print each unclassified family (collapsed path pattern, "
+                             "files, bytes) and each referenced path outside the set")
     parser.add_argument("--into")
     parser.add_argument("--quiescence")
     parser.add_argument("--quiescence-sha256", help="trusted digest of the evidence file from the audit")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     project = os.path.abspath(args.project)
+    if args.explain and not args.check_profile:
+        parser.error("--explain needs --check-profile")
     if args.check_profile:
-        return _check_profile(project)
+        return _check_profile(project, args.explain)
     if not (args.into and args.quiescence):
         parser.error("--into and --quiescence are required")
     try:
