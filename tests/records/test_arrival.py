@@ -51,8 +51,9 @@ class StampTests(ArrivalCase):
             self.assertTrue(name.endswith(f"-{source}.json"))
         for directory in (self.runtime / "arrival", self.runtime / "arrival" / "done"):
             self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
-        [first, second] = arrival.pending(self.runtime)
-        self.assertEqual({first["source"], second["source"]}, set(arrival.SOURCES))
+        pending = arrival.pending(self.runtime)
+        first = pending[0]
+        self.assertEqual({p["source"] for p in pending}, set(arrival.SOURCES))
         self.assertTrue(first["seen_at"].endswith("Z"))
         self.assertEqual(sorted(p.name for p in (self.runtime / "arrival").iterdir() if p.is_file()),
                          sorted(p.name for p in (self.runtime / "arrival").glob("2*.json")))

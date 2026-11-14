@@ -739,7 +739,7 @@ ROUTES = {"/approvals/approve": ("approve", ("csrf_token", "id", "signature")),
           "/approvals/reject": ("reject", ("csrf_token", "id", "reason")),
           "/approvals/edit": ("edit", ("csrf_token", "id", "body", "expected_revision"))}
 SEND_ROUTE = ("send", ("csrf_token", "id", "fingerprint", "signature", "to", "confirm"))
-SECURITY = (("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "no-referrer"),
+SECURITY = (("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "same-origin"),
             ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
                                         "base-uri 'none'; frame-ancestors 'none'"))
 
