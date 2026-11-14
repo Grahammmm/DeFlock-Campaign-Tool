@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 
 from . import approval_queue as aq, console_snapshot as snap, public_packets as pp
+from .console_ocr import OcrPagesError
 
 SCHEMA, FILE, LOCK, MAX_JOURNAL = "records-console-decision-v1", "decisions.jsonl", "decisions.lock", 64 * 1024 * 1024
 LATER = ("takes effect at the next apply (records run); for an immediate stop use the attended command "
@@ -140,6 +141,10 @@ class JournalSource(snap.SnapshotSource):
     def packets_pending(self, now=None):
         return self._mark(super().packets_pending(now))
 
+    def ocr_pages(self):
+        doc = super().ocr_pages()
+        return {**doc, "rows": self._mark(doc["rows"])}
+
     def public_updates(self):
         doc = super().public_updates()
         return doc if doc["state"] != "ok" else {**doc, "lines": self._mark(doc["lines"]),
@@ -186,6 +191,24 @@ def packet(handler, field, ident, revision, value):
     if not approve and not (0 < len(value.strip()) <= 500 and len(value) <= 500 and all(ord(c) >= 32 and ord(c) != 127 for c in value)):
         return handler._fail(400) or False
     return _record(handler, "packet_" + ("approve" if approve else "reject"), ident, revision, value)
+
+
+def ocr(handler, action, ident, derivative, confidence):
+    """Confirm / reject ONE exported OCR page: it must be waiting in the pinned export (and not already journaled), and the
+    page the person saw (derivative hash and confidence) must still be this export's. The journal value pins both, so the
+    apply step refuses a page that was re-read since. True: journaled; False: the refusal page was sent."""
+    try:
+        row = next((r for r in handler.options["source"].ocr_pages()["rows"] if r["id"] == ident), None)
+    except (OcrPagesError, OSError, ValueError, KeyError, TypeError):
+        return handler._fail(503) or False
+    if row is None:
+        return handler._fail(404) or False
+    if row["state"] != "pending" or str(row.get("pending_apply") or "").startswith("pending apply"):
+        return handler._fail(409) or False
+    if derivative != (row["derivative_sha256"] or "") or confidence != json.dumps(row["confidence"]):
+        return handler._fail(409) or False
+    value = _canon({"confidence": row["confidence"], "derivative_sha256": row["derivative_sha256"]})
+    return _record(handler, action, ident, None, value)
 
 
 def oversight(handler, action, ident):

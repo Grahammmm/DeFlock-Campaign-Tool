@@ -8,22 +8,27 @@ a refused entry is never retried. An unreadable store is not a refusal: its entr
 No key, verifier, switch or send is added here, and nothing is placed in a mailbox.
 """
 import argparse
+import json
 import os
 import re
+import sqlite3
 import sys
+from pathlib import Path
 
-from . import approval_queue as aq, console_journal as cj, draft_templates, public_packets as pp, public_updates as pu
+from . import approval_queue as aq, console_journal as cj, console_ocr, draft_templates, ocr_review, public_packets as pp, public_updates as pu
+from .run_stages import LedgerBusy, ledger_ro
 from .console_oversight import _journal_actor
 from .outcomes import unmatched
 
 FILE = "decisions-applied.jsonl"
 INTENT = "INTENT"  # write-ahead receipt line (never an outcome): recorded before an entry's live mutation, see ``settle``
 QUEUE_ACTIONS = ("approve", "reject", "edit")
-TRANSIENT = {"queue_busy", "queue_io", "journal_busy"}  # not final: the entry stays unreceipted and is tried at the next run
+OCR_ACTIONS = {"ocr_confirm": "confirmed", "ocr_reject": "rejected"}  # OCR-REVIEW-ROUTE-1: the existing ocr_review.mark
+TRANSIENT = {"queue_busy", "queue_io", "journal_busy", "ocr_ledger_busy"}  # not final: the entry stays unreceipted and is tried at the next run
 # A store that cannot be read at all (a moved or restored project whose approvals name another path, a damaged journal) says
 # nothing about the decision itself: the entry is deferred like a transient fault, never receipted as a final refusal.
 STORE_FAULTS = {"queue_invalid", "journal_invalid", "packets_unavailable", "switch_unavailable", "file_invalid",
-                "file_too_large", "project_invalid"}
+                "file_too_large", "project_invalid", "ocr_ledger_unreadable", "ocr_review_chain_broken"}
 NOT_FINAL = TRANSIENT | STORE_FAULTS
 CODES = {"stale_revision": "STALE_REVISION", "packet_stale": "STALE_REVISION", "approval_required": "SIGNATURE_REFUSED",
          "invalid_transition": "INVALID_TRANSITION", "packet_not_open": "INVALID_TRANSITION"}
@@ -94,6 +99,38 @@ def _append_link(project, ident, link):  # as the console does after a message-l
     unmatched.append_link(project, done["item_id"], link[0], link[1], done["approved_by"])
 
 
+def _apply_ocr(project, entry):
+    """One OCR page decision, through ocr_review.mark. The page must still be the one the person saw (derivative hash and
+    confidence); an already identical decision is a replay and counts as applied, a different one is refused. The page
+    review file holds the fixed reviewer label, never the actor."""
+    sha, _, number = entry["target_id"].rpartition("-")
+    decision = OCR_ACTIONS[entry["action"]]
+    try:
+        seen = json.loads(entry["value"])
+        page = int(number)
+    except (TypeError, ValueError):
+        raise ValueError("ocr_entry_invalid") from None
+    if not (isinstance(seen, dict) and set(seen) == {"confidence", "derivative_sha256"} and console_ocr.SHA.fullmatch(sha)
+            and page > 0):
+        raise ValueError("ocr_entry_invalid")
+    root = Path(project)
+    reviews = root / "ocr-review-v1" / "reviews.jsonl"
+    try:
+        with ledger_ro(root / "processing-v1") as db:
+            row = next((r for r in ocr_review.pages(db) if (r["original_sha256"], r["page_no"]) == (sha, page)), None)
+            if row is None:
+                raise ValueError("ocr_page_unknown")
+            if (row["confidence"], row["derivative_sha256"]) != (seen["confidence"], seen["derivative_sha256"]):
+                raise ValueError("ocr_page_changed")
+            if {ocr_review.binding(r): r["decision"] for r in ocr_review.read_reviews(reviews)}.get(ocr_review.binding(row)) == decision:
+                return
+            ocr_review.mark(db, reviews, sha, page, decision, console_ocr.LABEL)
+    except LedgerBusy:
+        raise ValueError("ocr_ledger_busy") from None
+    except sqlite3.Error:
+        raise ValueError("ocr_ledger_unreadable") from None
+
+
 def _apply(project, entry):
     """Call the existing function for the entry's action with the recorded value; its refusal propagates."""
     action, ident, revision, value = entry["action"], entry["target_id"], entry["revision_seen"], entry["value"]
@@ -115,6 +152,8 @@ def _apply(project, entry):
         pu.retract(project, ident, _journal_actor(actor))
     elif action in ("off", "kill"):
         (pu.turn_off if action == "off" else pu.kill)(project, _journal_actor(actor))
+    elif action in OCR_ACTIONS:
+        _apply_ocr(project, entry)
     else:
         raise ValueError("unknown_action")
 
