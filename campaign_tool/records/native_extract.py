@@ -117,6 +117,21 @@ def refusal_detail(code, source, accept_status=None):
     return {"refusal_code": code, "accept_status": accept_status, "refusal_source": source}
 
 
+def internal_detail(error):
+    """``{"internal": {type, where}}`` for an unexpected per-document error (BACKLOG-EXTRACT-1).
+
+    The stage result's own sanitizer (``run_stages.internal_error``): the exception class and the
+    innermost ``campaign_tool`` function only, never a message, argument, path or line. An
+    argument-less error (``container_host.Rejected()``) has no ``refusal_code``; this still names it.
+    """
+    from .run_stages import internal_error
+
+    try:
+        return {"internal": internal_error(error)}
+    except Exception:  # noqa: BLE001 - a diagnostic never stops the stage; the outcome is still coded
+        return {}
+
+
 def refusal_code_histogram(documents):
     """Pure counts of fixed codes, without identities, paths or report changes."""
     counts = {}
@@ -291,7 +306,7 @@ def classify_form(pipeline, subject, *, missing, diagnostics=None):
     except Exception as error:  # noqa: BLE001 - unresolved declarations or unreadable original
         _hold(pipeline, subject, ERROR_CODE)  # retryable: held after MAX_ATTEMPTS runs
         if diagnostics is not None:
-            diagnostics.update(refusal_detail(refusal_code(error), "form_resolution"))
+            diagnostics.update(refusal_detail(refusal_code(error), "form_resolution"), **internal_detail(error))
         return None, ERROR
     if form in extraction_routes.IMAGES:
         if getattr(pipeline, 'ocr_tools', None):
@@ -349,7 +364,7 @@ def extract_one(pipeline, stage, subject, *, form, timeout):
         return NOT_ACCEPTED, form, 0, 0, detail
     except Exception as error:  # noqa: BLE001 - one document never stops the stage
         _hold(pipeline, subject, ERROR_CODE)
-        return ERROR, form, 0, 0, refusal_detail(refusal_code(error), "exception")
+        return ERROR, form, 0, 0, {**refusal_detail(refusal_code(error), "exception"), **internal_detail(error)}
     status = result.get("status")
     if status == "done":
         units = int(result.get("units") or 0)
