@@ -86,7 +86,7 @@ def post(handler):
         if field == 'signature':
             pp.approve(project, fields['id'], fields[field].replace('\r\n', '\n'), revision=revision)
         else:
-            pp.decide(project, fields['id'], 'rejected', _journal_actor(handler.server.actor),
+            pp.decide(project, fields['id'], 'rejected', _journal_actor(handler.actor or handler.server.actor),
                       revision=revision, reason=fields[field])
     except pp.PacketError as error:
         handler._fail(403 if error.code == 'approval_required' else 400 if error.code == 'reason_invalid' else

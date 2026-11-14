@@ -120,6 +120,21 @@ def corrupt_pdf():
     return b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n" + bytes(range(256)) * 4 + b"\n(truncated transfer)"
 
 
+def tiny_png():
+    """A valid 2x2 RGB PNG built with the stdlib only (no Pillow needed to make it)."""
+    def chunk(kind, data):
+        return (len(data).to_bytes(4, "big") + kind + data
+                + (zlib.crc32(kind + data) & 0xFFFFFFFF).to_bytes(4, "big"))
+    header = (2).to_bytes(4, "big") * 2 + bytes((8, 2, 0, 0, 0))
+    rows = b"".join(b"\x00" + b"\xff\xff\xff" * 2 for _ in range(2))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows))
+            + chunk(b"IEND", b""))
+
+
+# Simulates the container parser venv, which has pypdf/openpyxl but no Pillow (REPIN-5).
+WITHOUT_PILLOW = {"PIL": None, "PIL.Image": None}
+
+
 def run_main(argv):
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
@@ -679,7 +694,49 @@ class WorkbookPolicyStageTests(ExtractStageCase):
                          [(0,)], "nothing ran")
 
 
+class ImageWithoutPillowStageTests(ExtractStageCase):
+    """REPIN-5: with OCR on and no Pillow, an image is a counted PARSER_MISSING, never a stage crash."""
+
+    attachments = (("scan.png", tiny_png()),)
+
+    def ocr_run(self, run_id):
+        from tests.records import ocr_fixtures
+        from campaign_tool.records import extraction_routes  # noqa: F401 - import before PIL is hidden
+        import time
+        factory = lambda root: Pipeline(root, ocr_tools=ocr_fixtures.TOOLS, ocr_tool_signature="stub-v1")  # noqa: E731
+        with mock.patch.dict(sys.modules, WITHOUT_PILLOW):
+            return native_extract.run(self.processing, run_id=run_id, deadline=time.monotonic() + 100,
+                                      pipeline_factory=factory)
+
+    def test_ocr_run_codes_the_image_parser_missing_and_keeps_it_pending(self):
+        png = hashlib.sha256(self.payloads["scan.png"]).hexdigest()
+        expected = {"run-a": {"EXTRACTED": 1, "PARSER_MISSING": 1},  # the message body is parsed, the image is not
+                    "run-b": {"PARSER_MISSING": 1}}  # the image is counted again on every run, never held
+        for run_id, outcomes in expected.items():
+            summary = self.ocr_run(run_id)
+            self.assertEqual({code: n for code, n in summary["outcomes"].items() if n}, outcomes)
+            self.assertEqual(summary["attempted"], outcomes.get("EXTRACTED", 0), "the image is never parsed")
+            parsed, _ = run_stages.extract_result(summary)
+            self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_NATIVE_PARSER_MISSING"))
+            self.assertNotIn("internal", parsed)
+            self.assertEqual(self.query("SELECT status FROM stage_state WHERE original_sha256=? AND stage='extract'",
+                                        (png,)), [("pending",)])
+            self.assertEqual(self.query("SELECT COUNT(*) FROM alerts WHERE key LIKE ?", (f"extract:{png}:%",)), [(0,)])
+
+
 class OutcomeContractTests(unittest.TestCase):
+    def test_images_without_pillow_are_parser_missing_only_when_ocr_is_on(self):
+        from types import SimpleNamespace
+        from campaign_tool.records import extraction_routes
+        for form in sorted(extraction_routes.IMAGES):
+            for tools, expected in (({"fake": True}, native_extract.PARSER_MISSING), (None, native_extract.AWAITING_OCR)):
+                with self.subTest(form=form, ocr=bool(tools)), mock.patch.dict(sys.modules, WITHOUT_PILLOW):
+                    pipeline = SimpleNamespace(ocr_tools=tools, _alert=mock.Mock(),
+                                               _original=mock.Mock(return_value={"storage_path": "/nonexistent"}),
+                                               _form=mock.Mock(return_value=form))
+                    self.assertEqual(native_extract.classify_form(pipeline, "a" * 64, missing=[]), (form, expected))
+                    pipeline._alert.assert_not_called()
+
     def line(self, outcomes, counts):
         return json.dumps({"stage_result_version": 1, "status": "ok", "error_code": None,
                            "counts": counts, "outcomes": outcomes}).encode()

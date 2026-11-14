@@ -4,7 +4,8 @@
 (DFGL-16B) goes through the one existing function the same organizer action calls on the live console: the approval queue,
 the packet writer or the public-updates oversight writer. Those functions still verify G's signature, enforce transitions and
 revisions on the live project. Every final outcome is receipted in ``P/approvals/decisions-applied.jsonl`` (0600, append-only);
-a refused entry is never retried. No key, verifier, switch or send is added here, and nothing is placed in a mailbox.
+a refused entry is never retried. An unreadable store is not a refusal: its entries are deferred (unreceipted) and tried again.
+No key, verifier, switch or send is added here, and nothing is placed in a mailbox.
 """
 import argparse
 import os
@@ -19,6 +20,11 @@ FILE = "decisions-applied.jsonl"
 INTENT = "INTENT"  # write-ahead receipt line (never an outcome): recorded before an entry's live mutation, see ``settle``
 QUEUE_ACTIONS = ("approve", "reject", "edit")
 TRANSIENT = {"queue_busy", "queue_io", "journal_busy"}  # not final: the entry stays unreceipted and is tried at the next run
+# A store that cannot be read at all (a moved or restored project whose approvals name another path, a damaged journal) says
+# nothing about the decision itself: the entry is deferred like a transient fault, never receipted as a final refusal.
+STORE_FAULTS = {"queue_invalid", "journal_invalid", "packets_unavailable", "switch_unavailable", "file_invalid",
+                "file_too_large", "project_invalid"}
+NOT_FINAL = TRANSIENT | STORE_FAULTS
 CODES = {"stale_revision": "STALE_REVISION", "packet_stale": "STALE_REVISION", "approval_required": "SIGNATURE_REFUSED",
          "invalid_transition": "INVALID_TRANSITION", "packet_not_open": "INVALID_TRANSITION"}
 
@@ -169,6 +175,13 @@ def _landed(project, entry, base):
     return False
 
 
+def _defer(entry, code):
+    """None (leave the entry unreceipted for the next run); a store fault is logged on stderr with its code."""
+    if code in STORE_FAULTS:
+        print("decisions-apply: %s deferred (store unreadable: %s)" % (str(entry.get("entry_id"))[:12], code), file=sys.stderr)
+    return None
+
+
 def settle(project, entry, intents):
     """The final outcome of one unreceipted entry, or None to leave it for the next run.
 
@@ -187,9 +200,9 @@ def settle(project, entry, intents):
             return "APPLIED"
         base = _mark(project, entry)  # nothing of ours landed since the old base: this attempt starts from where the target is now
     except (aq.ApprovalQueueError, pp.PacketError, pu.PublicUpdatesError) as error:
-        if error.code in TRANSIENT:
-            return None
-        base = None  # unreadable state: outcome() below refuses with the same code
+        if error.code in NOT_FINAL:
+            return _defer(entry, error.code)  # before any write-ahead line: nothing is recorded for an unreadable store
+        base = None  # a per-entry refusal: outcome() below refuses with the same code
         write = not known  # an existing INTENT keeps its base rather than losing it
     except OSError:
         return None
@@ -207,7 +220,7 @@ def settle(project, entry, intents):
 
 
 def outcome(project, entry):
-    """APPLIED, STALE_REVISION, SIGNATURE_REFUSED, INVALID_TRANSITION or REFUSED <code>; None for a transient failure."""
+    """APPLIED, STALE_REVISION, SIGNATURE_REFUSED, INVALID_TRANSITION or REFUSED <code>; None for a transient or store fault."""
     try:
         _apply(project, entry)
     except (aq.ApprovalQueueError, pp.PacketError, pu.PublicUpdatesError) as error:
@@ -220,7 +233,7 @@ def outcome(project, entry):
         code = "queue_io"
     else:
         return "APPLIED"
-    return None if code in TRANSIENT else CODES.get(code) or "REFUSED " + code
+    return _defer(entry, code) if code in NOT_FINAL else CODES.get(code) or "REFUSED " + code
 
 
 def main(argv=None):

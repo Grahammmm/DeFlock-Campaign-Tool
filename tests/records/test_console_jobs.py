@@ -65,6 +65,13 @@ class JobsUnit(unittest.TestCase):
         row = cj.inspect("a.timer", fake({"a.timer": timer(), "a.service": service(Result="exit-code", ExecMainStatus="3")}))
         self.assertEqual(row["state"], "failed")
 
+    def test_monotonic_timer_next_run_is_not_never(self):
+        row = cj.inspect("a.timer", fake({"a.timer": timer(NextElapseUSecRealtime="",
+                                                          NextElapseUSecMonotonic="2w 9h 8min"),
+                                          "a.service": service()}))
+        self.assertEqual(row["next_run"], "monotonic deadline since boot: 2w 9h 8min")
+        self.assertEqual(cj._next_run(timer(NextElapseUSecRealtime="")), "unknown (no next trigger reported)")
+
     def test_lock_skip_is_not_a_pass(self):
         row = cj.inspect("a.timer", fake({"a.timer": timer(), "a.service": service(Result="exit-code", ExecMainStatus="73")}))
         self.assertEqual(row["state"], "skipped")

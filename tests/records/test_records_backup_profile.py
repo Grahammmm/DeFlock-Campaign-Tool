@@ -72,7 +72,8 @@ class RecordsBackupCli(unittest.TestCase):
         done = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", *args], cwd=ROOT,
                               capture_output=True, text=True, timeout=300)
         self.assertEqual(done.stderr, "")
-        line = json.loads(done.stdout)
+        first, *self.lines = done.stdout.splitlines()  # --check-profile adds plain count lines after the JSON line
+        line = json.loads(first)
         self.assertNotIn(str(self.project), done.stdout)  # codes and counts only
         return done.returncode, line
 
@@ -100,6 +101,8 @@ class RecordsBackupCli(unittest.TestCase):
         self.assertEqual(sum(1 for p in self.project.rglob("*") if p.is_file()),
                          line["files"])
         self.assertTrue({"rebuildable", "process_state"} <= set(line["excluded"]))
+        self.assertEqual(self.lines, ["out_of_scope_legacy: files 0, bytes 0", "referenced_outside_set: 0",
+                                      "absent_roles: none", "root_owner: caller"])
 
     def test_unknown_file_makes_profile_incomplete(self):
         parent = self.project / "processing-v1"
@@ -122,7 +125,7 @@ class RecordsBackupCli(unittest.TestCase):
         out = io.StringIO()
         with mock.patch("campaign_tool.records.recovery.records_profile.MAX_ENTRIES", 3), redirect_stdout(out):
             self.assertEqual(records_backup.backup_main(["--check-profile", "--project", str(self.project)]), 1)
-        self.assertEqual(json.loads(out.getvalue())["code"], "LIMIT_ENTRIES")
+        self.assertEqual(json.loads(out.getvalue().splitlines()[0])["code"], "LIMIT_ENTRIES")
 
     def test_backup_writes_set_and_trusted_digest_verifies(self):
         evidence = self.evidence()
@@ -234,7 +237,7 @@ class RecordsBackupCli(unittest.TestCase):
         with mock.patch("campaign_tool.records.recovery.records_profile._database",
                         side_effect=sqlite3.OperationalError("no such column")), redirect_stdout(out):
             self.assertEqual(records_backup.backup_main(["--check-profile", "--project", str(self.project)]), 1)
-        line = json.loads(out.getvalue())
+        line = json.loads(out.getvalue().splitlines()[0])
         self.assertEqual((line["code"], line["reason"]), ("PROFILE_INCOMPLETE", "database_unreadable"))
         self.assertNotIn("column", out.getvalue())
 

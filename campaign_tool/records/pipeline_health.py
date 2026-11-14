@@ -442,6 +442,8 @@ def main(argv=None):
     parser.add_argument("--target", required=True)
     parser.add_argument("--root", required=True, help="records root holding ledger.sqlite")
     parser.add_argument("--mail-store")
+    parser.add_argument("--mail-poll-warn-hours", type=int, default=LIMITS["mail_poll_warn_hours"])
+    parser.add_argument("--mail-poll-stop-hours", type=int, default=LIMITS["mail_poll_stop_hours"])
     parser.add_argument("--now", help="ISO-8601 clock override for tests and reviews")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--record-alerts", action="store_true")
@@ -453,12 +455,16 @@ def main(argv=None):
     spec = schedule._spec_from(parser, args)
     if args.analysis_max_minutes < 1:
         parser.error("--analysis-max-minutes: expected a positive number of minutes")
+    if not 0 < args.mail_poll_warn_hours < args.mail_poll_stop_hours:
+        parser.error("--mail-poll-warn-hours and --mail-poll-stop-hours: expected 0 < warn < stop")
     try:
         now = datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now else None
         report = assess(runtime_dir=args.runtime_dir, target=args.target, records_root=args.root,
                         mail_store=args.mail_store, now=now, spec=spec, analysis_root=args.analysis_root,
                         console_export_root=args.console_export_root,
-                        limits=dict(LIMITS, analysis_max_minutes=args.analysis_max_minutes))
+                        limits=dict(LIMITS, analysis_max_minutes=args.analysis_max_minutes,
+                                    mail_poll_warn_hours=args.mail_poll_warn_hours,
+                                    mail_poll_stop_hours=args.mail_poll_stop_hours))
         if args.record_alerts:
             report["alerts_written"] = write_alerts(report, _target_dir(args.runtime_dir, args.target) / "alerts")
     except (HealthError, ValueError) as error:

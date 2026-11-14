@@ -558,6 +558,74 @@ but `BACKUP_OK` exits 1 and writes a codes-only alert in `BACKUP_DIR-alerts` bes
 takes the records run lock, never backs up and never writes into the project or the backup directory. Making a backup is the
 operator's attended procedure in `docs/RECORDS-BACKUP-OPERATIONS.md`. Installing the timer is a separate approved step.
 
+## Mail arrival
+
+With `RECORDS_DROP_DIR` configured, rendering also produces
+`mail-arrival-stamp.sh` (0700). It takes one status JSON path, changes to the
+pinned `ENGINE_DIR`, and uses `HOST_PYTHON`; it neither fetches mail nor starts a
+run itself. The existing renderer still requires the separate drop directory:
+without it rendering is refused and no hook is produced. No new `ARRIVAL`
+configuration switch is needed for this runtime kit.
+
+The input must be a **dedicated metadata-only sidecar for the just-finished
+mail invocation**, not a mailbox, message, or detailed mail report. Its exact
+keys are `run_id` (opaque 1–128 character ASCII letters/digits/underscore/hyphen),
+`new_messages` and `failures` (non-negative integer counts, at most 2147483647).
+For example: `{"run_id":"synthetic_run_1","new_messages":2,"failures":0}`.
+The attended installer must confirm the mail job atomically replaces this
+sidecar on each invocation, including empty and failed polls; never reuse an
+old status after a failed run. Unknown keys, symlinks, non-regular files,
+invalid JSON and input over 4096 bytes are refused with one fixed stderr line
+`MAIL_STATUS_UNREADABLE`. No address, subject or Message-ID field is accepted,
+copied or emitted. Do not point the hook at an unsanitized status report.
+
+For `new_messages > 0`, the helper invokes `records arrival stamp --runtime-dir
+RUNTIME_DIR --source mail --ref HASH`, where HASH is SHA-256 of UTF-8
+`run_id + NUL + decimal(new_messages)`. The stamp contains exactly `source`,
+`ref`, `seen_at`; the arrival consumer and run-report schema accept `mail`.
+A zero count never stamps. A partial poll may still stamp downloaded messages.
+
+After a successful poll (`failures == 0`, including an empty poll), the hook
+atomically writes owner-only `RUNTIME_DIR/mail-poll/state.json` (0600 in a 0700
+directory). Its sole key is `updated_at`, an aware UTC ISO-8601 timestamp: this
+is the key read by `pipeline_health._mail_poll`. This is a runtime health
+sidecar, not the native mail poller's UID/cursor store; never share this
+location with a native mail poller. The rendered health unit now passes
+`--mail-store RUNTIME_DIR`, so a fresh state yields `mail_poll: ok` /
+`mail_poll_recent`, not `mail_poll_not_configured`. The unit also supplies
+`--mail-poll-warn-hours 26 --mail-poll-stop-hours 50` for the daily mail job:
+age up to 26 hours is OK (including a 25-hour fall-back day plus grace), age
+strictly over 26 hours warns, and age strictly over 50 hours stops. Thus one
+missed daily poll warns and two missed polls stop; hourly assessment adds up
+to an hour plus its randomized delay before the alert appears. Direct CLI/API
+users retain the existing 6/24-hour defaults unless they supply overrides.
+CLI overrides must be positive integer hours with warning below stop.
+Failed polls emit
+`MAIL_POLL_FAILED` and **do not refresh** the last-success timestamp: health
+can still detect a stalled downloader. Invalid input also leaves state alone.
+State/stamp failures emit `MAIL_STATE_UNWRITABLE` / `MAIL_STAMP_FAILED`
+(respectively), independently; the stamp child has a 15-second timeout.
+The shell hook always exits 0, so it cannot fail the mail job.
+
+S7 **attended operator install only**: copy the rendered hook into the private
+runtime with mode 0700, and add the following drop-in text to
+`deflockslo-daily-mail.service.d/arrival.conf`, replacing both placeholder
+paths with the approved host paths:
+
+```ini
+[Service]
+ExecStartPost=-@RUNTIME_DIR@/mail-arrival-stamp.sh @MAIL_STATUS_JSON@
+```
+
+Do not reset the existing ExecStart or other post-steps. The leading `-` also
+makes systemd ignore an execution failure; ExecStartPost runs only after a
+successful ExecStart. S7 installs the updated rendered health unit as well,
+then performs its approved daemon-reload and arrival/health proof. This PR
+installs/enables/restarts nothing and changes no host unit or timer. The live
+proof remains S7's: a new-mail poll is followed by a report with trigger
+`arrival`. Rollback: remove only this drop-in and daemon-reload in S7; leave
+the existing mail job and run timers alone.
+
 ## Arrival runs (REC-AUTO-1)
 
 A new message or a completed file at the records drop folder starts one

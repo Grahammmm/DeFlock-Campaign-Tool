@@ -19,14 +19,20 @@ from .backup import (RecoveryError, canonical, sha, require, parent_fd,
 SCHEMA = "records-backup-v2"
 REQUIRED_ROLES = frozenset(("canonical_ledger", "intake_ledger", "original_blob",
                             "receipt", "cursor", "review_bundle"))
+# Required roles a profile may declare absent because their source does not exist at all (no mail checkpoint table,
+# no approvals or public-packets journal). The base roles are always required.
+CONDITIONAL_ROLES = frozenset(("cursor", "review_bundle"))
+BASE_ROLES = REQUIRED_ROLES - CONDITIONAL_ROLES
+ABSENT_REASON = "source_absent"
 ROLES = REQUIRED_ROLES | frozenset(("rules", "configuration", "derived_resume",
                                    "queue_store", "publication_store", "resolution_policy"))
-EXCLUSIONS = frozenset(("credential", "sqlite_sidecar", "process_state", "rebuildable"))
+EXCLUSIONS = frozenset(("credential", "sqlite_sidecar", "process_state", "rebuildable", "prior_backup",
+                        "out_of_scope_legacy"))
 NAME = re.compile(r"[a-z][a-z0-9_-]{0,79}")
 HASH = re.compile(r"[0-9a-f]{64}")
 MAX_REFS = 10000
 BOUNDARY_SECONDS = 120
-OPERATION_SECONDS = 60
+OPERATION_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -48,6 +54,11 @@ class Profile:
     roots: tuple
     stores: tuple
     directories: tuple = ()  # declared structural (possibly empty) directories; any other directory is unknown
+    # Declared out-of-scope entries (files or directories inside a root) the walk never enters or opens. Each is
+    # recorded in the manifest as an ``out_of_scope_legacy`` exclusion, so a set never claims to cover them.
+    outside: tuple = ()
+    # Conditional required roles whose source does not exist at all (BACKUP-FIT-1 Q2a); recorded in the manifest.
+    absent_roles: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -84,14 +95,47 @@ def _private(info, directory=False):
         require(info.st_nlink == 1, "hardlink_rejected")
 
 
-def _inventory(root):
-    """FD-anchored metadata walk; never opens excluded file contents."""
+def _root_dir(info):
+    """A source root: a directory, possibly owned by another user and group-readable, never group- or other-writable."""
+    require(stat.S_ISDIR(info.st_mode), "directory_required")
+    require(not stat.S_IMODE(info.st_mode) & 0o022, "root_group_or_other_writable")
+
+
+def root_owner(root):
+    """``caller`` or ``other``: the owner of a source root, read without following any symlink."""
+    with parent_fd(root) as (parent, name):
+        info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    return "caller" if info.st_uid == os.getuid() else "other"
+
+
+def _strict(roots, stores):
+    """Paths that keep the owner-only rule: each included file and every directory from it up to, not including, its
+    root. Everything else a source walk meets is metadata only."""
+    out = set()
+    for item in stores:
+        if item.included:
+            p = Path(item.source)
+            out.add(str(p))
+            out.update(str(q) for q in p.parents if any(q != r and _inside(q, r) for r in roots))
+    return frozenset(out)
+
+
+def _inventory(root, skip=frozenset(), strict=None):
+    """FD-anchored metadata walk; never opens excluded file contents and never enters a ``skip`` path.
+
+    ``strict=None`` (a backup set) keeps the owner-only rule on every entry. A source walk passes ``strict``, the paths
+    the backup reads: those keep the owner-only rule, the root must not be group- or other-writable, and every other
+    entry is checked as metadata only (symlinks, special files and hard links are still refused).
+    """
     found = {}
     def visit(fd, p):
-        _private(os.fstat(fd), True)
+        if strict is None or str(p) in strict:
+            _private(os.fstat(fd), True)
+        elif p == root:
+            _root_dir(os.fstat(fd))
         found[str(p)] = ("directory", fingerprint(os.fstat(fd)))
         with os.scandir(fd) as entries:
-            names = sorted(entry.name for entry in entries)
+            names = sorted(entry.name for entry in entries if str(p / entry.name) not in skip)
         require(len(found) + len(names) <= MAX_ENTRIES * 4, "scope_entry_bound")
         for name in names:
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
@@ -106,7 +150,11 @@ def _inventory(root):
                 finally:
                     os.close(child)
             else:
-                _private(info)
+                if strict is None or str(target) in strict:
+                    _private(info)
+                else:
+                    require(stat.S_ISREG(info.st_mode), "regular_file_required")
+                    require(info.st_nlink == 1, "hardlink_rejected")
                 require(info.st_size <= MAX_FILE, "file_size_bound")
                 found[str(target)] = ("file", fingerprint(info))
     with parent_fd(root) as (parent, name):
@@ -193,22 +241,38 @@ def _profile(profile):
         else:
             require(not item.required_tables and not item.schema_sha256 and not item.reference_sql,
                     "file_cannot_declare_database_schema")
-    require(REQUIRED_ROLES <= roles and len(databases) >= 2, "required_roles_and_two_databases")
+    absent = profile.absent_roles
+    require(type(absent) is tuple and len(set(absent)) == len(absent) and set(absent) <= CONDITIONAL_ROLES,
+            "absent_roles_invalid")
+    require(not set(absent) & roles, "absent_role_present")
+    require(REQUIRED_ROLES - set(absent) <= roles and len(databases) >= 2, "required_roles_and_two_databases")
     for item in profile.stores:
         if not item.included and item.exclusion == "sqlite_sidecar":
             require(any(item.source == str(db) + suffix for db in databases
                         for suffix in ("-wal", "-shm", "-journal")), "unpaired_sqlite_sidecar")
+    require(type(profile.outside) is tuple and len(profile.stores) + len(profile.outside) <= MAX_ENTRIES,
+            "declared_outside_invalid")
+    outside = set()
+    for o in map(_absolute, profile.outside):
+        require(sum(_inside(o, r) for r in roots) == 1 and o not in roots and o not in sources and o not in outside
+                and not _credential(o), "declared_outside_invalid")
+        outside.add(o)
+    # Nothing declared may sit under an out-of-scope entry: the walk would never see it.
+    require(not any(q in outside for p in (*sources, *outside) for q in p.parents), "declared_outside_invalid")
+    skip = frozenset(str(o) for o in outside)
+    strict = _strict(roots, profile.stores)
     inventories = {}
     for r in roots:
-        inventories.update(_inventory(r))
+        inventories.update(_inventory(r, skip, strict))
     expected = set(str(p) for p in sources)
     expected_dirs = set(str(r) for r in roots)
-    for p in sources:
+    for p in (*sources, *outside):
         r = next(r for r in roots if _inside(p, r))
         expected_dirs.update(str(q) for q in p.parents if _inside(q, r))
     require(type(profile.directories) is tuple and len(profile.directories) <= MAX_ENTRIES * 4, "declared_directories_invalid")
     for d in map(_absolute, profile.directories):
         require(sum(_inside(d, r) for r in roots) == 1 and d not in roots, "store_outside_scope")
+        require(d not in outside and not any(q in outside for q in d.parents), "declared_outside_invalid")
         expected_dirs.update(str(q) for q in (d, *d.parents) if any(_inside(q, r) for r in roots))
     require(set(inventories) == expected | expected_dirs, "unknown_or_missing_scope_store")
     require(all(inventories[str(p)][0] == "file" for p in sources), "store_must_be_regular_file")
@@ -230,7 +294,7 @@ def _boundary(q, roots):
             "caller_confirmed_all_writers_stopped": True, "independently_verified_by_library": False}
 
 
-def _db_check(path, row, deadline):
+def _db_check(path, row, deadline, absent=()):
     with source_fd(path):
         con = sqlite3.connect(Path(path).as_uri() + "?mode=ro&immutable=1", uri=True, timeout=1)
         try:
@@ -244,6 +308,9 @@ def _db_check(path, row, deadline):
             require(schema_hash == row["schema_sha256"], "database_schema_identity_mismatch")
             tables = {r[1] for r in schema if r[0] == "table"}
             require(set(row["required_tables"]) <= tables, "database_required_table_missing")
+            # An absent cursor means the ledger has no checkpoint table at all, never one left out of the set.
+            require(not ("cursor" in absent and "canonical_ledger" in row["roles"] and "mail_checkpoints" in tables),
+                    "absent_role_source_present")
             refs = []
             for sql in row["reference_sql"]:
                 cursor = con.execute(sql)
@@ -303,7 +370,7 @@ def _resolution_refs(con, tables):
     return refs
 
 
-def _closure(rows, references):
+def _closure(rows, references, absent=()):
     by_source = {row["source"]: row for row in rows}
     for role, source, digest in references:
         require(source in by_source and role in by_source[source]["roles"] and
@@ -311,7 +378,8 @@ def _closure(rows, references):
     # Every required evidence category must be bound by a database closure query,
     # not merely an arbitrary unreferenced file carrying the right label.
     bound_roles = {r[0] for r in references}
-    require({"original_blob", "receipt", "review_bundle"} <= bound_roles, "required_evidence_not_database_bound")
+    require({"original_blob", "receipt", "review_bundle"} - set(absent) <= bound_roles,
+            "required_evidence_not_database_bound")
 
 
 def _separate(destination, roots):
@@ -385,6 +453,8 @@ def backup_v2(destination, profile, *, quiescence):
         roots, before = _profile(profile)
         _deadline(started + OPERATION_SECONDS)
         boundary = _boundary(quiescence, roots)
+        absent = tuple(sorted(profile.absent_roles))
+        owners = {str(r): root_owner(r) for r in roots}
         target = _separate(destination, roots)
         new_directory(target); new_directory(target / "payload")
         rows, excluded, references, total = [], [], [], 0
@@ -407,21 +477,27 @@ def backup_v2(destination, profile, *, quiescence):
                    "reference_sql": list(item.reference_sql)}
             rows.append(row)
             if item.kind == "sqlite":
-                references.extend(_db_check(target / row["path"], row, started + OPERATION_SECONDS))
+                references.extend(_db_check(target / row["path"], row, started + OPERATION_SECONDS, absent))
             _deadline(started + OPERATION_SECONDS)
         _deadline(started + OPERATION_SECONDS)
-        _closure(rows, references)
+        _closure(rows, references, absent)
         _deadline(started + OPERATION_SECONDS)
+        names = {item.name for item in profile.stores}
+        for index, source in enumerate(sorted(profile.outside)):
+            name = "outside-%05d" % index
+            require(name not in names, "duplicate_store")
+            excluded.append({"name": name, "source": source, "reason": "out_of_scope_legacy"})
         after = {}
         for r in roots:
             _deadline(started + OPERATION_SECONDS)
-            after.update(_inventory(r))
+            after.update(_inventory(r, frozenset(profile.outside), _strict(roots, profile.stores)))
             _deadline(started + OPERATION_SECONDS)
-        require(before == after, "scope_changed_during_backup")
+        require(before == after and owners == {str(r): root_owner(r) for r in roots}, "scope_changed_during_backup")
         _boundary(quiescence, roots)
         _deadline(started + OPERATION_SECONDS)
         manifest = {"schema": SCHEMA, "engine_version": __version__, "scope": "declared_profile_closed",
-                    "roots": [str(r) for r in roots], "required_roles": sorted(REQUIRED_ROLES),
+                    "roots": [str(r) for r in roots], "required_roles": sorted(REQUIRED_ROLES - set(absent)),
+                    "absent_roles": {role: ABSENT_REASON for role in absent}, "root_owner": owners,
                     "quiescence": boundary, "files": rows, "excluded": excluded, "total_bytes": total,
                     "activation": False, "sends": False, "replay": False, "live_pipeline_recovery_proven": False}
         raw = canonical(manifest)
@@ -455,14 +531,25 @@ def _manifest(source, digest):
     m = json.loads(raw, object_pairs_hook=unique, parse_constant=lambda _: require(False, "json_constant_rejected"))
     expected = {"schema", "engine_version", "scope", "roots", "required_roles", "quiescence", "files",
                 "excluded", "total_bytes", "activation", "sends", "replay", "live_pipeline_recovery_proven"}
-    require(type(m) is dict and set(m) == expected and m["schema"] == SCHEMA and
+    # A set written before BACKUP-FIT-1 has neither absent_roles nor root_owner; a newer set has both.
+    require(type(m) is dict and set(m) in (expected, expected | {"absent_roles", "root_owner"}) and
+            m["schema"] == SCHEMA and
             m["scope"] == "declared_profile_closed" and m["engine_version"] == __version__ and
-            all(m[k] is False for k in ("activation", "sends", "replay", "live_pipeline_recovery_proven")) and
-            m["required_roles"] == sorted(REQUIRED_ROLES), "manifest_schema_invalid")
+            all(m[k] is False for k in ("activation", "sends", "replay", "live_pipeline_recovery_proven")),
+            "manifest_schema_invalid")
+    absent = m.get("absent_roles", {})
+    required = m["required_roles"]
+    require(type(absent) is dict and all(v == ABSENT_REASON for v in absent.values()) and
+            type(required) is list and all(type(r) is str for r in required) and required == sorted(set(required)) and
+            BASE_ROLES <= set(required) and not set(required) & set(absent) and
+            set(required) | set(absent) == REQUIRED_ROLES, "manifest_schema_invalid")
     require(type(m["roots"]) is list and 1 <= len(m["roots"]) <= 16, "manifest_roots_invalid")
     roots = [_absolute(r) for r in m["roots"]]
     require(len(set(roots)) == len(roots) and not any(_inside(a,b) for a in roots for b in roots if a != b),
             "manifest_roots_invalid")
+    owners = m.get("root_owner", {r: "caller" for r in m["roots"]})
+    require(type(owners) is dict and set(owners) == set(m["roots"]) and
+            all(v in ("caller", "other") for v in owners.values()), "manifest_roots_invalid")
     q = m["quiescence"]
     require(type(q) is dict and set(q) == {"basis","observed_utc","evidence_sha256",
             "caller_confirmed_all_writers_stopped","independently_verified_by_library"} and
@@ -499,8 +586,9 @@ def _manifest(source, digest):
         else:
             require(row["required_tables"] == [] and row["reference_sql"] == [] and row["schema_sha256"] == "",
                     "manifest_file_schema_invalid")
-    require(REQUIRED_ROLES <= roles and len(databases) >= 2 and total <= MAX_TOTAL and
+    require(set(required) <= roles and len(databases) >= 2 and total <= MAX_TOTAL and
             type(m["total_bytes"]) is int and total == m["total_bytes"], "manifest_scope_or_totals_invalid")
+    require(not set(absent) & roles, "absent_role_present")
     for row in m["excluded"]:
         require(type(row) is dict and set(row) == {"name","source","reason"} and type(row["name"]) is str and
                 NAME.fullmatch(row["name"]) and row["reason"] in EXCLUSIONS, "manifest_exclusion_invalid")
@@ -537,8 +625,8 @@ def verify_v2(source, *, manifest_sha256):
                     h.update(block)
                 require(info.st_size == row["bytes"] and h.hexdigest() == row["sha256"], "member_hash_or_size_mismatch")
             if row["kind"] == "sqlite":
-                references.extend(_db_check(target, row, started + OPERATION_SECONDS))
-        _closure(m["files"], references)
+                references.extend(_db_check(target, row, started + OPERATION_SECONDS, tuple(m.get("absent_roles", {}))))
+        _closure(m["files"], references, tuple(m.get("absent_roles", {})))
         require(inventory == _inventory(source), "backup_changed_during_verification")
         return {"schema": SCHEMA, "manifest_sha256": manifest_sha256, "files": len(m["files"]),
                 "sqlite_snapshots": sum(r["kind"] == "sqlite" for r in m["files"]),

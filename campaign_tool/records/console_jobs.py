@@ -30,7 +30,8 @@ DEPLOY_ROOT = Path(__file__).resolve().parents[2] / "deploy"
 UNIT_SUFFIXES = (".timer", ".path")
 UNIT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,100}\.(timer|path)")
 SERVICE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,100}\.service")
-PROPS = ("LoadState", "UnitFileState", "ActiveState", "Unit", "LastTriggerUSec", "NextElapseUSecRealtime")
+PROPS = ("LoadState", "UnitFileState", "ActiveState", "Unit", "LastTriggerUSec", "NextElapseUSecRealtime",
+         "NextElapseUSecMonotonic")
 SERVICE_PROPS = ("LoadState", "ActiveState", "Result", "ExecMainStatus", "ExecMainExitTimestamp")
 ENABLED_OK = frozenset({"enabled", "enabled-runtime", "static", "generated", "alias"})
 TOKEN_ENV, TOKEN_FILE_ENV, REPO_ENV, FLOWS_ENV = (
@@ -83,10 +84,19 @@ def _stamp(value):
     return "never" if value in ("", "n/a", "0") else value
 
 
+def _next_run(props):
+    for key in ("NextElapseUSecRealtime", "NextElapseUSecMonotonic"):
+        value = props.get(key)
+        if value and _stamp(value) != "never":
+            return value if key.endswith("Realtime") else "monotonic deadline since boot: " + value
+    return "unknown (no next trigger reported)" if "LastTriggerUSec" in props else "n/a (event driven)"
+
+
 def inspect(unit, runner=system_runner):
     """One job row. ``state`` is a key of SHOWN; only ``ok`` may be rendered as passing."""
     row = {"unit": unit, "state": "unknown", "installed": "unknown", "enabled": "unknown", "last_trigger": "unknown",
-           "last_result": "unknown", "next_run": "unknown", "detail": "systemctl unavailable or output not understood"}
+           "last_result": "unknown", "next_run": "unknown", "active": "unknown",
+           "detail": "systemctl unavailable or output not understood"}
     props = _show(runner, unit, PROPS)
     if props is None:
         return row
@@ -95,10 +105,9 @@ def inspect(unit, runner=system_runner):
                     next_run="n/a", detail="unit file is not installed for this user")
     if props["LoadState"] != "loaded":
         return dict(row, detail="load state %s" % props["LoadState"][:40])
-    row.update(installed="yes", enabled=props.get("UnitFileState") or "unknown",
+    row.update(installed="yes", enabled=props.get("UnitFileState") or "unknown", active=props.get("ActiveState") or "unknown",
                last_trigger=_stamp(props["LastTriggerUSec"]) if "LastTriggerUSec" in props else "n/a (path unit)",
-               next_run=_stamp(props["NextElapseUSecRealtime"]) if "NextElapseUSecRealtime" in props
-               else "n/a (event driven)")
+               next_run=_next_run(props))
     service = props.get("Unit") or ""
     if not SERVICE_NAME.fullmatch(service):
         service = unit.rsplit(".", 1)[0] + ".service"

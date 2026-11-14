@@ -1,7 +1,8 @@
 """records backup / backup-verify: attended adapter over backup_v2 (DFGL-12A). Output is codes and counts only.
 
 Refuses unless a fresh ``records-quiescence-v1`` evidence file (written by the independent writer audit, DFGL-12B)
-names exactly the project root. Sets are written under ``--into`` and every success appends to the separate trusted
+names exactly the roots the backup reads: the project root, then each declared off-project store root that exists
+(records_profile.backup_roots). Sets are written under ``--into`` and every success appends to the separate trusted
 list ``backup-digests.jsonl`` that ``backup-verify`` reads. Nothing is copied off-box or deleted.
 """
 import argparse
@@ -16,7 +17,7 @@ from pathlib import Path
 from . import pipeline_health
 from .recovery import backup_v2 as v2
 from .recovery.backup import RecoveryError
-from .recovery.records_profile import ProfileIncomplete, build_profile
+from .recovery.records_profile import ProfileIncomplete, backup_roots, build_profile
 
 DIGESTS = "backup-digests.jsonl"
 EVIDENCE_KEYS = {"schema", "basis", "roots", "observed_utc", "all_writers_stopped", "checks", "auditor"}
@@ -57,40 +58,77 @@ def _incomplete(error):
     return _emit(error.code, **error.counts, **({"reason": error.reason} if error.reason else {}))
 
 
-def _check_profile(project):
-    report = {}
+def _scope_lines(report, detail, explain):
+    """Plain count lines after the JSON line: names (collapsed patterns) and counts only, never contents."""
+    legacy = report.get("out_of_scope_legacy")
+    if legacy is not None:
+        print("out_of_scope_legacy: files %d, bytes %d" % (legacy["files"], legacy["bytes"]))
+    outside = report.get("referenced_outside_set")
+    print("referenced_outside_set: %s" % ("not_checked" if outside is None else outside))
+    if "absent_roles" in report:
+        print("absent_roles: %s" % (", ".join("%s %s" % item for item in sorted(report["absent_roles"].items()))
+                                    or "none"))
+    if "root_owner" in report:
+        print("root_owner: %s" % report["root_owner"])
+    extra = report.get("extra_roots")
+    if extra:
+        print("extra_roots: %d, owner other %d, included files %d, bytes %d" % (
+            extra["roots"], extra["owner_other"], extra["files"], extra["bytes"]))
+    if explain:
+        for family, (files, size) in sorted(detail.get("unclassified", {}).items()):
+            print("unclassified: %s files %d, bytes %d" % (family, files, size))
+        for where, refs in sorted(detail.get("referenced_outside", {}).items()):
+            print("referenced_outside: %s refs %d" % (where, refs))
+
+
+def _check_profile(project, explain=False):
+    report, detail = {}, {}
     try:
-        v2._profile(build_profile(project, report))
+        v2._profile(build_profile(project, report, detail))
     except ProfileIncomplete as error:
-        return _incomplete(error)
+        code = _incomplete(error)
     except sqlite3.Error:
-        return _emit("PROFILE_INCOMPLETE", reason="database_unreadable", **report)
+        code = _emit("PROFILE_INCOMPLETE", reason="database_unreadable", **report)
     except (RecoveryError, OSError, ValueError, KeyError) as error:
         code = "LIMIT_ENTRIES" if str(error) == "scope_entry_bound" else "PROFILE_INCOMPLETE"
-        return _emit(code, reason=str(error) if isinstance(error, RecoveryError) else "scan_failed", **report)
-    return _emit("OK", **report)
+        code = _emit(code, reason=str(error) if isinstance(error, RecoveryError) else "scan_failed", **report)
+    else:
+        code = _emit("OK", **report)
+    _scope_lines(report, detail, explain)
+    return code
 
 
 def backup_main(argv=None):
     parser = argparse.ArgumentParser(prog="records backup", description=__doc__.split("\n")[0])
     parser.add_argument("--project", required=True)
     parser.add_argument("--check-profile", action="store_true", help="print coverage counts only; write nothing")
+    parser.add_argument("--explain", action="store_true",
+                        help="with --check-profile: also print each unclassified family (collapsed path pattern, "
+                             "files, bytes) and each referenced path outside the set")
     parser.add_argument("--into")
     parser.add_argument("--quiescence")
     parser.add_argument("--quiescence-sha256", help="trusted digest of the evidence file from the audit")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     project = os.path.abspath(args.project)
+    if args.explain and not args.check_profile:
+        parser.error("--explain needs --check-profile")
     if args.check_profile:
-        return _check_profile(project)
+        return _check_profile(project, args.explain)
     if not (args.into and args.quiescence):
         parser.error("--into and --quiescence are required")
     try:
-        evidence = _evidence(args.quiescence, args.quiescence_sha256, (project,))
-        v2._boundary(evidence, (Path(project),))
+        roots = backup_roots(project)
+    except ProfileIncomplete as error:
+        return _incomplete(error)
+    try:
+        evidence = _evidence(args.quiescence, args.quiescence_sha256, roots)
+        v2._boundary(evidence, tuple(Path(r) for r in roots))
     except (OSError, ValueError, KeyError, TypeError, RecoveryError):
         return _emit("QUIESCENCE_REFUSED")
     try:
         profile = build_profile(project)
+        if profile.roots != roots:  # the roots changed between the evidence check and the profile
+            return _emit("QUIESCENCE_REFUSED")
         into = Path(os.path.abspath(args.into))
         if Path(project) in (into, *into.parents) or into in Path(project).parents:
             return _emit("BACKUP_REFUSED", reason="destination_must_be_isolated")

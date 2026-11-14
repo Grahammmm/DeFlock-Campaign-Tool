@@ -342,17 +342,19 @@ class ReplyTests(ReplyBase):
         self.draft = other
         self.approve()
         findings.publish(self.root, self.draft, "Pat Organizer")
-        self.assertNotIn("agency_response", json.loads((self.content / "findings" / "no-ask.json").read_text()))
+        published = json.loads((self.content / "findings" / "no-ask.json").read_text())
+        self.assertNotIn("agency_response", published)
+        correction_day = published["published_at"][:10]  # publication uses UTC, not the local calendar day
         # a prepared request after approval makes the approval stale; so does a later reply
         for step in (lambda: self.request(today=D0), lambda: self.reply("received", record=self.rprefix)):
             step()
             with self.assertRaises(ValueError) as caught:
-                findings.correct(self.root, "syn-pub-2", str(date.today()), "Added the agency reply.", self.draft,
+                findings.correct(self.root, "syn-pub-2", correction_day, "Added the agency reply.", self.draft,
                                  approved_by="Pat Organizer")
             self.assertIn("review blockers", str(caught.exception))
             self.assertEqual(self.status()["receipts_for_this_content"], 0)
         self.approve()
-        findings.correct(self.root, "syn-pub-2", str(date.today()), "Added the agency reply.", self.draft,
+        findings.correct(self.root, "syn-pub-2", correction_day, "Added the agency reply.", self.draft,
                          approved_by="Pat Organizer")
         published = json.loads((self.content / "findings" / "no-ask.json").read_text())
         self.assertEqual(published["agency_response"], self.stored()["agency_response"])

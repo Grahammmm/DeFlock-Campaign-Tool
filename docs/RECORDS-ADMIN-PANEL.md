@@ -104,6 +104,7 @@ whose header is RS256 and whose `aud`, `iss`, `exp`, `iat` and `email` claims ma
 This check does **not** verify the signature: alone it is only a tripwire against a missing or misconfigured edge, never
 authentication. Loopback requests are exempt. Never commit the real values.
 Never add an edge rule that rewrites Origin. Existing CSRF and action checks still apply.
+`--access-keys FILE` (DFB-11) adds the signature check for every POST; see "Hosted decisions" below.
 
 ## Static snapshot
 
@@ -144,6 +145,40 @@ Public updates, Packets, and Drafts and next steps. On narrow screens the nav
 stacks above the page; overdue notices are bold red (on our records, not a legal finding).
 
 ## Jobs
+
+### Automation overview
+
+`GET /automation` (More: Automation) combines the configured `--run-report`'s
+eight orchestration stages, the systemd unit list, and saved open health alarm
+codes in one read-only page. It includes missing pilot companion units as gaps,
+not just the installed timers. `--timer-unit` adds campaign-specific timers.
+Only `systemctl --user show` is used; `--no-system` leaves unit state unknown.
+This page does not use GitHub credentials, call the network, inspect the ledger
+or record contents, or run the health writer.
+
+Pass `--run-report RUNTIME/TARGET/run-report.json` to see the latest report and
+the sibling `alerts/` folder. A historical `reports/RUN_ID.json` is also accepted
+for stage evidence, but saved alarms then show unknown. No report path is guessed.
+In hosted/export mode, the same explicit option is needed and must be readable by
+the service; absent it, stage and alarm evidence are unknown. Unit state is current
+host state, not part of the pinned export. This change installs nothing.
+
+Last run is the **containing run's finish**, not an invented per-stage timestamp.
+Next opportunity comes from `records-run.timer`, not a hard-coded schedule, and
+does not promise a held/skipped stage will execute. A report older than 26 hours
+is labelled historical/stale (an age warning, not a missed-slot verdict). Missing,
+invalid and future reports cannot produce green stage evidence. Arrival, OCR,
+facts, comparison, gaps, follow-ups, findings, packets, export and decision apply
+remain explicitly unknown where the report has no separate stage result; an
+`outputs=ok` is not proof of those substeps. Available OCR counters are labelled
+as counters, not acceptance.
+
+Only open `records-health-alert-v1` warn/stop files are listed; cleared files are
+excluded. Missing, unreadable, malformed or over-cap alarm sources show unknown,
+never zero. Notify failure markers are counted separately as historical markers
+with resolution unknown. Even an empty alarm folder is not an all-clear: a stopped
+monitor cannot refresh it. The page neither creates nor clears an alarm.
+Rollback: revert the Automation page commit; existing Jobs/Oversight stay intact.
 
 `GET /jobs` (More: Jobs) is a read-only list of every scheduled job. The list is discovered from the unit files under
 `deploy/` (`*.timer`, `*.path`, `.in` templates included) plus any `--timer-unit`, so another geography with its own units
@@ -276,3 +311,32 @@ receipt; a transient lock or I/O failure prints `DEFERRED` and is tried again at
 applied) into `EXPORT.json`, so the panel's pending overlay clears or shows `not applied: <code>`. `run-records.sh` runs the apply just before the
 export when `DECISIONS_DIR` (the host directory of `records panel --decisions-dir`) is also in the render values; the render refuses it without
 `CONSOLE_EXPORT_DIR`, and without it the rendered script is unchanged. A failure is logged (`decisions apply rc=N ...`) and never changes the run's exit status.
+
+### Hosted decisions behind Access (DFB-11)
+
+`records panel --export-root DIR --run-id auto --decisions-dir J --public-origin URL --access-config C --access-keys K --actor G` is the
+hosted admin page that takes decisions. It is the journal mode above with one more rule: **every POST must come through Cloudflare Access
+with a token whose signature the console verifies itself**, so the write path does not rest on the edge alone.
+
+- `--access-keys K` is required with `--public-origin` and `--decisions-dir` together (else `access_keys_required`, exit 2) and refused
+  without `--public-origin` (`access_keys_unused`). `K` is an owner-only (0600, regular, non-symlink, at most 64 KiB) copy of the team's
+  Access signing keys, the JWKS document at `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs` (public keys only; no secret). RSA
+  keys of 2048 to 8192 bits with a unique `kid` are used; other members (`public_cert`, non-RSA keys) are ignored. A bad file stops the
+  start (`access_keys_invalid`). The console never fetches it: the operator refreshes the copy (Cloudflare rotates the keys); the file is
+  re-read on every POST, so a refresh needs no restart. While the copy is unusable every POST answers 503 and nothing is saved; while it
+  is out of date (a rotated key) a decision gets the 403 below. Viewing is unaffected either way.
+- A POST is taken only on the public Host with exactly one `Cf-Access-Jwt-Assertion` that passes the claims check above **and** whose
+  RS256 signature (RSASSA-PKCS1-v1_5, SHA-256, verified with the standard library against the key its `kid` names) is valid. Anything
+  else, including a POST on the loopback pair, gets 403 "decisions here need the Access sign-in" before the body is read; nothing is
+  journaled. GETs keep the claims tripwire only.
+- The decision's `actor` is then `<configured email> via Access` (the email the verified token carries) instead of the `--actor` label,
+  in the journal entry and, after the apply, in the live project's events. The `--actor` label stays for pages only.
+- Unchanged: the CSRF, Origin and field checks; validation against the pinned snapshot; `/send` is 404; no mail-draft placement; no
+  write under `DIR` or the live project. **Approve (and tying a message) still needs G's detached SSH signature over the shown text**;
+  an Access login alone never approves anything: `records decisions-apply` verifies the signature at the next records run and receipts
+  `SIGNATURE_REFUSED` otherwise.
+- The next records run applies the journal (`DECISIONS_DIR` in the `run-records.sh` render values, DFGL-16C above); the export after it
+  shows the outcome.
+
+**Rollback:** start the unit without `--decisions-dir` (and without `--access-keys`). The page is then read-only again (every POST 503
+`read_only_export`); the journal and its receipts stay on disk and nothing already applied changes.

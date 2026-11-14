@@ -1,0 +1,9 @@
+#!/bin/sh
+# Non-fatal post-step; input must be the codes/counts-only status sidecar.
+umask 077
+if ! cd '@ENGINE_DIR@' 2>/dev/null; then
+    printf '%s\n' MAIL_ARRIVAL_FAILED >&2
+    exit 0
+fi
+'@HOST_PYTHON@' -B -m campaign_tool.records.mail_arrival --runtime-dir '@RUNTIME_DIR@' "$@"
+exit 0

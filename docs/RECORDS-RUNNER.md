@@ -10,6 +10,24 @@ WP1 ledger. It always rejects canonical promotion with an explicit integration
 gap. A synthetic promoting backend exists only in tests. No whole-pipeline or
 canonical acceptance claim is made by passing these tests.
 
+## Pre-switch dependency, stage-flag and form check
+
+Before an engine re-pin, run `python -B -m campaign_tool.records.preswitch --plan PLAN.json`
+**inside the intended interpreter** (for example, the existing container venv).
+This reads the stage import closure without importing the analysed code, checks only
+module/verb `--help` and the plan's flag names (never executes a stage), and executes
+`classify_form` on tiny synthetic files with OCR off/on. Missing dependencies pass
+only at reviewed `preswitch_inventory.json` sites whose exact function fingerprint
+matches and whose named test exercises dependency blocking; changed own-tree entries
+fail `STALE`. `--engine-root DIR` checks another source tree using the running
+interpreter's installed packages, exempts nothing for changed inventory entries, and
+skips the form probe. Without `--plan`, the stage-flag check is skipped. `--json`
+returns schema version 1 with checks A/B/C (`status`, `rows`) and `overall`; output
+contains codes and source identifiers only. Exit 0 means these checks passed, 1 a
+failure, 2 invalid usage. All synthetic writes are removed with a private temporary
+directory. This does not validate record coverage, legal conclusions, live path
+bindings, OCR execution or permission to switch; retain rehearsal and human gates.
+
 ## Interfaces needed from WP1 and WP0
 
 `Exporter.folders()` returns every exposed folder with current UIDVALIDITY;

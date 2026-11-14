@@ -66,6 +66,8 @@ RETRYABLE = {TIMEOUT, ERROR}
 MAX_ATTEMPTS = 3
 # Native parser each form needs beyond the stdlib (folder.worker / extraction_routes).
 FORM_PARSER = {"pdf": "pypdf", "xlsx": "openpyxl", "msg": "extract_msg"}
+# With OCR on, image originals are opened (classify_form) and wrapped (extraction_routes) with Pillow.
+IMAGE_PARSER = "PIL.Image"
 # Fixed issue codes in a held document's alert key ("extract:<sha256>:<code>,<code>").
 # Pipeline.stage_extract writes the parser ones; this module writes the last two.
 OCR_CODES = {"ocr_runtime_unconfigured"}
@@ -293,6 +295,8 @@ def classify_form(pipeline, subject, *, missing, diagnostics=None):
         return None, ERROR
     if form in extraction_routes.IMAGES:
         if getattr(pipeline, 'ocr_tools', None):
+            if not _importable(IMAGE_PARSER):
+                return form, PARSER_MISSING  # the image OCR route needs Pillow; not held, retried once installed
             from PIL import Image
             try:
                 with Image.open(pipeline._original(subject)['storage_path']) as image:

@@ -374,9 +374,18 @@ class LiveFormTests(ServerCase):
         self.assertEqual(headers["cache-control"], "no-store")
         self.assertIn("default-src 'none'", headers["content-security-policy"])
         self.assertEqual(headers["x-content-type-options"], "nosniff")
-        self.assertEqual(headers["referrer-policy"], "no-referrer")
+        self.assertEqual(headers["referrer-policy"], "same-origin")
         self.assertEqual(self.row()["status"], "pending")
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
+
+    def test_decision_pages_preserve_same_origin_browser_posts(self):
+        # no-referrer makes a browser's form POST send Origin: null, which must
+        # remain refused. same-origin preserves our origin without cross-site referrers.
+        for path in ("/", "/review?id=" + self.draft_row["id"]):
+            with self.subTest(path=path):
+                status, headers, _ = self.http.send("GET", path)
+                self.assertEqual(status, 200)
+                self.assertEqual(headers["referrer-policy"], "same-origin")
 
     def test_approve_reject_edit_persist_only_queue_decisions(self):
         other = self.draft(2, body="second draft")
