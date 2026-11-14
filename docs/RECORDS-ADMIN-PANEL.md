@@ -104,6 +104,7 @@ whose header is RS256 and whose `aud`, `iss`, `exp`, `iat` and `email` claims ma
 This check does **not** verify the signature: alone it is only a tripwire against a missing or misconfigured edge, never
 authentication. Loopback requests are exempt. Never commit the real values.
 Never add an edge rule that rewrites Origin. Existing CSRF and action checks still apply.
+`--access-keys FILE` (DFB-11) adds the signature check for every POST; see "Hosted decisions" below.
 
 ## Static snapshot
 
@@ -310,3 +311,32 @@ receipt; a transient lock or I/O failure prints `DEFERRED` and is tried again at
 applied) into `EXPORT.json`, so the panel's pending overlay clears or shows `not applied: <code>`. `run-records.sh` runs the apply just before the
 export when `DECISIONS_DIR` (the host directory of `records panel --decisions-dir`) is also in the render values; the render refuses it without
 `CONSOLE_EXPORT_DIR`, and without it the rendered script is unchanged. A failure is logged (`decisions apply rc=N ...`) and never changes the run's exit status.
+
+### Hosted decisions behind Access (DFB-11)
+
+`records panel --export-root DIR --run-id auto --decisions-dir J --public-origin URL --access-config C --access-keys K --actor G` is the
+hosted admin page that takes decisions. It is the journal mode above with one more rule: **every POST must come through Cloudflare Access
+with a token whose signature the console verifies itself**, so the write path does not rest on the edge alone.
+
+- `--access-keys K` is required with `--public-origin` and `--decisions-dir` together (else `access_keys_required`, exit 2) and refused
+  without `--public-origin` (`access_keys_unused`). `K` is an owner-only (0600, regular, non-symlink, at most 64 KiB) copy of the team's
+  Access signing keys, the JWKS document at `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs` (public keys only; no secret). RSA
+  keys of 2048 to 8192 bits with a unique `kid` are used; other members (`public_cert`, non-RSA keys) are ignored. A bad file stops the
+  start (`access_keys_invalid`). The console never fetches it: the operator refreshes the copy (Cloudflare rotates the keys); the file is
+  re-read on every POST, so a refresh needs no restart. While the copy is unusable every POST answers 503 and nothing is saved; while it
+  is out of date (a rotated key) a decision gets the 403 below. Viewing is unaffected either way.
+- A POST is taken only on the public Host with exactly one `Cf-Access-Jwt-Assertion` that passes the claims check above **and** whose
+  RS256 signature (RSASSA-PKCS1-v1_5, SHA-256, verified with the standard library against the key its `kid` names) is valid. Anything
+  else, including a POST on the loopback pair, gets 403 "decisions here need the Access sign-in" before the body is read; nothing is
+  journaled. GETs keep the claims tripwire only.
+- The decision's `actor` is then `<configured email> via Access` (the email the verified token carries) instead of the `--actor` label,
+  in the journal entry and, after the apply, in the live project's events. The `--actor` label stays for pages only.
+- Unchanged: the CSRF, Origin and field checks; validation against the pinned snapshot; `/send` is 404; no mail-draft placement; no
+  write under `DIR` or the live project. **Approve (and tying a message) still needs G's detached SSH signature over the shown text**;
+  an Access login alone never approves anything: `records decisions-apply` verifies the signature at the next records run and receipts
+  `SIGNATURE_REFUSED` otherwise.
+- The next records run applies the journal (`DECISIONS_DIR` in the `run-records.sh` render values, DFGL-16C above); the export after it
+  shows the outcome.
+
+**Rollback:** start the unit without `--decisions-dir` (and without `--access-keys`). The page is then read-only again (every POST 503
+`read_only_export`); the journal and its receipts stay on disk and nothing already applied changes.

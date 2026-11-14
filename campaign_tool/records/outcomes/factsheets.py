@@ -122,10 +122,20 @@ def collect(db, processing, run_id):
         units = _rows(db, "SELECT * FROM units WHERE original_sha256=? AND json_valid(provenance_json) "
                       "AND json_extract(provenance_json,'$.extraction_import_id')=? ORDER BY legacy_ordinal", (subject, current["id"]))
         _need([u["id"] for u in units] == members, "factsheet_current_unit_set")
+        digests = []
         for ordinal, unit in enumerate(units, 1):
-            provenance = decode(unit["provenance_json"])
-            digest = provenance.get("payload_sha256")
-            _need(is_hash(digest) and provenance.get("ordinal") == ordinal, "factsheet_payload_binding")
+            digest = decode(unit["provenance_json"]).get("payload_sha256")
+            _need(is_hash(digest) and decode(unit["provenance_json"]).get("ordinal") == ordinal,
+                  "factsheet_payload_binding")
+            digests.append(digest)
+        if any(unit["derived_path"] != str(Path(processing) / "artifacts" / "evidence" / digest)
+               for unit, digest in zip(units, digests)):
+            # Retained/preserved payload outside this project's CAS root: nothing is read and no
+            # statement from this original is kept; it is an item-level gap, not a writer failure.
+            for code in ("current_extraction_unavailable", "payload_outside_project_evidence"):
+                sheet["gaps"].append({"document_sha256": subject, "code": code})
+            continue
+        for ordinal, (unit, digest) in enumerate(zip(units, digests), 1):
             # Fixed producer-owned CAS root; record paths cannot select arbitrary files.
             expected_path = Path(processing) / "artifacts" / "evidence" / digest
             _need(unit["derived_path"] == str(expected_path), "factsheet_payload_path")

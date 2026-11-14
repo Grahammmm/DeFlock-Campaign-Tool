@@ -148,8 +148,8 @@ class JournalSource(snap.SnapshotSource):
 
 def _record(handler, action, target, revision, value, choice=None):
     try:
-        append(handler.server.decisions_dir, handler.pin, handler.server.actor, handler.path, action, target, revision,
-               value, choice)
+        append(handler.server.decisions_dir, handler.pin, handler.actor or handler.server.actor, handler.path, action, target,
+               revision, value, choice)
     except (OSError, JournalError):
         handler._fail(503)
         return False

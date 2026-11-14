@@ -28,11 +28,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-SOURCES = ("inbox-watch", "drop-folder")
+SOURCES = ("inbox-watch", "drop-folder", "mail")
 REF_RE = re.compile(r"^[0-9a-f]{64}$")
 RUN_ID_RE = re.compile(r"^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
 SEEN_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$")
-STAMP_NAME_RE = re.compile(r"^[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-(inbox-watch|drop-folder)(-[0-9]{2})?\.json$")
+STAMP_NAME_RE = re.compile(r"^[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-(inbox-watch|drop-folder|mail)(-[0-9]{2})?\.json$")
 MAX_STAMP_BYTES = 4096
 MAX_STAMPS = 1000
 LOCK_NAME = "arrival.lock"

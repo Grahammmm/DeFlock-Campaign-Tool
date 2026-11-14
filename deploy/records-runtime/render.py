@@ -54,6 +54,7 @@ TEMPLATES = (("run-records.sh.in", "run-records.sh", 0o700),
              ("records-arrival.service.in", "records-arrival.service", 0o600),
              ("records-health.service.in", "records-health.service", 0o600),
              ("records-health.timer.in", "records-health.timer", 0o600))
+MAIL_ARRIVAL_TEMPLATES = (("mail-arrival-stamp.sh.in", "mail-arrival-stamp.sh", 0o700),)
 # Marker lines that bracket the optional console-export post-step in run-records.sh.in.
 CONSOLE_BLOCK = re.compile(r"^# CONSOLE-EXPORT-BEGIN.*?^# CONSOLE-EXPORT-END\n", re.MULTILINE | re.DOTALL)
 # Nested inside it: rendered only when DECISIONS_DIR (the host journal directory of `records panel --decisions-dir`) is given too.
@@ -112,7 +113,8 @@ HEALTH_FLAGS = (("ANALYSIS_ROOT", "--analysis-root"), ("CONSOLE_EXPORT_DIR", "--
 TIMER_KEYS = ("TIMER_DAYS", "TIMER_TIMES", "TIMER_TIMEZONE")
 # Safety placeholders a template must keep: a wrapper template that dropped
 # the free-space preflight would otherwise render cleanly without it.
-REQUIRED_PLACEHOLDERS = {"run-records.sh.in": {"MIN_FREE_BYTES", "RECORDS_DROP_DIR", "SCHEDULED_TARGET"},
+REQUIRED_PLACEHOLDERS = {"mail-arrival-stamp.sh.in": {"ENGINE_DIR", "HOST_PYTHON", "RUNTIME_DIR"},
+                         "run-records.sh.in": {"MIN_FREE_BYTES", "RECORDS_DROP_DIR", "SCHEDULED_TARGET"},
                          "records-arrival.path.in": {"RECORDS_DROP_DIR", "RUNTIME_DIR"},
                          "records-arrival.service.in": {"RUN_RECORDS_SH"},
                          "records-health.service.in": {"RECORDS_ROOT", "RUNTIME_DIR", "SCHEDULED_TARGET"}}
@@ -321,7 +323,8 @@ def render(values, targets, out):
     if "DECISIONS_DIR" in values and "CONSOLE_EXPORT_DIR" not in values:
         raise RenderError("DECISIONS_DIR: needs CONSOLE_EXPORT_DIR (the apply step runs before the console export)")
     plans = []
-    for template, output, mode in TEMPLATES:
+    templates = TEMPLATES + (MAIL_ARRIVAL_TEMPLATES if "RECORDS_DROP_DIR" in values else ())
+    for template, output, mode in templates:
         text = (HERE / template).read_text(encoding="utf-8")
         found = set(PLACEHOLDER.findall(text))
         missing_required = sorted(REQUIRED_PLACEHOLDERS.get(template, set()) - found)
