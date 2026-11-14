@@ -362,7 +362,7 @@ def build_profile(project, report=None, detail=None):
                INTAKE: ["SELECT 'original_blob', path, sha FROM preservations"],
                PORTAL: ["SELECT 'original_blob', %s || sha256, sha256 FROM portal_versions"
                         % _lit(base + "/portal-queue-v1/objects/")]}
-    meta, outside_refs, wanted = {}, {}, {x: {} for x in extras}
+    meta, outside_refs, wanted, credential_refs = {}, {}, {x: {} for x in extras}, set()
 
     def refuse_ref(role, where):
         outside_refs[role + " " + where] = outside_refs.get(role + " " + where, 0) + 1
@@ -379,6 +379,9 @@ def build_profile(project, report=None, detail=None):
                 if type(source) is not str or not os.path.isabs(source) or os.path.normpath(source) != source:
                     refuse_ref(role, "<unbound>")
                     continue
+                if v2._credential(Path(source)):  # a row naming a credential path: refused below, never opened
+                    credential_refs.add(source)
+                    continue
                 if source.startswith(base + "/"):
                     key = source[len(base) + 1:]
                     if key in roles:
@@ -394,6 +397,11 @@ def build_profile(project, report=None, detail=None):
                 assigned = wanted[home].setdefault(source[len(home) + 1:], [])
                 if role not in assigned:
                     assigned.append(role)
+    if credential_refs:  # before any extra-root walk or content hash: the library's credential gate, applied first
+        found["referenced_credential"] = len(credential_refs)  # distinct paths; counts only, never a name
+        if report is not None:
+            report.update(found)
+        raise ProfileIncomplete("PROFILE_INCOMPLETE", found, "credential_inclusion_forbidden")
     # Declared extra roots: only the files ledger rows name are included; the rest is counted as legacy.
     xfiles, xdirs, xoutside, legacy = [], [], [], dict(found["out_of_scope_legacy"])
     summary = {"roots": len(extras), "owner_other": 0, "files": 0, "bytes": 0}

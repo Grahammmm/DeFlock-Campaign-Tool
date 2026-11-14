@@ -446,6 +446,35 @@ class DeclaredRootsAndAbsentRoles(unittest.TestCase):
         self.assertEqual((line["code"], line["referenced_outside_set"]), ("REFERENCED_OUTSIDE_SET", 1))
         self.assertIn("referenced_outside: original_blob <extra-root-1>/<hh>/<sha> (missing) refs 1", rest)
 
+    def test_referenced_credential_in_a_declared_root_is_refused_before_any_content_read(self):
+        # Synthetic sentinel bytes only. A ledger row naming a credential-named file in a declared root refuses with
+        # the library's credential code, and nothing in the declared roots is opened; the normal receipt still is.
+        original = Path.read_bytes
+
+        def reads(paths):
+            def record(path):
+                paths.append(Path(path))
+                return original(path)
+            return mock.patch.object(Path, "read_bytes", record)
+
+        opened = []
+        with reads(opened):  # control: the declared receipt is hashed and the check passes
+            code, line, _ = run_check(self.project)
+        self.assertEqual((code, line["code"]), (0, "OK"))
+        self.assertIn(self.receipt, opened)
+        sentinel = put(self.roots[1], ".env", b"synthetic-not-a-credential")
+        self.addCleanup(sentinel.unlink)
+        manifest = json.dumps({"artifacts": {"source_receipt": {"path": str(sentinel), "sha256": "8" * 64}}})
+        self.mutate("INSERT INTO extraction_adapter_imports SELECT ?, original_sha256, ?, ?, ?, run_id, created_at "
+                    "FROM extraction_adapter_imports WHERE id=?", "8" * 64, "8" * 64, digest(manifest.encode()),
+                    manifest, "9" * 64)
+        opened = []
+        with reads(opened):
+            code, line, _ = run_check(self.project)
+        self.assertEqual((code, line["code"], line["reason"], line["referenced_credential"]),
+                         (1, "PROFILE_INCOMPLETE", "credential_inclusion_forbidden", 1))
+        self.assertEqual([p for p in opened if any(p.is_relative_to(r) for r in self.roots)], [])
+
     def test_symlinked_declared_root_or_component_is_refused(self):
         real = self.roots[3]
         moved = self.work / "remaining"

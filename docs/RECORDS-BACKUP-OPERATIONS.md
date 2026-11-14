@@ -61,6 +61,9 @@ the path), no `..`, a real directory, neither inside nor around another root; ot
 `originals.storage_path`, receipt for an import's `source_receipt`, derived_resume for its other artifacts and units);
 every other entry there is out of scope, counted in `out_of_scope_legacy` and recorded as such in the manifest. A row
 naming a path under no root, or a file missing from a declared root, still refuses with `REFERENCED_OUTSIDE_SET`.
+A row naming a credential-named path (the library's credential rule) refuses with `PROFILE_INCOMPLETE`,
+`reason: credential_inclusion_forbidden` and a `referenced_credential` count, before any declared root is walked or
+any referenced file is opened or hashed.
 Adding a location is a reviewed change to `EXTRA_ROOTS`, never a run-time choice. Live, 2026-11-13: 4 roots,
 100 included files (437,725 bytes), 6 unreferenced files counted as legacy.
 
