@@ -679,6 +679,18 @@ class CountStageTests(StageTestCase):
         self.assertEqual((parsed["status"], parsed["counts"]["input"]), ("ok", 0))
         self.assertNotIn("outcomes", parsed)
 
+    def test_extract_locked_or_busy_ledger_warns_other_sqlite_errors_fail(self):
+        for message in ("database is locked", "database table is locked", "database is busy"):
+            with self.subTest(message):
+                parsed = self.extract_with(error=sqlite3.OperationalError(message))
+                self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_LEDGER_BUSY"))
+                self.assertEqual(parsed["counts"]["skipped"], 1)
+        for error in (sqlite3.OperationalError("unable to open database file"),
+                      sqlite3.DatabaseError("file is not a database")):
+            with self.subTest(error=str(error)):
+                parsed = self.extract_with(error=error)
+                self.assertEqual((parsed["status"], parsed["error_code"]), ("fail", "EXTRACT_LEDGER_UNREADABLE"))
+
     def test_extract_root_locked_warns(self):
         parsed = self.extract_with(error=records_run.RunError("root_locked"))
         self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_ROOT_LOCKED"))
