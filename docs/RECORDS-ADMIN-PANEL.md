@@ -146,6 +146,40 @@ stacks above the page; overdue notices are bold red (on our records, not a legal
 
 ## Jobs
 
+### Automation overview
+
+`GET /automation` (More: Automation) combines the configured `--run-report`'s
+eight orchestration stages, the systemd unit list, and saved open health alarm
+codes in one read-only page. It includes missing pilot companion units as gaps,
+not just the installed timers. `--timer-unit` adds campaign-specific timers.
+Only `systemctl --user show` is used; `--no-system` leaves unit state unknown.
+This page does not use GitHub credentials, call the network, inspect the ledger
+or record contents, or run the health writer.
+
+Pass `--run-report RUNTIME/TARGET/run-report.json` to see the latest report and
+the sibling `alerts/` folder. A historical `reports/RUN_ID.json` is also accepted
+for stage evidence, but saved alarms then show unknown. No report path is guessed.
+In hosted/export mode, the same explicit option is needed and must be readable by
+the service; absent it, stage and alarm evidence are unknown. Unit state is current
+host state, not part of the pinned export. This change installs nothing.
+
+Last run is the **containing run's finish**, not an invented per-stage timestamp.
+Next opportunity comes from `records-run.timer`, not a hard-coded schedule, and
+does not promise a held/skipped stage will execute. A report older than 26 hours
+is labelled historical/stale (an age warning, not a missed-slot verdict). Missing,
+invalid and future reports cannot produce green stage evidence. Arrival, OCR,
+facts, comparison, gaps, follow-ups, findings, packets, export and decision apply
+remain explicitly unknown where the report has no separate stage result; an
+`outputs=ok` is not proof of those substeps. Available OCR counters are labelled
+as counters, not acceptance.
+
+Only open `records-health-alert-v1` warn/stop files are listed; cleared files are
+excluded. Missing, unreadable, malformed or over-cap alarm sources show unknown,
+never zero. Notify failure markers are counted separately as historical markers
+with resolution unknown. Even an empty alarm folder is not an all-clear: a stopped
+monitor cannot refresh it. The page neither creates nor clears an alarm.
+Rollback: revert the Automation page commit; existing Jobs/Oversight stay intact.
+
 `GET /jobs` (More: Jobs) is a read-only list of every scheduled job. The list is discovered from the unit files under
 `deploy/` (`*.timer`, `*.path`, `.in` templates included) plus any `--timer-unit`, so another geography with its own units
 needs no code change. For each job it runs only `systemctl --user show` and reports installed, enabled, last trigger,
