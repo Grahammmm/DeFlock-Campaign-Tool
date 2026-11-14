@@ -18,7 +18,10 @@ from campaign_tool.records import analysis_export as ae
 from campaign_tool.records import cli
 from campaign_tool.records.extraction_ledger import ExtractionLedgerAdapter
 from campaign_tool.records.ledger import store
+from campaign_tool.records.outcomes import analysis_ready as ar
+from campaign_tool.records.outcomes import textstate as ts
 from tests.records import test_outcome_factsheets as _fs
+from tests.records.test_outcome_textstate import finish_extract, mark_ocr, write_extract_list
 
 R1, R2, R3 = ("run_2026110%dT000000Z_%s" % (n, c * 8) for n, c in ((1, "a"), (2, "b"), (3, "c")))
 PAGES = ["First page text", "Second page text"]
@@ -146,6 +149,41 @@ class AnalysisExportTests(unittest.TestCase):
         self.assertEqual((rows[nodate]["state"], rows[nodate]["received_at"], rows[nodate]["received_at_source"]),
                          ("exported", "", ""))
         self.assertEqual(sorted(p.name for p in (folder / "texts").iterdir()), [nodate + ".txt"])
+
+    def settled_run(self, run, listed, digest):
+        """One run as the outputs stage writes it: this run's extract list, text state, then the manifest."""
+        write_extract_list(self.project, run, listed)
+        ts.write_run_textstate(self.project, run)
+        states = {r["sha256"]: r["state"] for r in json.loads(
+            (self.project / "run-outputs" / run / "text-state.json").read_text())["records"]}
+        received = {"items": [{"original_sha256": digest, "kind": "records", "agency_id": "ag1", "request_id": "rq1"}]}
+        self.make_run(run, manifest=ar.build(run, received, None, states, {}),
+                      items=[self.item(digest, "rq1", "2026-11-02T18:00:00Z", "mail_received_at")])
+
+    def test_a_reviewed_pdf_reaches_the_export_in_a_run_that_extracts_nothing_new(self):
+        digest, _ = self.document(PAGES[:1], "ag1")
+        finish_extract(self.database, digest)
+        self.settled_run(R1, [digest], digest)
+        self.assertEqual(self.rows(self.export_dir("--run", R1) / R1)[0]["state"], "TEXT_NOT_READY")
+        self.assertEqual(mark_ocr(self.project, digest, "confirmed"), 0)
+        self.settled_run(R2, [], digest)
+        folder = self.export_dir("--run", R2) / R2
+        self.assertEqual((folder / "texts" / (digest + ".txt")).read_text(), "[[PAGE 1]]\nFirst page text\n")
+        self.assertEqual([(r["state"], r["pages"]) for r in self.rows(folder)], [("exported", "1")])
+        self.assertEqual(json.loads((folder / "analysis-ready.json").read_text())["agencies"][0]["records"],
+                         [{"sha256": digest, "text_state": "text_reviewed"}])
+
+    def test_an_unreviewed_or_rejected_pdf_stays_not_ready_in_a_later_run(self):
+        for run, decision in ((R2, None), (R3, "rejected")):
+            with self.subTest(decision=decision):
+                digest, _ = self.document(PAGES[:1], "ag1")
+                finish_extract(self.database, digest)
+                if decision:
+                    self.assertEqual(mark_ocr(self.project, digest, decision), 0)
+                self.settled_run(run, [], digest)
+                folder = self.export_dir("--run", run) / run
+                self.assertEqual([r["state"] for r in self.rows(folder)], ["TEXT_NOT_READY"])
+                self.assertFalse((folder / "texts").exists())
 
     def test_after_selection_settled_paging_and_missing_manifest_marker(self):
         digest, _ = self.document(PAGES, "ag1")

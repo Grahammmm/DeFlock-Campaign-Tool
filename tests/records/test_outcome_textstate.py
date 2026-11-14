@@ -1,5 +1,6 @@
 """Synthetic-only DOC-2 per-record text state and its outputs-stage wiring."""
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -11,10 +12,13 @@ import unittest
 from contextlib import closing
 from unittest import mock
 
-from campaign_tool.records import run_stages
+from campaign_tool.records import ocr_review, run_stages
+from campaign_tool.records.extraction_ledger import ExtractionLedgerAdapter
+from campaign_tool.records.ledger import store
 from campaign_tool.records.ledger.migrations import v001
 from campaign_tool.records.ocr_review import canonical
 from campaign_tool.records.outcomes import textstate as ts
+from tests.records import test_outcome_factsheets as _fs
 
 FIXTURE = Path(__file__).parent / "fixtures" / "outcome_register" / "tracker.csv"
 RETRY = ("could_not_be_read", "Could not be read this time: the reader failed or ran out of time "
@@ -236,6 +240,153 @@ class TextStateTests(unittest.TestCase):
         self.assertEqual((report["records"], set(report["counts"].values())), ([], {0}))
         self.assertEqual(text, ts.markdown(report))
         self.assertFalse([ln for ln in text.splitlines() if " - " in ln])
+
+
+def finish_extract(database, digest):
+    """Mark the extract stage of a fixture original done, as the extract stage does after a run."""
+    receipt = hashlib.sha256(b"synthetic extract receipt " + digest.encode()).hexdigest()
+    with store.ledger(database) as con:
+        con.execute("INSERT INTO receipts(sha256,stage,subject_sha256,reviewer_id,role,verdict,coverage,locators,"
+                    "rationale,model_or_tool,input_hashes,created_at_tz,path) "
+                    "VALUES(?,'extract',?,'fixture','extract','pass','{}','[]','fixture','fixture','{}','2000','fixture')",
+                    (receipt, digest))
+        con.execute("UPDATE stage_state SET status='done',receipt_sha256=? WHERE original_sha256=? AND stage='extract'",
+                    (receipt, digest))
+        con.commit()
+
+
+def write_extract_list(project, run, digests):
+    """The extract stage's private list for `run`: only the documents that run touched."""
+    path = Path(project) / "processing-v1" / "runs" / f"extract-{run}.json"
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    documents = [{"original_sha256": d, "form": "pdf", "outcome": "EXTRACTED"} for d in digests]
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        json.dump({"schema": "records-extract-outcomes-v1", "run_id": run, "written_at": "2030-01-01T00:00:00+00:00",
+                   "documents": documents}, stream)
+
+
+def mark_ocr(project, digest, decision):
+    """The organizer's OCR check through the real ocr_review CLI (page 1 of the fixture PDF)."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        return ocr_review.main(["mark", "--project", str(project), "--original-sha256", digest, "--page", "1",
+                                "--decision", decision, "--reviewer-label", "organizer"])
+
+
+class RelistTests(unittest.TestCase):
+    """The run's text state covers every received record, not only the ones this run's extract listed."""
+    private, document, enroll = (_fs.FactSheetsTests.private, _fs.FactSheetsTests.document,
+                                 _fs.FactSheetsTests.enroll)
+
+    def setUp(self):
+        work = Path(tempfile.gettempdir()) / "outcome-textstate" / "test-workspaces"
+        work.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(prefix="relist-", dir=work)
+        self.addCleanup(self.temp.cleanup)
+        self.project = Path(self.temp.name) / "project"
+        self.project.mkdir(mode=0o700)
+        self.processing = self.project / "processing-v1"
+        self.processing.mkdir(mode=0o700)
+        self.database = self.processing / "ledger.sqlite"
+        store.initialize(self.database)
+        self.evidence = self.processing / "artifacts" / "evidence"
+        self.evidence.parent.mkdir(mode=0o700)
+        self.adapter = ExtractionLedgerAdapter(database=self.database, evidence_root=self.evidence)
+        self.serial = 0
+        with store.ledger(self.database) as con:
+            con.execute("INSERT INTO runs VALUES('fixture','fixture','2041-01-01',NULL,'fixture',NULL,NULL,NULL,'fixture','{}')")
+            con.execute("INSERT INTO agencies VALUES(?,?,NULL,NULL)", ("ag1", "Ag1"))
+            con.commit()
+
+    def pdf(self, **extra):
+        digest, _ = self.document(["Synthetic page one"], "ag1", **extra)
+        return digest
+
+    def state(self, run, digests=()):
+        """Write this run's extract list and text state; -> {sha256: state}."""
+        write_extract_list(self.project, run, digests)
+        report = ts.write_run_textstate(self.project, run)
+        self.assertEqual(report, json.loads((self.project / "run-outputs" / run / "text-state.json").read_text()))
+        return {r["sha256"]: r["state"] for r in report["records"]}
+
+    def test_reviewed_pdf_is_text_reviewed_in_a_run_that_extracts_nothing_new(self):
+        digest = self.pdf()
+        finish_extract(self.database, digest)
+        self.assertEqual(self.state("r1", [digest]), {digest: "ocr_unreviewed"})
+        self.assertEqual(mark_ocr(self.project, digest, "confirmed"), 0)
+        self.assertEqual(self.state("r2"), {digest: "text_reviewed"})
+
+    def test_unreviewed_or_rejected_pdf_is_never_text_reviewed(self):
+        for decision, expected in ((None, "ocr_unreviewed"), ("rejected", "could_not_be_read")):
+            with self.subTest(decision=decision):
+                digest = self.pdf()
+                finish_extract(self.database, digest)
+                run = f"r-{decision}"
+                self.assertEqual(self.state(run + "-1", [digest])[digest], "ocr_unreviewed")
+                if decision:
+                    self.assertEqual(mark_ocr(self.project, digest, decision), 0)
+                self.assertEqual(self.state(run + "-2")[digest], expected)
+                self.assertEqual(self.state(run + "-3", [digest])[digest], expected)  # relisted: the same answer
+
+    def test_record_extracted_two_runs_ago_and_reviewed_since_is_text_reviewed_now(self):
+        digest = self.pdf()
+        finish_extract(self.database, digest)
+        self.assertEqual(self.state("r1", [digest])[digest], "ocr_unreviewed")
+        self.assertEqual(self.state("r2")[digest], "ocr_unreviewed")
+        self.assertEqual(mark_ocr(self.project, digest, "confirmed"), 0)
+        self.assertEqual(self.state("r3")[digest], "text_reviewed")
+        # The earlier runs keep what they said then.
+        old = json.loads((self.project / "run-outputs" / "r1" / "text-state.json").read_text())
+        self.assertEqual([r["state"] for r in old["records"]], ["ocr_unreviewed"])
+
+    def test_record_extracted_before_this_change_is_covered_with_no_list_entry_ever(self):
+        digest = self.pdf()
+        finish_extract(self.database, digest)
+        self.assertEqual(mark_ocr(self.project, digest, "confirmed"), 0)
+        self.assertEqual(self.state("r1"), {digest: "text_reviewed"})
+        report = json.loads((self.project / "run-outputs" / "r1" / "text-state.json").read_text())
+        self.assertEqual(report["counts"]["text_reviewed"], 1)
+
+    def test_only_received_records_with_a_done_extract_are_added(self):
+        done = self.pdf()
+        finish_extract(self.database, done)
+        waiting = self.pdf()  # extract still pending: this run's extract owns it
+        outside = self.pdf(scope="out_of_scope")
+        finish_extract(self.database, outside)
+        self.assertEqual(mark_ocr(self.project, done, "confirmed"), 0)
+        self.assertEqual(self.state("r1"), {done: "text_reviewed"})
+        self.assertNotIn(waiting, self.state("r2"))
+        self.assertNotIn(outside, self.state("r3"))
+
+    def test_a_listed_record_is_not_listed_twice_and_keeps_its_listed_outcome(self):
+        digest = self.pdf()
+        finish_extract(self.database, digest)
+        write_extract_list(self.project, "r1", [])
+        path = self.processing / "runs" / "extract-r1.json"
+        data = json.loads(path.read_text())
+        data["documents"] = [{"original_sha256": digest, "form": "pdf", "outcome": "CORRUPT_DOCUMENT"}]
+        path.write_text(json.dumps(data))
+        report = ts.write_run_textstate(self.project, "r1")
+        self.assertEqual([(r["sha256"], r["state"]) for r in report["records"]], [(digest, "could_not_be_read")])
+
+    def test_run_with_no_received_records_writes_an_empty_valid_text_state(self):
+        self.assertEqual(self.state("r1"), {})
+        directory = self.project / "run-outputs" / "r1"
+        report = json.loads((directory / "text-state.json").read_text())
+        self.assertEqual((report["schema"], report["run_id"], report["records"], set(report["counts"].values())),
+                         ("records-text-state-v1", "r1", [], {0}))
+        self.assertEqual((directory / "text-state.md").read_text(), ts.markdown(report))
+
+    def test_a_broken_review_chain_still_writes_nothing(self):
+        digest = self.pdf()
+        finish_extract(self.database, digest)
+        self.assertEqual(mark_ocr(self.project, digest, "confirmed"), 0)
+        reviews = self.project / "ocr-review-v1" / "reviews.jsonl"
+        reviews.write_bytes(reviews.read_bytes().replace(b'"prev_line_sha256":null', b'"prev_line_sha256":"' + b"5" * 64 + b'"'))
+        write_extract_list(self.project, "r1", [])
+        with self.assertRaises(OSError):
+            ts.write_run_textstate(self.project, "r1")
+        self.assertFalse((self.project / "run-outputs" / "r1").exists())
 
 
 if __name__ == "__main__":
