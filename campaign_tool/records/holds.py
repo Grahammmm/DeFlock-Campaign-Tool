@@ -66,7 +66,11 @@ def _alert_hold(snapshot, subject):
 
 
 def _run_list(processing, run_id):
-    """``{sha256: (outcome, detail_code)}`` from the run's private outcome list, or None."""
+    """``{sha256: (outcome, detail_code, internal)}`` from the run's private outcome list, or None.
+
+    ``internal`` is an EXTRACT_ERROR row's validated ``{type, where}`` (``extraction_failures.internal_code``),
+    else None: the only name an argument-less error has."""
+    from .extraction_failures import internal_code
     path = Path(processing) / "runs" / f"extract-{ne.safe_run_name(run_id)}.json"
     try:
         body = json.loads(path.read_text(encoding="utf-8"))
@@ -77,7 +81,8 @@ def _run_list(processing, run_id):
             subject, outcome = doc["original_sha256"], doc["outcome"]
             if HEX64.fullmatch(subject) and outcome in ne.OUTCOMES:
                 codes = doc.get("issue_codes") or ([doc["refusal_code"]] if "refusal_code" in doc else [])
-                listed[subject] = (outcome, ",".join(sorted({_code(c) for c in codes})) or None)
+                listed[subject] = (outcome, ",".join(sorted({_code(c) for c in codes})) or None,
+                                   internal_code(doc["internal"]) if "internal" in doc else None)
         return listed
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
@@ -114,6 +119,8 @@ def collect(processing, listed):
                     run = listed.get(subject) if listed else None
                     if run and not holds and run[0] != ne.EXTRACTED:
                         item.update(code=run[0], detail_code=run[1])  # what the latest run counted
+                        if run[2]:
+                            item["internal"] = run[2]
                     elif outcome is not None:
                         item.update(code=outcome, detail_code=ne.held_refusal_detail(row["key"])["refusal_code"]
                                     if outcome == ne.NOT_ACCEPTED else
@@ -172,7 +179,7 @@ def build(project, report_path=None, code=None):
     listed = _run_list(processing, run_id) if run_id else None
     items = collect(processing, listed)
     counts = dict(Counter(item["code"] for item in items))
-    tally = Counter(outcome for outcome, _ in (listed or {}).values())
+    tally = Counter(run[0] for run in (listed or {}).values())
     needs = report[1] if report else None if listed is None else {("extract", c): tally[o] for o, c, _ in EXTRACT_NEEDS}
     source = "report" if report else "run_list" if needs is not None else None
     mismatches, gaps = compare(counts, needs, EXTRACT_NEEDS) if needs is not None else ([], {})
@@ -205,11 +212,13 @@ def _age_days(stamp, now):
 
 def render(doc, now=None):
     now = now or datetime.now(timezone.utc)
-    lines = ["sha256_prefix code attempts age_days last_run detail_code preserved disposition"]
+    lines = ["sha256_prefix code attempts age_days last_run detail_code preserved disposition internal"]
     for i in doc["items"]:
+        internal = i.get("internal")
         lines.append(" ".join(str(v) for v in (
             i["sha256_prefix"], i["code"], i["attempts"], _age_days(i["first_run"], now), i["last_run"] or "-",
-            i["detail_code"] or "-", "yes" if i["preserved"] else "no", i["disposition"])))
+            i["detail_code"] or "-", "yes" if i["preserved"] else "no", i["disposition"],
+            f"{internal['type']}@{internal['where']}" if internal else "-")))
     lines.append("counts " + (" ".join(f"{c}={n}" for c, n in doc["counts"].items()) or "none"))
     return lines + findings(doc) + [doc["note"]]
 
