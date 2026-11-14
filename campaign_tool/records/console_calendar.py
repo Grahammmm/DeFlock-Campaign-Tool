@@ -232,7 +232,7 @@ def build(model, today, horizon_days=90, since=None):
             if r.get("closed"):
                 continue
             basis = BASIS.get(clock.get("basis"))
-            if basis is None or not clock.get("due"):
+            if basis is None or cb._day(clock.get("due")) is None:
                 no_clock += clock.get("state") != "determined"
             elif clock.get("state") != "determined":
                 for name, key, kind, label in (

@@ -384,7 +384,14 @@ class PhoneJourney(Journal):
         page = self.phone.text()
         self.assertIn("Tie this message to a request", page)
         before = self.entries()
-        self.phone.tap(radio_choice("req-b"))
+        labels = self.phone.js("Array.from(document.querySelectorAll('input[name=choice]'), input => {"
+                               "const rect = input.closest('label').getBoundingClientRect();"
+                               "return {height: rect.height, width: rect.width};})")
+        self.assertEqual(len(labels), 2)
+        for rect in labels:
+            self.assertGreaterEqual(rect['height'], 44, 'request choice label is too short to tap')
+            self.assertGreaterEqual(rect['width'], 44, 'request choice label is too narrow to tap')
+        self.phone.tap("(%s).closest('label')" % radio_choice("req-b"))
         self.assertTrue(self.phone.js("(%s).checked" % radio_choice("req-b")), "the tap did not choose the request")
         self.phone.type_into(by_label("Detached SSH signature"), SIGNATURE)
         self.phone.tap(submit_of("/approvals/approve"), settle=True)

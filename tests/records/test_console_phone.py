@@ -18,6 +18,7 @@ class PhoneLayout(unittest.TestCase):
         self.assertIn("main a", css)
         self.assertRegex(css, r"main a[^}]*min-height:44px")  # links in the page body, not only the menu
         self.assertRegex(css, r"summary\{min-height:44px")
+        self.assertRegex(css, r"\.request-choice\{[^}]*min-height:44px")
         self.assertIn("main table{display:block;overflow-x:auto", css)  # a wide table scrolls itself, not the page
         self.assertIn("th,td{overflow-wrap:break-word}", css)  # columns are not squeezed to one letter
         self.assertIn("flex-wrap:wrap", css)  # the menu is a few rows, not seven full-width lines

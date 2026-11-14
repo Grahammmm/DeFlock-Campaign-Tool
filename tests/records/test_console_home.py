@@ -359,6 +359,23 @@ class Week(unittest.TestCase):
         cal.build(self.project, [])
         self.assertIn('Nothing due in the next 7 days.', home.render_home(self.model(), ""))
 
+    def test_week_warns_when_open_request_has_no_parseable_due_date(self):
+        for due, closed, state, expected in (
+                ('not-a-date', False, 'running', 1),
+                ('', False, 'running', 1),
+                ('2026-12-01', False, 'running', 0),
+                ('not-a-date', True, 'running', 0),
+                ('not-a-date', False, 'determined', 0)):
+            with self.subTest(due=due, closed=closed, state=state):
+                cal.build(self.project, [cal.row('alpha-pd', 'R-invalid',
+                    cal.clock(due=due, base_due=None, extended_due=None, state=state),
+                    status='closed' if closed else 'open')])
+                model = self.model()
+                self.assertEqual(model['calendar']['no_clock'], expected)
+                page = home.render_home(model, '')
+                self.assertEqual('1 open request has no usable due date' in page, bool(expected))
+                self.assertEqual('Nothing due in the next 7 days.' in page, not expected)
+
     def test_week_cap_and_order(self):
         cal.build(self.project, [cal.row('alpha-pd', 'R-%02d' % n, cal.clock(due='2026-11-08',
             base_due='2026-11-08', extended_due=None)) for n in range(25)], links=[cal.link('2026-11-08')])
