@@ -3,6 +3,7 @@ import errno
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import types
@@ -317,6 +318,76 @@ class Interrupted(Apply):
         receipts.write_text(json.dumps({"entry_id": "x", "outcome": "INTENT", "at": "t"}) + "\n")
         with self.assertRaises(aq.ApprovalQueueError):
             console_apply.ledger(self.live)
+
+
+class StoreFaults(Apply):
+    """An unreadable store says nothing about the decision: the entry is deferred (no receipt), never a final refusal."""
+
+    def run_apply(self, project):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = console_apply.main(["--project", str(project), "--from-journal", str(self.j / console_journal.FILE)])
+        return code, [line.split(" ", 3)[3] for line in out.getvalue().splitlines()], err.getvalue()
+
+    def entry(self, pid, route, action, target, revision, value, actor="operator"):
+        pin = types.SimpleNamespace(source_project_id=pid, run_id=RUN, name="x")
+        return console_journal.append(str(self.j), pin, actor, route, action, target, revision, value)
+
+    def test_a_moved_project_defers_its_queue_decisions_and_applies_them_once_readable(self):
+        self.make_export()
+        moved = self.tmp / "moved"
+        shutil.copytree(self.live, moved, symlinks=True)  # its approvals still name the old path's project id
+        new_pid = aq._project_id(moved)
+        self.assertNotEqual(new_pid, self.pid)
+        with self.assertRaises(aq.ApprovalQueueError) as raised:
+            aq.load_queue(moved)
+        self.assertEqual(raised.exception.code, "queue_invalid")
+        ident = self.entry(new_pid, "/approvals/reject", "reject", self.pending_id, 0, "not ours")
+        queue = moved / "approvals" / "queue.jsonl"
+        before = tree_state(moved)
+        for _ in range(2):  # not burned: the next pass is no ALREADY
+            code, results, err = self.run_apply(moved)
+            self.assertEqual((code, results), (0, ["DEFERRED"]))
+            self.assertIn("deferred (store unreadable: queue_invalid)", err)
+            self.assertEqual(tree_state(moved), before)  # no receipt, not even a write-ahead line
+        self.assertFalse((moved / "approvals" / console_apply.FILE).exists())
+        queue.write_bytes(queue.read_bytes().replace(self.pid.encode(), new_pid.encode()))  # the store is readable again
+        self.assertEqual(self.run_apply(moved), (0, ["APPLIED"], ""))
+        self.assertEqual(console_apply.receipts(moved), {ident: "APPLIED"})
+        self.assertEqual(next(r for r in aq.load_queue(moved) if r["id"] == self.pending_id)["status"], "rejected")
+        self.assertEqual(self.run_apply(moved), (0, ["ALREADY"], ""))
+
+    def test_a_damaged_packet_or_public_updates_journal_defers_only_its_own_entries(self):
+        pu.init(self.live)
+        cand = candidate()
+        pu.propose(self.live, [cand])
+        self.make_export()
+        self.entry(self.pid, "/approvals/reject", "reject", self.pending_id, 0, "no")
+        packet = self.entry(self.pid, "/packets/reject", "packet_reject", self.approved_packet,
+                            int(self.packet_revision(self.approved_packet)), "no")
+        retract = self.entry(self.pid, "/public-updates/retract", "retract", cand["id"], 0, "undo")
+        files = {name: self.live / name for name in (pp.JOURNAL, pu.JOURNAL)}
+        good = {name: path.read_bytes() for name, path in files.items()}
+        for path in files.values():
+            path.write_bytes(path.read_bytes() + b"torn")
+        code, results, err = self.run_apply(self.live)
+        self.assertEqual((code, results), (0, ["APPLIED", "DEFERRED", "DEFERRED"]))  # the queue itself is readable
+        self.assertEqual(err.count("deferred (store unreadable: journal_invalid)"), 2)
+        self.assertEqual(set(console_apply.receipts(self.live).values()), {"APPLIED"})
+        self.assertNotIn(packet, console_apply.receipts(self.live))
+        self.assertNotIn(retract, console_apply.receipts(self.live))
+        for name, path in files.items():
+            path.write_bytes(good[name])
+        self.assertEqual(self.run_apply(self.live), (0, ["ALREADY", "APPLIED", "APPLIED"], ""))
+
+    def test_per_entry_refusals_stay_final(self):
+        self.make_export()
+        self.up()
+        self.decide("/approvals/edit", id=self.pending_id, body="mine", expected_revision="0")
+        aq.edit(self.live, self.pending_id, "other", "theirs", expected_revision=0)
+        self.assertEqual(self.run_apply(self.live), (0, ["STALE_REVISION"], ""))
+        self.assertEqual(self.run_apply(self.live), (0, ["ALREADY"], ""))
+        self.assertEqual(set(console_apply.STORE_FAULTS) & set(console_apply.CODES), set())
 
 
 class Registered(Apply):
