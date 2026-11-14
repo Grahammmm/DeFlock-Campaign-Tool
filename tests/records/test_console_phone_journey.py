@@ -15,7 +15,8 @@ browser the tests are skipped, unless DEFLOCK_REQUIRE_BROWSER=1 makes that a fai
 The approval signature typed here is placeholder text: the journal never verifies a signature (the next records run
 does, see console_journal), so nothing here proves a signature check.
 
-KNOWN DEFECT (ORIGIN_DEFECT), found by this test: a real browser's decision POST is refused. See the last test.
+Nothing is intercepted or rewritten: every request is the browser's own, so the console's Origin check sees
+exactly what a phone sends.
 """
 import base64
 import json
@@ -27,13 +28,11 @@ import subprocess
 import tempfile
 import time
 import unittest
-import urllib.parse
 import urllib.request
 from pathlib import Path
-from unittest import mock
 
 from campaign_tool.records import approval_queue as aq
-from campaign_tool.records import console_journal, console_origin
+from campaign_tool.records import console_journal
 from campaign_tool.records.outcomes import unmatched
 from tests.records.test_console_export import tree_state
 from tests.records.test_console_journal import Journal
@@ -126,8 +125,7 @@ class WebSocket:
 class Phone:
     """One headless Chrome with one tab sized and touch-emulated as a 390 px phone."""
 
-    def __init__(self, binary, *, mend_origin):
-        self.nulled = 0  # POSTs the browser sent with "Origin: null" (see ORIGIN_DEFECT)
+    def __init__(self, binary):
         self.profile = tempfile.mkdtemp(prefix="deflock-phone-")
         self.process = subprocess.Popen(
             [binary, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run",
@@ -146,8 +144,6 @@ class Phone:
             self.call("Runtime.enable")
             self.call("Emulation.setDeviceMetricsOverride", width=WIDTH, height=HEIGHT, deviceScaleFactor=3, mobile=True)
             self.call("Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=1)
-            if mend_origin:
-                self.call("Fetch.enable", patterns=[{"urlPattern": "*", "requestStage": "Request"}])
         except BaseException:
             self.close()
             raise
@@ -196,22 +192,8 @@ class Phone:
                 if "error" in message:
                     raise CdpError("%s: %s" % (method, message["error"]))
                 return message["result"]
-            if message.get("method") == "Fetch.requestPaused":
-                self._release(message["params"])
-            elif "method" in message:
+            if "method" in message:
                 self.events.append(message["method"])
-
-    def _release(self, paused):
-        """Let every request go on. Only a form POST that carries `Origin: null` gets its Origin replaced with the
-        page's own origin, which is what the console's Origin check expects (ORIGIN_DEFECT); nothing else changes."""
-        request = paused["request"]
-        headers = dict(request["headers"])
-        if request["method"] == "POST" and headers.get("Origin") == "null":
-            self.nulled += 1
-            parts = urllib.parse.urlsplit(request["url"])
-            headers["Origin"] = "%s://%s" % (parts.scheme, parts.netloc)
-        self.ws.send(json.dumps({"id": self._next_id(), "method": "Fetch.continueRequest", "params": {
-            "requestId": paused["requestId"], "headers": [{"name": k, "value": v} for k, v in headers.items()]}}))
 
     def _next_id(self):
         self.counter += 1
@@ -298,8 +280,6 @@ def link_to(path):
 class PhoneJourney(Journal):
     """Synthetic export with three pending drafts and one received message to tie, served in journal mode."""
 
-    mend_origin = True  # ORIGIN_DEFECT: remove this (and Phone._release) once the console accepts a real browser's POST
-
     def setUp(self):
         super().setUp()
         binary = find_browser()
@@ -315,9 +295,8 @@ class PhoneJourney(Journal):
         self.base = "http://127.0.0.1:%d" % self.server.server_port
         # Registered after the server's own cleanup, so it runs first: the browser's idle keep-alive connections
         # must be gone before the server is closed or closing waits for them.
-        self.phone = Phone(binary, mend_origin=self.mend_origin)
+        self.phone = Phone(binary)
         self.addCleanup(self.phone.close)
-        self.binary = binary
 
     def draft(self, n, body):
         aq.add_draft(self.live, item_id="%064x" % n, kind="reply-extension", agency_id="caltrans", request_id="req-%d" % n,
@@ -426,34 +405,6 @@ class PhoneJourney(Journal):
         self.assertNotIn("choice", entry)
         self.assertIn("pending apply: approve", self.phone.text())
         self.fits("after approve")
-        self.nothing_else_changed()
-
-    def test_known_defect_a_browser_post_carries_origin_null_and_is_refused(self):
-        """ORIGIN_DEFECT. Every response carries `Referrer-Policy: no-referrer`; with that policy a browser sends
-        `Origin: null` on a same-origin form POST, and the console accepts only its own exact origin. So a decision
-        made in a real browser is refused (403, "Refused") and nothing reaches the journal. The four tests above
-        replace that one header, in the browser, so the rest of each journey can be tested. When the console is fixed
-        (for example `Referrer-Policy: same-origin`) this test fails on purpose: then delete it, `mend_origin` and
-        `Phone._release`, and the journeys run on the browser's own request."""
-        plain = Phone(self.binary, mend_origin=False)
-        self.addCleanup(plain.close)
-        seen = []
-        real = console_origin.request_ok
-
-        def spy(handler, post):
-            if post:
-                seen.append(handler.headers.get("Origin"))
-            return real(handler, post)
-
-        with mock.patch.object(console_origin, "request_ok", spy):
-            plain.open(self.base + "/review?id=" + self.reject_id)
-            plain.type_into(by_label("Rejection reason"), "Not our request")
-            plain.tap(submit_of("/approvals/reject"), settle=True)
-        if self.entries():
-            self.fail("the console now accepts a plain browser POST: remove ORIGIN_DEFECT (mend_origin, "
-                      "Phone._release and this test)")
-        self.assertEqual(seen, ["null"])
-        self.assertIn("Refused", plain.text())
         self.nothing_else_changed()
 
 
