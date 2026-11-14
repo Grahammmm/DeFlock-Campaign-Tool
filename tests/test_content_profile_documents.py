@@ -18,10 +18,35 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from campaign_tool import cli, content_profile  # noqa: E402
+from campaign_tool import cli, content, content_profile  # noqa: E402
 from campaign_tool.content import load_agencies  # noqa: E402
 
 TODAY = date.today()
+
+
+class _FrozenDate(date):
+    """MAIN-RED: pin the product's clock to TODAY so a UTC-midnight rollover mid-run cannot move "today"."""
+
+    @classmethod
+    def today(cls):
+        return TODAY
+
+
+_CLOCK_PATCHES = []
+
+
+def setUpModule():
+    for module in (content, content_profile):
+        patch = mock.patch.object(module, "date", _FrozenDate)
+        patch.start()
+        _CLOCK_PATCHES.append(patch)
+
+
+def tearDownModule():
+    while _CLOCK_PATCHES:
+        _CLOCK_PATCHES.pop().stop()
+
+
 A, B = "ca-alpha-pd", "ca-beta-so"
 URL_A, URL_B = "https://example.invalid/alpha/policy-a.pdf", "https://example.invalid/alpha/policy-b.pdf"
 DEAL_A, DEAL_B = "https://example.invalid/alpha/agreement-a.pdf", "https://example.invalid/alpha/agreement-b.pdf"
