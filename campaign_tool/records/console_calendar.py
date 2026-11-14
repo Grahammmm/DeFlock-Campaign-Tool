@@ -235,9 +235,12 @@ def build(model, today, horizon_days=90, since=None):
             if basis is None or cb._day(clock.get("due")) is None:
                 no_clock += clock.get("state") != "determined"
             elif clock.get("state") != "determined":
-                for name, key, kind, label in (
-                        ("determination_due", "base_due", "statutory_due", "statutory determination due"),
-                        ("extension_limit", "extended_due", "extension_limit", "latest date if the 14-day extension applies")):
+                dates = (("determination_due", "base_due", "statutory_due", "statutory determination due"),
+                         ("extension_limit", "extended_due", "extension_limit", "latest date if the 14-day extension applies"))
+                if not any(cb._day(clock.get(key)) for _, key, _, _ in dates):
+                    # neither computed date is on the clock, but ``due`` is valid: show it rather than drop the request
+                    dates = (("determination_due", "due", "statutory_due", "due date (base and extension dates not recorded)"),)
+                for name, key, kind, label in dates:
                     computed, source, start = cb.computed_clock(model, r, name, clock.get(key))
                     add(cb._day(clock.get(key)), kind, k, n, req, label + " (" + start + ")", computed, source)
             for e in r["events"]:
