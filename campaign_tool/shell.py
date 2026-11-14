@@ -46,7 +46,12 @@ def problems(payload):
         found += keyset(part, keys, name + ".") if name in payload else []
         for key in sorted(keys & set(part)):
             if isinstance(part[key], str):
-                size += len(part[key].encode("utf-8"))
+                try:
+                    size += len(part[key].encode("utf-8"))
+                except UnicodeEncodeError:
+                    # Name the field only (never the value or the codec detail) and keep going: the
+                    # slot is already fatal, so it adds no bytes, but the others still get checked.
+                    found.append(f"{name}.{key}: must be UTF-8 encodable")
             else:
                 found.append(f"{name}.{key}: must be a string")
     if size > MAX_INPUT:
