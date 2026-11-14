@@ -69,13 +69,24 @@ def _unique_pairs(pairs):
     return out
 
 
+def _close_after_failure(fd):
+    """Close ``fd`` once while a primary exception is propagating; a secondary OSError from the close is dropped.
+
+    RF1036-2: the caller re-raises the original failure, so a close error never replaces it. The fd is not retried."""
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
 def _read_receipts(path, limit=MAX_JSON_BYTES):
     """Parse the receipt store through ONE no-follow, nonblocking descriptor, reading at most ``limit + 1`` bytes.
 
     The descriptor must be a regular file no larger than ``limit`` (checked before any payload read); a file that
     grows afterwards is refused once more than ``limit`` bytes arrive, before decoding or parsing. ``limit`` is
     captured from content.MAX_JSON_BYTES at definition, so patching this module's constant (the writer check)
-    does not shrink the reader. The descriptor is closed on every path."""
+    does not shrink the reader. The descriptor gets exactly one close attempt on every path: an admission, read or
+    overflow failure survives a failing close, while a close-only failure still propagates (and nothing is parsed)."""
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(fd)
@@ -91,10 +102,12 @@ def _read_receipts(path, limit=MAX_JSON_BYTES):
             chunks.append(chunk)
             budget -= len(chunk)
         data = b"".join(chunks)
-    finally:
-        os.close(fd)
-    if len(data) > limit:
-        raise ContentError(f"{LABEL}: file too large")
+        if len(data) > limit:
+            raise ContentError(f"{LABEL}: file too large")
+    except BaseException:
+        _close_after_failure(fd)
+        raise
+    os.close(fd)
     try:
         return json.loads(data.decode("utf-8"), object_pairs_hook=_unique_pairs)
     except _RepeatedKey:
@@ -138,8 +151,10 @@ def _letter(path):
             if size > MAX_LETTER_BYTES:
                 raise MeetingCommentError("--file: must be at most 5 MiB")
             digest.update(chunk)
-    finally:
-        os.close(fd)
+    except BaseException:
+        _close_after_failure(fd)
+        raise
+    os.close(fd)
     return digest.hexdigest(), size
 
 

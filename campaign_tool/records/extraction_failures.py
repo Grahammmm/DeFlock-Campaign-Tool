@@ -39,6 +39,9 @@ ACCEPT_PREFIX = "accept_status_"
 REFUSAL_SOURCES = ("binding_error", "value_error", "exception", "accept_status", "form_resolution", "held_alert")
 DISPOSITIONS = ("retry", "deferred", "hold")
 MAX_ISSUE_CODES = 16
+# ``internal`` of an unexpected per-document error: run_stages.internal_error's class and function name.
+INTERNAL_TYPE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+INTERNAL_WHERE = re.compile(r"campaign_tool(?:\.[A-Za-z0-9_<>]{1,64}){1,12}|unknown")
 MAX_PENDING_PAGES = 1000
 _NO_DETAIL_REASONS = {"PRESERVE_PENDING": "preserve_pending", "DEFERRED_RUN_BUDGET": "deferred_run_budget",
                       "PARSER_MISSING": "parser_missing", "AWAITING_OCR": "ocr_runtime_unconfigured",
@@ -54,6 +57,19 @@ def fixed_code(value):
     if value.startswith(ACCEPT_PREFIX) and value[len(ACCEPT_PREFIX):] in ACCEPT_STATUSES:
         return value
     return UNLISTED
+
+
+def internal_code(value):
+    """An EXTRACT_ERROR row's ``internal`` ({type, where} from ``run_stages.internal_error``), validated.
+
+    ``type`` is an ASCII identifier, ``where`` a dotted ``campaign_tool`` function or ``unknown``;
+    anything else becomes ``unlisted``. No message, argument, path or line is ever copied.
+    """
+    value = value if isinstance(value, dict) else {}
+    kind, where = value.get("type"), value.get("where")
+    return {"type": kind if isinstance(kind, str) and INTERNAL_TYPE.fullmatch(kind) else UNLISTED,
+            "where": where if isinstance(where, str) and len(where) <= 160 and INTERNAL_WHERE.fullmatch(where)
+            else UNLISTED}
 
 
 def _count(value):
@@ -73,6 +89,8 @@ def _detail(row):
     issues = row.get("issue_codes")
     if isinstance(issues, list):
         detail["issue_codes"] = sorted({fixed_code(code) for code in issues[:MAX_ISSUE_CODES]})
+    if "internal" in row:
+        detail["internal"] = internal_code(row["internal"])
     done = _count(row.get("ocr_pages_done"))
     pending = row.get("ocr_pages_pending")
     if done is not None and isinstance(pending, list):

@@ -44,6 +44,7 @@ The extract stage's own set: an in-scope original whose `extract` stage is `pend
 | `detail_code` | `EXTRACT_NOT_ACCEPTED`: the held refusal code (`held_refusal_detail`); other alerts: their issue codes; `PRESERVE_PENDING`: `preserve_<stage status>` |
 | `preserved` | the original's `preserve` stage is done |
 | `disposition` | `retryable` (EXTRACT_ERROR, EXTRACT_TIMEOUT, AWAITING_OCR, DEFERRED_RUN_BUDGET, PARSER_MISSING), `custodian` (PRESERVE_PENDING: the Flock coordinator preserves originals), `review_required` (every other code) |
+| `internal` | only when the code comes from the run outcome list and that row is an unexpected `EXTRACT_ERROR`: `{type, where}`, the exception class and innermost `campaign_tool` function (`run_stages.internal_error`; validated by `extraction_failures.internal_code`, else `unlisted`). It names an error that has no fixed code (`container_host.Rejected()`). A held error (attempts ≥ 3) has no run detail, so its cause is in the failure manifest `runs/extract-failures-<run>.json` of the runs that counted it. Text table: last column `type@where` or `-` |
 
 `counts` always covers every listed document; `--code` filters `items` only. The text table prints the
 same items with `age_days` (from `first_run`).
