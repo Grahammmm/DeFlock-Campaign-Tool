@@ -504,7 +504,12 @@ runs `python3 -B -m campaign_tool.records pipeline-health --record-alerts` for
 the records root holding `ledger.sqlite`; absolute, required, so a `VALUES.json`
 without it fails closed with `no value for ['RECORDS_ROOT']`). The day, time and
 zone flags come from the same `TIMER_*` values as the run timer, so the check
-judges the schedule the run timer actually uses. The check is read-only apart
+judges the schedule the run timer actually uses. The unit also passes
+`--schedule-snapshot RUNTIME_DIR/SCHEDULED_TARGET/schedule-snapshot.json`, so
+the host does not need permission to traverse the container's records tree.
+`RECORDS_ROOT` remains required for compatibility; the snapshot-backed schedule
+check never opens it or falls back to it. Other health checks are unchanged.
+The check is read-only apart
 from one alert file per open problem (and a `.cleared` file once resolved) under
 `RUNTIME_DIR/TARGET/alerts`: no successful run, repeated failures, arrival backlog,
 stale mail poll, notify failure or a missed slot; and, when the values are
@@ -519,6 +524,51 @@ Attended install (operator, not run by this PR), after rendering to `DIR`:
     install -m 0600 DIR/records-health.service DIR/records-health.timer ~/.config/systemd/user/
     systemctl --user daemon-reload
     systemctl --user enable --now records-health.timer
+
+### Host-readable schedule evidence (DRESS-1 D2, option a)
+
+After a run that attempted work (exit 0 or 10–16), the wrapper projects metadata
+from its own target's validated host run reports, then validates and atomically
+installs the snapshot next to the host run report, mode 0600. No new privilege,
+Docker command, mount or container configuration is needed. Only the scheduled
+target exports, and test-mode reports are excluded. TEST evidence cannot satisfy
+LIVE's calendar. The deployed stage wrapper does not write the `stage-runner`
+ledger rows consumed by `records health`; using its real host reports avoids
+depending on that separate Pipeline's ledger history.
+
+The snapshot has only a schema code, generation timestamp, up to 200 runs'
+start/end timestamps and fixed status codes (`ok` to completed, `warn` to gaps,
+`fail` to failed).
+It contains no run identifiers, paths, record content or free-text summaries.
+The producer never opens the project or ledger. Failed/truncated exports preserve the previous
+snapshot and never change run exit status. Export shares the invocation deadline;
+if no time remains it is skipped. Re-render and install the wrapper as well as
+the health service at the next attended engine update. An engine update alone
+does not retrofit an old installed wrapper. No snapshot exists until the first
+subsequent run of the scheduled target has time to export it.
+
+The host recomputes calendar slots at its current clock, rather than trusting a
+saved health result. An old snapshot therefore detects the next missed slot
+(`stop missed_slot`) even when no further run occurs. Missing, unreadable,
+malformed or future-dated evidence gives `unknown schedule_unreadable`, never a
+false ok. Without `--schedule-snapshot`, direct CLI callers retain ledger-backed
+schedule assessment.
+
+Read-only operator proof after that next run: from the updated host engine
+checkout, use the same non-secret `RUNTIME_DIR`, `SCHEDULED_TARGET`,
+`RECORDS_ROOT`, `TIMER_DAYS`, `TIMER_TIMES` and `TIMER_TIMEZONE` shell values used
+for the attended render (set all calendar values explicitly):
+
+```sh
+python3 -B -m campaign_tool.records pipeline-health --runtime-dir "$RUNTIME_DIR" --target "$SCHEDULED_TARGET" --root "$RECORDS_ROOT" --schedule-snapshot "$RUNTIME_DIR/$SCHEDULED_TARGET/schedule-snapshot.json" --days "$TIMER_DAYS" --times "$TIMER_TIMES" --timezone "$TIMER_TIMEZONE" --json
+```
+
+Inspect the `checks` entry whose `check` is `schedule`: it must not be `unknown`
+once evidence of a run is available. Overall health may still be unknown for
+other unconfigured checks. This proof omits `--record-alerts`: it writes nothing,
+does not start a unit or a run, and must be executed by the operator, not a build
+worker. A deterministic synthetic proof is
+`python3 -B -W error::ResourceWarning -m unittest tests.records.test_schedule_snapshot`.
 
 ## Timer calendar
 

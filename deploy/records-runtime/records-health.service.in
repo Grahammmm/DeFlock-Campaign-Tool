@@ -11,7 +11,7 @@ UMask=0077
 # as a failed unit; the alert files are the record.
 Environment=PYTHONPATH=@ENGINE_DIR@
 # Daily mail: allow the 25h fall-back day plus grace, then warn/stop on missed polls.
-ExecStart=@HOST_PYTHON@ -B -m campaign_tool.records pipeline-health --runtime-dir @RUNTIME_DIR@ --target @SCHEDULED_TARGET@ --root @RECORDS_ROOT@ --mail-store @RUNTIME_DIR@ --mail-poll-warn-hours 26 --mail-poll-stop-hours 50 --days @HEALTH_DAYS@ --times @HEALTH_TIMES@ --timezone @HEALTH_TIMEZONE@ --record-alerts@HEALTH_EXTRA_ARGS@
+ExecStart=@HOST_PYTHON@ -B -m campaign_tool.records pipeline-health --runtime-dir @RUNTIME_DIR@ --target @SCHEDULED_TARGET@ --root @RECORDS_ROOT@ --schedule-snapshot @RUNTIME_DIR@/@SCHEDULED_TARGET@/schedule-snapshot.json --mail-store @RUNTIME_DIR@ --mail-poll-warn-hours 26 --mail-poll-stop-hours 50 --days @HEALTH_DAYS@ --times @HEALTH_TIMES@ --timezone @HEALTH_TIMEZONE@ --record-alerts@HEALTH_EXTRA_ARGS@
 TimeoutStartSec=2min
 StandardOutput=null
 StandardError=null

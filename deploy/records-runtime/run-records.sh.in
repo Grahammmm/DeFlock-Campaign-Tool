@@ -492,11 +492,33 @@ console_export_step() {
 }
 # CONSOLE-EXPORT-END
 
+# SCHEDULE-SNAPSHOT-BEGIN (host report metadata only; no project access)
+schedule_snapshot_step() {
+  [ "$TARGET" = "$SCHEDULED_TARGET" ] || return 0
+  ss_secs=$((INVOCATION_DEADLINE_USE - $(date +%s) - KILL_AFTER))
+  [ "$ss_secs" -le "$DOCKER_CMD_TIMEOUT" ] || ss_secs=$DOCKER_CMD_TIMEOUT
+  [ "$ss_secs" -gt 0 ] || return 0
+  # Import validates a complete bounded document before atomic replacement. A failed
+  # export cannot replace the previous evidence; the host still ages its slots.
+  if PYTHONPATH="$ENGINE_DIR" "$TIMEOUT" -k "$KILL_AFTER" "$ss_secs" "$HOST_PYTHON" -B \
+      -m campaign_tool.records.schedule_snapshot --reports "$TARGET_DIR/reports" </dev/null 9>&- |
+      PYTHONPATH="$ENGINE_DIR" "$TIMEOUT" -k "$KILL_AFTER" "$ss_secs" "$HOST_PYTHON" -B \
+      -m campaign_tool.records.schedule_snapshot --out "$TARGET_DIR/schedule-snapshot.json" 9>&-; then
+    log "schedule snapshot installed"
+  else
+    log "schedule snapshot FAILED; previous evidence kept; run status unchanged"
+  fi
+}
+# SCHEDULE-SNAPSHOT-END
+
 finish() {
   # $1 exit code
   RUN_EXIT=$1
   log "finished exit=$1"
   notify
+# SCHEDULE-SNAPSHOT-BEGIN
+  case "$1" in 0|1[0-6]) schedule_snapshot_step;; esac
+# SCHEDULE-SNAPSHOT-END
 # CONSOLE-EXPORT-BEGIN
   case "$1" in 0|1[0-6]) console_export_step;; esac
 # CONSOLE-EXPORT-END

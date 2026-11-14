@@ -1453,6 +1453,7 @@ class RendererTests(unittest.TestCase):
         self.assertEqual(shlex.split(starts[0][len("ExecStart="):]), [
             "/usr/bin/python3", "-B", "-m", "campaign_tool.records", "pipeline-health",
             "--runtime-dir", "/srv/runtime", "--target", "TEST", "--root", "/srv/records-root",
+            "--schedule-snapshot", "/srv/runtime/TEST/schedule-snapshot.json",
             "--mail-store", "/srv/runtime", "--mail-poll-warn-hours", "26", "--mail-poll-stop-hours", "50",
             "--days", "Mon..Fri", "--times", "07:00,15:00", "--timezone", "America/Los_Angeles",
             "--record-alerts"])
