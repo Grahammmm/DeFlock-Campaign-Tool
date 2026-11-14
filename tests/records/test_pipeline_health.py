@@ -334,6 +334,27 @@ class CliTests(Base):
         self.assertEqual((data["state"], data["alerts_written"]), ("stop", 1))
         self.assertEqual(os.listdir(self.target_dir / "alerts"), ["health-arrival_backlog-arrival_not_consumed.json"])
 
+    def test_cli_mail_poll_limits_preserve_defaults_and_accept_daily_cadence(self):
+        self.write_poll(NOW - timedelta(hours=7))
+        default = self.run_cli("--json")
+        self.assertEqual(default.returncode, 1, default.stderr)
+        self.assertEqual(self.check(json.loads(default.stdout), "mail_poll")["state"], "warn")
+        daily = self.run_cli("--json", "--mail-poll-warn-hours", "26", "--mail-poll-stop-hours", "50")
+        self.assertEqual(daily.returncode, 0, daily.stderr)
+        self.assertEqual(self.check(json.loads(daily.stdout), "mail_poll")["state"], "ok")
+
+    def test_cli_refuses_invalid_mail_poll_limits_before_alert_writes(self):
+        self.write_stamp(NOW - timedelta(minutes=40))
+        for warn, stop in (("0", "50"), ("-1", "50"), ("26", "0"), ("26", "-1"),
+                           ("26", "26"), ("50", "26"), ("1.5", "50")):
+            with self.subTest(warn=warn, stop=stop):
+                done = self.run_cli("--mail-poll-warn-hours", warn, "--mail-poll-stop-hours", stop,
+                                    "--record-alerts")
+                self.assertEqual(done.returncode, 2)
+                self.assertIn("--mail-poll-", done.stderr)
+                self.assertEqual(done.stdout, "")
+                self.assertEqual(os.listdir(self.target_dir / "alerts"), [])
+
     def test_cli_bad_target(self):
         for bad in ("..", ".", "a/b", "x" * 65, ""):
             done = self.run_cli(target=bad)

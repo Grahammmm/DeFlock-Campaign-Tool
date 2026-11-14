@@ -970,7 +970,7 @@ class RendererTests(unittest.TestCase):
 
     def test_suggested_values_render_weekday_twice_daily_pacific_slots(self):
         written = self.do_render()
-        self.assertEqual(sorted(written), ["records-arrival.path", "records-arrival.service",
+        self.assertEqual(sorted(written), ["mail-arrival-stamp.sh", "records-arrival.path", "records-arrival.service",
                                            "records-health.service", "records-health.timer",
                                            "records-run.service", "records-run.timer",
                                            "run-records.sh", "targets/TEST.json"])
@@ -1453,6 +1453,7 @@ class RendererTests(unittest.TestCase):
         self.assertEqual(shlex.split(starts[0][len("ExecStart="):]), [
             "/usr/bin/python3", "-B", "-m", "campaign_tool.records", "pipeline-health",
             "--runtime-dir", "/srv/runtime", "--target", "TEST", "--root", "/srv/records-root",
+            "--mail-store", "/srv/runtime", "--mail-poll-warn-hours", "26", "--mail-poll-stop-hours", "50",
             "--days", "Mon..Fri", "--times", "07:00,15:00", "--timezone", "America/Los_Angeles",
             "--record-alerts"])
         self.assertIn("Environment=PYTHONPATH=/srv/engine", service)
