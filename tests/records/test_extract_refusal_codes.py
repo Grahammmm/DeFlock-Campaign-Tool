@@ -1,10 +1,12 @@
 """Fixed-code diagnostics ported from Opus reference 1f2156df; synthetic only."""
 import json
+from pathlib import Path
 import re
 import sqlite3
+import tempfile
 import unittest
 from unittest import mock
-from campaign_tool.records import native_extract as ne, run_orchestrator
+from campaign_tool.records import container_host, native_extract as ne, run_orchestrator
 from campaign_tool.records.extraction_ledger import ExtractionBindingError
 from campaign_tool.records.intake.mail_wire import MailWireError
 from campaign_tool.records.run import Pipeline
@@ -62,8 +64,9 @@ class ExtractOneBranchTests(unittest.TestCase):
     def run_one(self, pipeline, form='pdf'):
         return ne.extract_one(pipeline, None, SUBJECT, form=form, timeout=120)
 
-    def assertDetail(self, detail, code, accept_status, source):
-        self.assertEqual(detail, {'refusal_code': code, 'accept_status': accept_status, 'refusal_source': source})
+    def assertDetail(self, detail, code, accept_status, source, internal=None):
+        expected = {'refusal_code': code, 'accept_status': accept_status, 'refusal_source': source}
+        self.assertEqual(detail, {**expected, 'internal': internal} if internal else expected)
         self.assertRegex(detail['refusal_code'], CODE)
 
     def test_binding_error_refusal_carries_its_code(self):
@@ -100,14 +103,42 @@ class ExtractOneBranchTests(unittest.TestCase):
         pipeline = FakePipeline(error=RuntimeError('boom /private/x'))
         outcome, _, _, _, detail = self.run_one(pipeline)
         self.assertEqual(outcome, ne.ERROR)
-        self.assertDetail(detail, 'unlisted', None, 'exception')
+        self.assertDetail(detail, 'unlisted', None, 'exception',
+                          {'type': 'RuntimeError', 'where': 'campaign_tool.records.native_extract.extract_one'})
+        self.assertNotIn('private', json.dumps(detail))
         self.assertEqual(pipeline.alerts, [f'extract:{SUBJECT}:extraction_stage_error'], 'retry counting stays on the unchanged key')
 
     def test_unexpected_error_with_a_code_string(self):
         pipeline = FakePipeline(error=KeyError('import_id'))
         outcome, _, _, _, detail = self.run_one(pipeline)
         self.assertEqual(outcome, ne.ERROR)
-        self.assertDetail(detail, 'import_id', None, 'exception')
+        self.assertDetail(detail, 'import_id', None, 'exception',
+                          {'type': 'KeyError', 'where': 'campaign_tool.records.native_extract.extract_one'})
+
+    def test_argument_less_error_is_named_by_type_and_innermost_function(self):
+        # BACKLOG-EXTRACT-1: container_host.Rejected() (PrivateDir's ancestor check) has no code string.
+        class RejectingPipeline(FakePipeline):
+            def stage_extract(self, subject, stage):
+                container_host.require(False)
+        pipeline = RejectingPipeline()
+        outcome, _, _, _, detail = self.run_one(pipeline)
+        self.assertEqual(outcome, ne.ERROR)
+        self.assertDetail(detail, 'unlisted', None, 'exception',
+                          {'type': 'Rejected', 'where': 'campaign_tool.records.container_host.require'})
+        self.assertEqual(pipeline.alerts, [f'extract:{SUBJECT}:extraction_stage_error'], 'alert key unchanged')
+
+    def test_refusals_carry_no_internal(self):
+        for error in (ExtractionBindingError('pdf_page_denominator_missing'), ValueError('x'),
+                      ExtractionBindingError('workbook_formula_cells_present')):
+            with self.subTest(error=type(error).__name__):
+                *_, detail = self.run_one(FakePipeline(error=error), form='xlsx' if 'workbook' in str(error) else 'pdf')
+                self.assertNotIn('internal', detail)
+
+    def test_a_failing_sanitizer_never_stops_the_document(self):
+        with mock.patch('campaign_tool.records.run_stages.internal_error', side_effect=RuntimeError('x')):
+            outcome, *_, detail = self.run_one(FakePipeline(error=RuntimeError('boom')))
+        self.assertEqual(outcome, ne.ERROR)
+        self.assertDetail(detail, 'boom', None, 'exception')
 
     def test_accept_status_fall_through_is_still_not_accepted_with_a_distinct_code(self):
         cases = (({'status': 'refused'}, 'refused', 'accept_status_refused'), ({'status': 'needs_review'}, 'needs_review', 'accept_status_needs_review'), ({}, 'missing', 'accept_status_missing'), ({'status': None}, 'missing', 'accept_status_missing'), ({'status': 'blocked', 'reason': 'policy_hold:x'}, 'blocked', 'accept_status_blocked'), ({'status': 'Bad Status /x'}, 'unlisted', 'unlisted'), ({'status': 3}, 'unlisted', 'unlisted'))
@@ -206,9 +237,33 @@ class ClassifyFormDiagnosticsTests(unittest.TestCase):
                 pipeline = self.FormPipeline(error)
                 diagnostics = {}
                 self.assertEqual(ne.classify_form(pipeline, SUBJECT, missing=[], diagnostics=diagnostics), (None, ne.ERROR))
-                self.assertEqual(diagnostics, {'refusal_code': code, 'accept_status': None, 'refusal_source': 'form_resolution'})
+                self.assertEqual(diagnostics, {'refusal_code': code, 'accept_status': None, 'refusal_source': 'form_resolution',
+                                               'internal': {'type': type(error).__name__,
+                                                            'where': 'campaign_tool.records.native_extract.classify_form'}})
+                self.assertNotIn('private', json.dumps(diagnostics))
                 self.assertEqual(pipeline.alerts, [f'extract:{SUBJECT}:extraction_stage_error'])
                 self.assertEqual(ne.classify_form(self.FormPipeline(error), SUBJECT, missing=[]), (None, ne.ERROR))
+
+    def test_private_dir_ancestor_refusal_is_named_rejected_in_container_host(self):
+        # BACKLOG-EXTRACT-1 live cause (t_a85b61fe): PrivateDir refuses a writable parent (here 0770,
+        # and any world-writable temp root above it) with an argument-less Rejected().
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp) / 'work'
+            (parent / 'receipts').mkdir(parents=True, mode=0o700)
+            parent.chmod(0o770)
+
+            class DropPipeline(FakePipeline):
+                def _original(self, subject):
+                    return {'storage_path': '/x'}
+
+                def _form(self, subject, original):
+                    container_host.PrivateDir(parent / 'receipts')
+
+            diagnostics = {}
+            self.assertEqual(ne.classify_form(DropPipeline(), SUBJECT, missing=[], diagnostics=diagnostics), (None, ne.ERROR))
+        self.assertEqual(diagnostics, {'refusal_code': 'unlisted', 'accept_status': None, 'refusal_source': 'form_resolution',
+                                       'internal': {'type': 'Rejected', 'where': 'campaign_tool.records.container_host.require'}})
+        self.assertNotIn(tmp, json.dumps(diagnostics))
 
 class AdditionalContractTests(unittest.TestCase):
     def test_codes_reject_newlines_and_other_non_codes(self):
@@ -328,6 +383,13 @@ class StageRefusalDiagnosticsTests(ExtractStageCase):
         self.assertNotIn('private', raw)
         self.assertEqual({(d['form'], d['refusal_code'], d['refusal_source']) for d in self.listing()}, {(None, 'unlisted', 'form_resolution')})
         self.assertNotIn('private', json.dumps(self.listing()))
+        # BACKLOG-EXTRACT-1: each row and the failure manifest name the error; the stage result does not.
+        internal = {'type': 'RuntimeError', 'where': 'campaign_tool.records.native_extract.classify_form'}
+        self.assertEqual([d['internal'] for d in self.listing()], [internal] * 2)
+        manifest = json.loads((self.processing / 'runs' / 'extract-failures-run-t11k.json').read_text())
+        self.assertEqual([(d['outcome'], d['internal']) for d in manifest['documents']], [('EXTRACT_ERROR', internal)] * 2)
+        self.assertNotIn('internal', parsed)
+        self.assertNotIn('RuntimeError', raw)
 
     def test_legacy_refused_alert_still_holds_under_candidate_d(self):
         con = sqlite3.connect(self.processing / 'ledger.sqlite')
