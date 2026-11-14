@@ -108,6 +108,20 @@ class ProjectionTests(unittest.TestCase):
         manifest = ef.build_manifest(body())
         self.assertEqual((manifest["documents_listed"], manifest["documents"], manifest["by_outcome"]), (0, [], {}))
 
+    def test_error_internal_is_validated_and_never_free_text(self):
+        # BACKLOG-EXTRACT-1: an argument-less error keeps reason unlisted but is named by type and function.
+        good = {"type": "Rejected", "where": "campaign_tool.records.container_host.require"}
+        doc = ef.build_manifest(body(row("EXTRACT_ERROR", refusal_code="unlisted", refusal_source="form_resolution",
+                                         internal=good)))["documents"][0]
+        self.assertEqual((doc["internal"], doc["reason_code"]), (good, "unlisted"))
+        self.assertEqual(ef.internal_code({"type": "X", "where": "unknown"}), {"type": "X", "where": "unknown"})
+        for bad in ({"type": "bad type /x", "where": "/home/user/x.py"}, {"type": "É", "where": "campaign_tool"},
+                    {"type": "X" * 65, "where": "campaign_tool." + "a" * 160}, {"where": "other.module.f"}, "Rejected", None):
+            with self.subTest(bad=bad):
+                doc = ef.build_manifest(body(row("EXTRACT_ERROR", internal=bad)))["documents"][0]
+                self.assertEqual(doc["internal"], {"type": "unlisted", "where": "unlisted"})
+        self.assertNotIn("internal", ef.build_manifest(body(row("EXTRACT_ERROR")))["documents"][0])
+
 
 class WriteTests(unittest.TestCase):
     def setUp(self):
