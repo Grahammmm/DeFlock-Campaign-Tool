@@ -101,7 +101,8 @@ class RecordsBackupCli(unittest.TestCase):
         self.assertEqual(sum(1 for p in self.project.rglob("*") if p.is_file()),
                          line["files"])
         self.assertTrue({"rebuildable", "process_state"} <= set(line["excluded"]))
-        self.assertEqual(self.lines, ["out_of_scope_legacy: files 0, bytes 0", "referenced_outside_set: 0"])
+        self.assertEqual(self.lines, ["out_of_scope_legacy: files 0, bytes 0", "referenced_outside_set: 0",
+                                      "absent_roles: none", "root_owner: caller"])
 
     def test_unknown_file_makes_profile_incomplete(self):
         parent = self.project / "processing-v1"
