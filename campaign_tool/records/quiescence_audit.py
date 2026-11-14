@@ -93,10 +93,23 @@ def _lock(runtime):
 
 
 def audit(project, runtime, units_file):
+    """Evidence for ``records backup``: ``roots`` names every root the backup reads (the project, then each declared
+    off-project store root that exists), and the open-file check covers each of them."""
+    from .recovery.records_profile import ProfileIncomplete, backup_roots
+    unsafe = False
+    try:
+        roots = list(backup_roots(project))
+    except ProfileIncomplete as error:  # a missing project keeps today's evidence; an unsafe declared root is refused
+        roots, unsafe = [project], error.reason == "extra_root_unsafe"
     checks, codes = {}, []
     checks["units"], found = _units(units_file)
     codes += found
-    checks["open_files"] = _open_files(project)
+    if unsafe:
+        codes.append("ROOTS_UNSAFE")
+    checks["open_files"] = {"count": 0, "proc_unreadable": 0}
+    for root in roots:
+        for key, value in _open_files(root).items():
+            checks["open_files"][key] += value
     if checks["open_files"]["count"]:
         codes.append("OPEN_FILE")
     if checks["open_files"]["proc_unreadable"]:
@@ -108,7 +121,7 @@ def audit(project, runtime, units_file):
     if checks["arrival_pending"]:
         codes.append("ARRIVAL_PENDING")
     checks["codes"] = codes
-    return {"schema": "records-quiescence-v1", "basis": "independent_all_writer_audit", "roots": [project],
+    return {"schema": "records-quiescence-v1", "basis": "independent_all_writer_audit", "roots": roots,
             "observed_utc": datetime.now(timezone.utc).isoformat(), "all_writers_stopped": not codes,
             "checks": checks, "auditor": "records quiescence-audit"}
 
