@@ -3,7 +3,7 @@
     "module": "campaign_tool.records.native_extract",
     "qualname": "classify_form",
     "top": "PIL",
-    "fingerprint": "2d7bd669c92619bf",
+    "fingerprint": "sha256:2d7bd669c92619bf",
     "when_missing": "classify_form returns PARSER_MISSING",
     "proof": "tests.records.test_native_extract.OutcomeContractTests.test_images_without_pillow_are_parser_missing_only_when_ocr_is_on"
   },
@@ -11,7 +11,7 @@
     "module": "campaign_tool.records.extraction_routes",
     "qualname": "_image",
     "top": "PIL",
-    "fingerprint": "0e1bf999a165ecdd",
+    "fingerprint": "sha256:0e1bf999a165ecdd",
     "when_missing": "bounded parse child decoder_unavailable_or_failed becomes CORRUPT_DOCUMENT",
     "proof": "tests.records.test_preswitch.ProofTests.test_image_child_missing_dependency"
   },
@@ -19,7 +19,7 @@
     "module": "campaign_tool.records.extraction_routes",
     "qualname": "image_pdf_wrapper",
     "top": "PIL",
-    "fingerprint": "85cd02919123bbaf",
+    "fingerprint": "sha256:85cd02919123bbaf",
     "when_missing": "bounded parse child decoder_unavailable_or_failed becomes CORRUPT_DOCUMENT",
     "proof": "tests.records.test_preswitch.ProofTests.test_image_child_missing_dependency"
   },
@@ -27,7 +27,7 @@
     "module": "campaign_tool.records.extraction_routes",
     "qualname": "_child",
     "top": "PIL",
-    "fingerprint": "48c6d4f92de22333",
+    "fingerprint": "sha256:48c6d4f92de22333",
     "when_missing": "bounded parse child decoder_unavailable_or_failed becomes CORRUPT_DOCUMENT",
     "proof": "tests.records.test_preswitch.ProofTests.test_image_child_missing_dependency"
   },
@@ -35,7 +35,7 @@
     "module": "campaign_tool.records.intake.native_msg",
     "qualname": "inventory",
     "top": "extract_msg",
-    "fingerprint": "fe764d450d8d83ab",
+    "fingerprint": "sha256:fe764d450d8d83ab",
     "when_missing": "NativeMSGError msg_decoder_unavailable; bounded parse becomes CORRUPT_DOCUMENT",
     "proof": "tests.records.test_preswitch.ProofTests.test_msg_missing_dependency"
   },
@@ -43,7 +43,7 @@
     "module": "campaign_tool.records.intake.native_msg",
     "qualname": "inventory",
     "top": "olefile",
-    "fingerprint": "fe764d450d8d83ab",
+    "fingerprint": "sha256:fe764d450d8d83ab",
     "when_missing": "NativeMSGError msg_decoder_unavailable; bounded parse becomes CORRUPT_DOCUMENT",
     "proof": "tests.records.test_preswitch.ProofTests.test_msg_missing_dependency"
   }

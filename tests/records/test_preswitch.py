@@ -33,7 +33,7 @@ class DependencyTests(unittest.TestCase):
     def entry(self):
         _, functions = p.source_info(self.file)
         return dict(module=self.module, qualname="stage", top="notinstalledpkg",
-                    fingerprint=functions["stage"], when_missing="typed refusal",
+                    fingerprint="sha256:" + functions["stage"], when_missing="typed refusal",
                     proof="tests.records.test_preswitch.DependencyTests.test_inventory_and_stale")
 
     def test_unreviewed_site_is_fail(self):
@@ -47,6 +47,12 @@ class DependencyTests(unittest.TestCase):
         result = p.deps(self.root, inventory=[entry])
         self.assertEqual(result["status"], "PASS")
         self.assertEqual(result["rows"][0]["status"], "CONTAINED")
+        untagged = entry | {"fingerprint": entry["fingerprint"].removeprefix("sha256:")}
+        for own in (True, False):
+            result = p.deps(self.root, inventory=[untagged], own=own)
+            self.assertEqual(result["status"], "FAIL")
+            self.assertEqual([r["status"] for r in result["rows"]],
+                             ["STALE", "UNREVIEWED_MISSING"] if own else ["UNREVIEWED_MISSING"])
         self.file.write_text(self.file.read_text().replace("    import", "     import"))
         result = p.deps(self.root, inventory=[entry])
         self.assertEqual(result["status"], "FAIL")

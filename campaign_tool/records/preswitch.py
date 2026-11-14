@@ -107,7 +107,7 @@ def deps(root, modules=(), inventory=None, *, own=True):
             _, functions[entry["module"]] = source_info(path)
         actual = functions.get(entry["module"], {}).get(entry["qualname"])
         key = (entry["module"], entry["qualname"], entry["top"], entry["fingerprint"])
-        if actual != entry["fingerprint"]:
+        if actual is None or "sha256:" + actual != entry["fingerprint"]:
             stale.add(key)
             if own:
                 rows.append({k: entry[k] for k in ("module", "qualname", "top")} | {"status": "STALE"})
@@ -123,7 +123,7 @@ def deps(root, modules=(), inventory=None, *, own=True):
                 available[top] = False
         if available[top]:
             continue
-        key = (site["module"], site["qualname"], top, site.pop("fingerprint"))
+        key = (site["module"], site["qualname"], top, "sha256:" + site.pop("fingerprint"))
         site["status"] = "CONTAINED" if key in allowed - stale else "UNREVIEWED_MISSING"
         rows.append(site)
     return check("FAIL" if any(r["status"] != "CONTAINED" for r in rows) else "PASS", rows)
