@@ -9,8 +9,8 @@
     '0000000000000000000000000000000000000000000000000000000000000004': '128eed8b122adf21ca8f06380185b4c73704bb6f5c766c24858e0b99b932cd74',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
     '0000000000000000000000000000000000000000000000000000000000000005': '1ad3d51fabf2dba0cfc3b112f9fef9825cf5344daa1ffd598c3adb23d9cd3394',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
     '0000000000000000000000000000000000000000000000000000000000000006': '2825d09e60945d3c22555141f17cabe40e28eb2af3284009df55ff1367cd6cee',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-    # Re-pin after the combined outputs-stage outcome writers and disabled private digest seam.
-    '0000000000000000000000000000000000000000000000000000000000000007': '7d4f182533368c2860c6a0812bec238d952782ebd7437ad819adeefa199944d5',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+    # Re-pin after EXTRACT_LEDGER_BUSY (DFB-LEDGER-BUSY-1): a locked ledger in the extract stage is a warn.
+    '0000000000000000000000000000000000000000000000000000000000000007': '7356b020f461a868f50aaba6b43c826af80d3de1cf4ba66aa038bc57188edb86',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
     '0000000000000000000000000000000000000000000000000000000000000008': '4dbba442fd931c7f589a1dafe8c3dd6c440a2cd58a39fadfbb2a0ac0ce3f71e6',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
     '0000000000000000000000000000000000000000000000000000000000000009': '593e07418bb7c85c3cd806d5d795872da1e6cc4cf07eaf169908ef6ed94299af',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
     '000000000000000000000000000000000000000000000000000000000000000a': '5ed0b87eece77d6792f057e7bb006c3ef139b4cf11970ffceee9772759479f39',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash

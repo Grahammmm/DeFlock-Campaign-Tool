@@ -431,6 +431,42 @@ class StageEdgeTests(ExtractStageCase):
         self.assertEqual(self.query("SELECT COUNT(*) FROM stage_state WHERE stage='extract' AND status='done'"),
                          [(0,)])
 
+    def listings(self):
+        runs = self.processing / "runs"
+        return sorted(p.name for p in runs.iterdir()) if runs.is_dir() else []
+
+    def test_locked_ledger_is_a_retryable_warning_and_writes_nothing(self):
+        # DFB-LEDGER-BUSY-1: an attended writer holds the ledger; extract retries next slot.
+        before = self.query("SELECT stage, status, COUNT(*) FROM stage_state GROUP BY stage, status")
+        holder = sqlite3.connect(self.processing / "ledger.sqlite", isolation_level=None)
+        try:
+            holder.execute("BEGIN IMMEDIATE")
+            code, parsed, raw = self.stage()
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
+        self.assertContract(code, parsed, raw)
+        self.assertEqual(code, 0)
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("warn", "EXTRACT_LEDGER_BUSY"))
+        self.assertEqual([item["code"] for item in parsed["needs_g"]], ["LEDGER_WAL_PENDING"])
+        self.assertEqual(self.listings(), [], "no extract outcome list is written for a busy run")
+        self.assertEqual(self.query("SELECT stage, status, COUNT(*) FROM stage_state GROUP BY stage, status"),
+                         before, "no partial write")
+        self.assertEqual(self.query("SELECT COUNT(*) FROM units"), [(0,)])
+        # The next slot, with the writer gone, retries and extracts.
+        code, parsed, raw = self.stage()
+        self.assertContract(code, parsed, raw)
+        self.assertEqual((parsed["status"], parsed["error_code"]), ("ok", None))
+        self.assertIn("extract-run-t11k.json", self.listings())
+
+    def test_corrupt_ledger_still_fails_unreadable(self):
+        (self.processing / "ledger.sqlite").write_bytes(b"this is not a sqlite database" * 64)
+        code, parsed, raw = run_main(["extract", "--project", str(self.project), "--timeout", "120",
+                                      "--run-id", "run-t11k"])
+        self.assertIsNotNone(parsed, raw)
+        self.assertEqual((code, parsed["status"], parsed["error_code"]), (1, "fail", "EXTRACT_LEDGER_UNREADABLE"))
+        self.assertEqual(self.listings(), [])
+
     def test_text_documents_extract_without_native_parsers(self):
         with mock.patch.object(native_extract, "missing_parsers", return_value=["pypdf", "openpyxl"]):
             code, parsed, raw = self.stage()
