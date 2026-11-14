@@ -163,6 +163,30 @@ class HoldsTests(unittest.TestCase):
                               "--code", "AWAITING_OCR", "--json"])
         self.assertEqual([i["code"] for i in json.loads(out)["items"]], ["AWAITING_OCR"])
 
+    def test_retried_error_is_named_by_its_run_internal(self):
+        # BACKLOG-EXTRACT-1: a released EXTRACT_ERROR that fails again (attempt 1 < MAX_ATTEMPTS) shows the
+        # run's validated internal {type, where}; a held one has no run detail, so no internal is shown.
+        docs = [(10, True, "extraction_stage_error", 1), (11, True, "extraction_stage_error", 3)]
+        make_project(self.root / "p4", docs)
+        runs = self.root / "p4" / "processing-v1" / "runs"
+        runs.mkdir()
+        internal = {"type": "Rejected", "where": "campaign_tool.records.container_host.require"}
+        (runs / f"extract-{RUN}.json").write_text(json.dumps({
+            "schema": "records-extract-outcomes-v1", "run_id": RUN, "documents": [
+                {"original_sha256": digest(10), "form": None, "outcome": "EXTRACT_ERROR", "refusal_code": "unlisted",
+                 "accept_status": None, "refusal_source": "form_resolution", "internal": internal},
+                {"original_sha256": digest(11), "form": None, "outcome": "EXTRACT_ERROR"}]}))
+        _, out, _ = run_main(["--project", str(self.root / "p4"), "--json"])
+        items = {i["sha256_prefix"]: i for i in json.loads(out)["items"]}
+        retried, held = items[digest(10)[:12]], items[digest(11)[:12]]
+        self.assertEqual((retried["detail_code"], retried["internal"]), ("unlisted", internal))
+        self.assertNotIn("internal", held)
+        lines = run_main(["--project", str(self.root / "p4")])[1].splitlines()
+        self.assertTrue(lines[0].endswith(" disposition internal"))
+        row = next(line for line in lines if line.startswith(digest(10)[:12]))
+        self.assertTrue(row.endswith(" retryable Rejected@campaign_tool.records.container_host.require"))
+        self.assertTrue(next(line for line in lines if line.startswith(digest(11)[:12])).endswith(" retryable -"))
+
     def test_project_only_uses_newest_run_list_and_reconciles(self):
         # No --report: 8 is an image with no alert (AWAITING_OCR in the newest list); 11 is a held error;
         # 12 was extracted since that run, so the run counted 2 AWAITING_OCR and the ledger holds 1.
