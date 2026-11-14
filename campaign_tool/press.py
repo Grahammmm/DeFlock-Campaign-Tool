@@ -325,7 +325,9 @@ def build_letter(root, finding_ids, day=None, *, words=LETTER_DEFAULT_WORDS, out
         flags = legal_notes([(f'press/letters/{name}', _LETTER_COMMENT.sub('', text, count=1))])
     except Exception:  # noqa: BLE001 - alert-only: a scan that cannot run is itself a flag
         flags = [f'review-required: press/letters/{name}: legal-claim wording (guard-error)']
-    # Preflight every path before the first write.
+    # Preflight every path before the first write. The campaign root and its ancestors are checked first,
+    # exactly as build_press does, so a linked root or parent never receives private output.
+    _check_ancestors(root)
     kit = root / 'kit'
     press_dir, letters, suggested = kit / 'press', kit / 'press' / 'letters', kit / 'press' / 'letters.suggested'
     for folder in (kit, press_dir, letters):
