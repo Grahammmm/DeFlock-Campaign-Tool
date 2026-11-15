@@ -1158,11 +1158,6 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
     check_run_id(run_id)
     check_actor(actor)
     parse_as_of(as_of)
-    if analysis_root is not None:
-        try:
-            analysis_root = console_findings.check_root(analysis_root, export_root, decisions_dir)  # read-only input, validated before any start
-        except ValueError:
-            raise PanelError("analysis_root_invalid") from None
     if decisions_dir is not None and export_root is None:
         raise PanelError("journal_needs_export")
     if export_root is not None:
@@ -1190,6 +1185,11 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
         manual_events_dir = console_manual_events.check_manual_events_dir(manual_events_dir, project)
     except ValueError:
         raise PanelError("manual_events_dir_invalid") from None
+    if analysis_root is not None:
+        try:  # read-only input: it may overlap no enabled console write location (project, export, journal, manual events, meetings)
+            analysis_root = console_findings.check_root(analysis_root, project, export_root, decisions_dir, manual_events_dir, meetings_dir)
+        except ValueError:
+            raise PanelError("analysis_root_invalid") from None
     access_cfg = _access_cfg(public_origin, access_config)
     _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg)
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)

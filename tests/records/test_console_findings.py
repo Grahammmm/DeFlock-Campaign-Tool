@@ -131,6 +131,17 @@ class FindingPage(FindingConsole):
                                 analysis_root=bad)
             self.assertEqual(caught.exception.code, "analysis_root_invalid", bad)
 
+    def test_the_root_may_not_overlap_any_enabled_console_write_location(self):
+        self.make_export()
+        inner = self.ar / ".analysis"
+        for name, bad in (("manual_events_dir", inner), ("manual_events_dir", self.ar), ("meetings_dir", inner)):
+            before = tree_state(self.ar)
+            with self.assertRaises(ap.PanelError) as caught:
+                ap.build_server(export_root=str(self.root), run_id="auto", actor="operator", system=False, decisions_dir=str(self.j),
+                                analysis_root=str(self.ar), **{name: str(bad)})
+            self.assertEqual(caught.exception.code, "analysis_root_invalid", (name, bad))
+            self.assertEqual(tree_state(self.ar), before)
+
     def test_get_with_a_query_is_refused(self):
         self.up_findings()
         self.get("/findings/review?x=1", 400)

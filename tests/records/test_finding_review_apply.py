@@ -149,6 +149,21 @@ class FindingApply(cf.FindingConsole):
         self.assertEqual(self.frow()["review_state"], "rejected")
         self.assertEqual(self.o.outbox(), [])
 
+    def test_an_identical_decision_already_latest_is_receipted_before_any_write_and_never_replayed(self):
+        self.start()
+        signature = self.sign()
+        self.post("approve", signature=signature)
+        (entry,) = self.lines()
+        fr.approve(self.ar, self.slug, "N1", signature)  # the same signature applied from the command line first
+        with mock.patch.object(fa, "_receipt", side_effect=OSError("disk")):
+            code, out = self.tick()
+        self.assertEqual((code, self.receipts(), [e["decision"] for e in self.review_events()]), (1, [], ["approve"]))
+        fr.reject(self.ar, self.slug, "N1", "Changed my mind.")  # a later decision, made while the receipt was missing
+        code, out = self.tick()
+        self.assertEqual((code, self.lines_of(out)), (0, ["finding_approve SUPERSEDED"]))
+        self.assertEqual([e["decision"] for e in self.review_events()], ["approve", "reject"])  # the old approval was not replayed
+        self.assertEqual((self.frow()["review_state"], self.o.outbox(), [r["entry_id"] for r in self.receipts()]), ("rejected", [], [entry["entry_id"]]))
+
     def test_dry_run_writes_nothing(self):
         self.start()
         self.post("approve", signature=self.sign())

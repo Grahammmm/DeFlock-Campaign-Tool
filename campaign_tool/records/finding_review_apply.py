@@ -109,6 +109,30 @@ def _decide(root, entry, value):
         fr.reject(root, agency, finding_id, value["reason"], expected_hash=entry["revision_seen"], entry_id=entry["entry_id"])
 
 
+def _overtaken(root, entry, value):
+    """APPLIED / SUPERSEDED when the review journal already holds a decision for this exact finding made at or after the entry was
+    journaled and the entry's own event is absent (an idempotent parent return appends nothing, so it cannot leave its entry_id).
+
+    That decision wins: it is APPLIED when it is the entry's own decision, SUPERSEDED when it is a different one, so a failed receipt
+    can be retried without ever replaying the old decision over a later one. None: nothing later exists, apply it.
+    """
+    agency, _, finding_id = entry["target_id"].partition(":")
+    try:
+        events = fr._read(root)[0]
+    except fr.FindingReviewError:
+        return None
+    later = [e for e in events if (e["agency"], e["finding_id"], e["finding_sha256"]) == (agency, finding_id, entry["revision_seen"])
+             and e["at"] >= entry["at"]]
+    if not later:
+        return None
+    latest = later[-1]
+    if entry["action"] == "finding_approve":
+        same = latest["decision"] == "approve" and latest.get("signature") == value["signature"]
+    else:
+        same = latest["decision"] == "reject" and latest.get("reason") == value["reason"]
+    return "APPLIED" if same else "SUPERSEDED"
+
+
 def _would(root, entry):
     agency, _, finding_id = entry["target_id"].partition(":")
     try:
@@ -162,6 +186,9 @@ def _settle(root, entry, value):
     try:
         if _landed(root, entry["entry_id"]):  # its own event is already in the review journal: never append twice
             return "APPLIED"
+        overtaken = _overtaken(root, entry, value)
+        if overtaken:
+            return overtaken
         _decide(root, entry, value)
     except fr.FindingReviewError as exc:
         if exc.code in DEFERRED_CODES:

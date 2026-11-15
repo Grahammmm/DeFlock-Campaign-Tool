@@ -27,7 +27,7 @@ NOTE = ("The checks below are a model's (F4); only your signature or rejection i
         "signature and Reject your reason; either is recorded here and applied at the next analysis tick. Nothing is sent or published.")
 
 
-def check_root(root, export_root=None, decisions_dir=None):
+def check_root(root, *write_locations):
     """The real analysis-root path, or ValueError(analysis_root_invalid). Never creates or changes anything."""
     try:
         real = os.path.realpath(root)
@@ -37,7 +37,7 @@ def check_root(root, export_root=None, decisions_dir=None):
         inner = os.path.join(real, ".analysis")
         if os.path.lexists(inner) and not stat.S_ISDIR(os.lstat(inner).st_mode):
             raise ValueError
-        for other in (export_root, decisions_dir):
+        for other in write_locations:  # every enabled console write location: none may be, hold or sit inside the root
             if other is not None:
                 other = os.path.realpath(other)
                 if other == real or other.startswith(real + os.sep) or real.startswith(other + os.sep):
