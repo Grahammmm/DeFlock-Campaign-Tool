@@ -4,6 +4,7 @@ Each test drives a real command or helper twice: once with advisory-only wording
 state equal the control) and once clean (no `warning:` text anywhere), plus mixed legacy input and the legacy refusal order.
 """
 import csv
+import datetime as dt
 import importlib.util
 import json
 import shutil
@@ -264,14 +265,23 @@ class RehearseSurfaceTest(unittest.TestCase):
 class CustodySurfaceTest(unittest.TestCase):
     setUp, tearDown = ct.CustodyReportTests.setUp, ct.CustodyReportTests.tearDown
 
+    def run_frozen(self, *argv):
+        """Run the tool with its generated timestamp frozen, so custody.json compares byte for byte across runs."""
+        class Frozen(dt.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 11, 15, 12, 0, 0, tzinfo=tz)
+        with mock.patch.object(ct.MOD, "datetime", Frozen):
+            return ct.run(*argv)
+
     def test_warning_is_printed_after_the_old_line_and_files_return_code_are_unchanged(self):
         self.store.add(ct.finding("fnd_a"))
-        control_code, control_out = ct.run("build", "--store", str(self.store.root), "--finding", "fnd_a", "--out", str(self.outs / "c"))
+        control_code, control_out = self.run_frozen("build", "--store", str(self.store.root), "--finding", "fnd_a", "--out", str(self.outs / "c"))
         self.assertEqual(control_out.splitlines(), ["custody | fnd_a | chain complete"])
         control_files = {p.name: p.read_bytes() for p in (self.outs / "c").iterdir()}
         real = ct.MOD.render
         with mock.patch.object(ct.MOD, "render", side_effect=lambda doc: real(doc) + "\n" + ADVICE + "\n"):
-            code, out = ct.run("build", "--store", str(self.store.root), "--finding", "fnd_a", "--out", str(self.outs / "o"))
+            code, out = self.run_frozen("build", "--store", str(self.store.root), "--finding", "fnd_a", "--out", str(self.outs / "o"))
         self.assertEqual(code, control_code)
         self.assertEqual(out.splitlines(), ["custody | fnd_a | chain complete"] + both("custody page"))
         files = {p.name: p.read_bytes() for p in (self.outs / "o").iterdir()}
