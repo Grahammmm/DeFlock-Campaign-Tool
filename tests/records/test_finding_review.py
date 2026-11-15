@@ -115,7 +115,7 @@ class FindingReviewTests(unittest.TestCase):
         self.assertEqual(self.held()["N1"], {"finding_id": "N1", "code": "FINDING_UNREVIEWED", "ids": [self.o.cited["N1"]]})
         row = self.row("N1")
         self.assertEqual((row["review_state"], row["hold_code"], row["f4_verdict"]), ("unreviewed", "FINDING_UNREVIEWED", "confirm"))
-        self.assertEqual(row["facts"], [{"fact_id": self.o.cited["N1"], "source_sha256": self.o.digest, "page": "2"}])
+        self.assertEqual(row["facts"], [{"fact_id": self.o.cited["N1"], "source_sha256": self.o.digest, "page": "2", "quote": "The search log lists date, user and plate only."}])
 
     def test_the_packet_step_without_a_review_gate_holds_everything(self):
         self.o.review("N1", approve=False)

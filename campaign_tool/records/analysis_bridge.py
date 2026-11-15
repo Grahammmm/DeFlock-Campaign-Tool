@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -620,11 +621,36 @@ def _packets(root, slug, config):
     return outcome, key, name, summary, None
 
 
+def _apply_findings(root, journal, dry):
+    """Apply the console's journaled finding decisions before any DAG step or packet staging. False: the pass is refused."""
+    from . import console_journal as cj, finding_review_apply as fa
+    try:
+        fd = os.open(journal, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_size > cj.MAX_JOURNAL:
+                raise OSError("journal_unusable")
+            raw = os.pread(fd, st.st_size, 0)
+        finally:
+            os.close(fd)
+        results = fa.apply_journal(root, raw, dry_run=dry)
+    except fa.ApplyError as exc:
+        print("FINDING_APPLY_REFUSED %s" % exc.code)
+        return False
+    except (OSError, fr.FindingReviewError):
+        print("FINDING_APPLY_REFUSED finding_apply_io")
+        return False
+    for ident, action, result in results:
+        print("finding-decision %s %s %s" % (ident[:12], action, result))
+    return True
+
+
 def tick_main(argv=None):
     parser = argparse.ArgumentParser(prog="records analysis-tick", description="Advance every agency review DAG to its next model wait (DFGL-07f).")
     parser.add_argument("--root", required=True)
     parser.add_argument("--max-agencies", type=int, default=20)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--from-journal", metavar="FILE", help="first apply the console's journaled finding_review decisions (DF2007-06)")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     root = Path(args.root).resolve()
     if not (root / ".analysis" / "LANE-ON").exists():
@@ -634,6 +660,8 @@ def tick_main(argv=None):
         print("ROOT_REFUSED")
         return 1
     os.umask(0o077)
+    if args.from_journal and not _apply_findings(root, args.from_journal, args.dry_run):
+        return 1
     tool, last, entries = ac.REPO / "tools" / "flock_review.py", {}, []
     review = ac._flock_review() if tool.is_file() else None
     for e in _ledger(root):

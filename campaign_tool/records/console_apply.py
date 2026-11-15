@@ -321,7 +321,9 @@ def main(argv=None):
         entries, (done, intents), pid = cj.parse(raw), ledger(project), aq._project_id(project)
         trust_deferred = []
         for entry in entries:
-            if entry["entry_id"] in done:
+            if entry.get("kind") == cj.FINDING_KIND:
+                result = "ANALYSIS_TICK_REQUIRED"  # DF2007-06: left for `records analysis-tick --from-journal`; never receipted here
+            elif entry["entry_id"] in done:
                 result = "ALREADY"
             elif entry.get("source_project_id") != pid:
                 result = "PROJECT_MISMATCH"  # nothing applied and no receipt: another project (or this one moved) owns it

@@ -381,7 +381,12 @@ def render_home(model, token):
     out.append('<details id="more"><summary>More detail</summary>')
     out.append(console_standing.render_standing(model, model["now"].date()))
     out.append(console_outstanding.render_outstanding(model))
-    out += ["<p>%s: source not connected yet (%s).</p>" % pair for pair in DISCONNECTED]
+    for kind, code in DISCONNECTED:
+        if kind == "finding":
+            out.append('<p><a href="/findings/review">Finding review</a>: connected (%s).</p>' % code if model.get("findings_configured")
+                       else "<p>finding: configuration required, start the console with --analysis-root (%s).</p>" % code)
+        else:
+            out.append("<p>%s: source not connected yet (%s).</p>" % (kind, code))
     out.append('</details>')
     return console_layout.shell("Home", "\n".join(out), "Home")
 
@@ -398,5 +403,6 @@ def serve(handler):
     except ValueError:
         handler._fail(503)
         return True
+    model["findings_configured"] = getattr(handler.server, "analysis_root", None) is not None
     handler._send(200, render_home(model, handler.csrf_token()))
     return True

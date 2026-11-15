@@ -328,7 +328,8 @@ def list_findings(root, *, agency=None):
                     digest = payload = None
                 row_out.update(topic=found["topic"], claim=found["claim"], fact_ids=found["fact_ids"], rule_ids=found["rule_ids"],
                                finding_sha256=digest, payload=payload, review_state=state["state"], reason=state.get("reason"),
-                               facts=[{"fact_id": i, "source_sha256": ev["facts"].get(i, {}).get("source_sha256"), "page": ev["facts"].get(i, {}).get("page")}
+                               facts=[{"fact_id": i, "source_sha256": ev["facts"].get(i, {}).get("source_sha256"), "page": ev["facts"].get(i, {}).get("page"),
+                                       "quote": ev["facts"].get(i, {}).get("verbatim_quote")}
                                       for i in found["fact_ids"].split(";") if i])
             rows.append(row_out)
     return sorted(rows, key=lambda r: (r["agency"], r["finding_id"]))
