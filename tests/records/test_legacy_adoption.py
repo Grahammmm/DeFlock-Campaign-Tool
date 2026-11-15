@@ -58,22 +58,24 @@ class LegacyAdoptionTests(unittest.TestCase):
                 for row in self.rows[:3]}}
         self.save_inputs()
 
-    def save_inputs(self, *, enabled=True):
+    def save_inputs(self, *, enabled=True, null_policy=False):
         self.manifest.write_text("sha256\tsize\tsource_path\n" + "".join(
             f'{r["sha256"]}\t{r["size"]}\t{r["source_path"]}\n' for r in self.rows))
         self.policy.write_bytes(capture.encoded(self.policy_value))
         value = {"schema": "legacy-adoption-v1", "manifest_sha256": capture.digest(self.manifest.read_bytes()),
-            "policy_sha256": capture.digest(self.policy.read_bytes()), "export_root": str(self.export),
+            "policy_sha256": None if null_policy else capture.digest(self.policy.read_bytes()),
+            "export_root": str(self.export),
             "supplement_root": str(self.supplement), "adoption": "enabled" if enabled else "disabled"}
         self.config.write_bytes(capture.encoded(value))
         for path in (self.manifest, self.policy, self.config):
             path.chmod(0o600)
 
-    def invoke(self, *extra):
+    def invoke(self, *extra, policy=True):
         output = io.StringIO()
+        policy_args = ["--policy", str(self.policy)] if policy else []
         with contextlib.redirect_stdout(output):
             status = adoption.main(["--root", str(self.base), "--config", str(self.config),
-                "--manifest", str(self.manifest), "--policy", str(self.policy), *extra])
+                "--manifest", str(self.manifest), *policy_args, *extra])
         counts = json.loads(output.getvalue())
         self.assertNotIn(str(self.base), output.getvalue())
         self.assertNotIn("fictional", output.getvalue())
@@ -306,3 +308,72 @@ class LegacyAdoptionTests(unittest.TestCase):
                 "portal-intake": 0, "productions": 0, "supplement": 0}})
         self.assertEqual(self.snapshot(), before)
         self.assertFalse((self.base / "legacy-adoption").exists())
+
+    def test_null_policy_first_proposal_passes_existing_policy_loader(self):
+        self.save_inputs(enabled=False, null_policy=True)
+        proposal = self.base / "first.json"
+        before = self.snapshot()
+        self.assertEqual(self.invoke("--write-policy-proposal", str(proposal), policy=False)[0], 0)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.ledger_rows("SELECT count(*) FROM runs WHERE run_id LIKE 'legacy-adoption-%'"), [(0,)])
+        self.assertFalse((self.base / "legacy-adoption").exists())
+        raw = proposal.read_bytes()
+        self.assertEqual(proposal.stat().st_mode & 0o777, 0o600)
+        loaded = capture.ApprovedCapturePolicy(raw, expected_sha256=capture.digest(raw))
+        self.assertIsNotNone(loaded)
+        value = json.loads(raw)
+        self.assertEqual(value["originals"], self.policy_value["originals"])
+        self.assertEqual(value["approval_sha256"], capture.digest(self.config.read_bytes()))
+        self.assertEqual(value["inventory_sha256"], capture.digest(self.manifest.read_bytes()))
+
+    def test_null_policy_refuses_every_other_mode_naming_the_code(self):
+        refused = (2, {"legacy_policy_required": 1})
+        for enabled in (False, True):
+            self.save_inputs(enabled=enabled, null_policy=True)
+            proposal = self.base / f"never-{enabled}.json"
+            before = self.snapshot()
+            with self.subTest(enabled=enabled):
+                with patch.object(adoption, "preflight", side_effect=AssertionError("preflight reached")), \
+                        patch.object(adoption, "apply_batch", side_effect=AssertionError("apply reached")):
+                    self.assertEqual(self.invoke(policy=False), refused)
+                    self.assertEqual(self.invoke("--apply", policy=False), refused)
+                    self.assertEqual(self.invoke("--apply", "--write-policy-proposal", str(proposal), policy=False), refused)
+                    self.assertEqual(self.invoke("--write-policy-proposal", str(proposal)), refused)
+                self.assertFalse(proposal.exists())
+                self.assertEqual(self.snapshot(), before)
+
+    def test_pinned_config_still_requires_policy_and_matches_proposal_bytes(self):
+        self.assertEqual(self.invoke(policy=False), (2, {"legacy_policy_required": 1}))
+        proposal = self.base / "pinned.json"
+        self.assertEqual(self.invoke("--write-policy-proposal", str(proposal))[0], 0)
+        expected = adoption.proposal(json.loads(self.config.read_bytes()),
+                                     capture.digest(self.config.read_bytes()),
+                                     [(row, "received") for row in self.rows[:3]])
+        self.assertEqual(proposal.read_bytes(), capture.encoded(expected) + b"\n")
+
+    def test_null_policy_bootstrap_keeps_preflight_and_pin_refusals(self):
+        self.save_inputs(null_policy=True)
+        config = json.loads(self.config.read_bytes())
+        proposal = self.base / "bad.json"
+        for bad in ("", False, {}, "A" * 64, "z" * 64, "a" * 63):
+            with self.subTest(pin=bad):
+                config["policy_sha256"] = bad
+                self.config.write_bytes(capture.encoded(config))
+                self.assertEqual(self.invoke("--write-policy-proposal", str(proposal), policy=False)[0], 2)
+        del config["policy_sha256"]
+        self.config.write_bytes(capture.encoded(config))
+        self.assertEqual(self.invoke("--write-policy-proposal", str(proposal), policy=False),
+                         (2, {"legacy_config_invalid": 1}))
+        self.assertFalse(proposal.exists())
+        self.save_inputs(null_policy=True)
+        Path(self.rows[1]["source_path"]).chmod(0o600)
+        Path(self.rows[1]["source_path"]).write_bytes(b"x" * self.rows[1]["size"])
+        Path(self.rows[1]["source_path"]).chmod(0o400)
+        self.assertEqual(self.invoke("--write-policy-proposal", str(proposal), policy=False)[0], 3)
+        self.assertFalse(proposal.exists())
+
+    def test_guide_bootstrap_contract(self):
+        guide = (Path(__file__).resolve().parents[2] / "docs" / "RECORDS-LEGACY-ADOPTION.md").read_text()
+        for text in ("legacy_policy_required", "\"policy_sha256\": null", "G approves", "pin", "enable"):
+            self.assertIn(text, guide)
+        self.assertLess(guide.index("Bootstrap order"), guide.index("Attended T8 order"))
