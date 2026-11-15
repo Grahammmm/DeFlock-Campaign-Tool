@@ -109,7 +109,7 @@ def render_link(row, token, payload, refusal=None, *, read_only=False):
     if pending and read_only:
         out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre><p>%s</p>' % (esc(payload.decode("utf-8")), READ_ONLY))
     elif pending:
-        options = "".join('<label><input type="radio" name="choice" value="%s" required> %s (agency %s)</label><br>' % (
+        options = "".join('<label class="request-choice"><input type="radio" name="choice" value="%s" required> %s (agency %s)</label><br>' % (
             esc(c["request_id"]), esc(c["request_id"]), esc(c["agency_id"])) for c in row["evidence"].get("candidates", []))
         out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre>' % esc(payload.decode("utf-8")))
         out.append("<p>Choose the request, sign the text above with your approval key and paste the signature. "

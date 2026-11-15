@@ -142,6 +142,21 @@ class Calendar(unittest.TestCase):
         dates = [e for e in cc.entries(model, TODAY) if e["kind"] in ("statutory_due", "extension_limit")]
         self.assertEqual([(e["request"], e["basis"]) for e in dates], [("R-1", "COMPUTED"), ("R-1", "COMPUTED")])
 
+    def test_running_request_with_only_due_is_shown_not_dropped(self):
+        """A running open request with a valid ``due`` but no base_due/extended_due must not vanish from the calendar or Home."""
+        from campaign_tool.records import console_home as home
+        due = TODAY + timedelta(days=3)
+        rows = [row("beta-so", "R-only-due", clock(base_due=None, extended_due=None, due=due.isoformat()))]
+        model = self.model(rows)
+        items, notes = cc.build(model, TODAY)
+        got = [(e["kind"], e["date"], e["request"]) for e in items if e["request"] == "R-only-due"]
+        self.assertEqual(got, [("statutory_due", due, "R-only-due")])
+        self.assertFalse([n for n in notes if n.startswith("no clock")])
+        page = home.render_home(home.load(self.project, RUN, now=NOW), "")
+        self.assertNotIn("Nothing due in the next 7 days", page)
+        self.assertIn("1 due in the next 7 days", page)
+        self.assertIn("R-only-due", page.split('<section id="week">')[1])
+
     def test_each_kind_with_basis_source_and_month_day(self):
         rows = [row("alpha-pd", "R-1"),
                 row("beta-so", "R-2", clock(basis="submission_proxy", base_due="2026-11-12", extended_due="2026-11-26",

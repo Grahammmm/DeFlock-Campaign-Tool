@@ -1,7 +1,7 @@
 """Read-only Home summary of asked items not produced; machine reading, not a finding."""
 import urllib.parse
 
-from . import console_board as cb, item_tiers
+from . import console_board as cb, console_layout, item_tiers
 from .outcomes.reading import esc
 
 LABEL = "Machine reading of the response; review required; not proof that records exist."
@@ -40,7 +40,7 @@ def outstanding(model):
 def render_outstanding(model):
     out = ['<section id="outstanding"><h2>Outstanding information</h2>', '<p>%s</p>' % LABEL]
     if model["tiers"]["state"] != "ok":
-        return "\n".join(out + ['<p role="status">unavailable (%s)</p></section>' % esc(model["tiers"].get("code"))])
+        return "\n".join(out + ['<p role="status">%s</p></section>' % esc(console_layout.unavailable_note("Outstanding information", model["tiers"].get("code")))])
     rows = outstanding(model)
     if not rows:
         out.append("<p>No outstanding items on our records.</p>")

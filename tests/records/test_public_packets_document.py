@@ -65,6 +65,12 @@ class ProposeDocumentTests(unittest.TestCase):
     # ---- fixtures ----------------------------------------------------------------------------------------------------
     def private_file(self, path, data):
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # mkdir(parents=True) gives intermediate directories the umask default (0755 under CI's umask 022), but the
+        # redaction record check requires every directory in the private store to be 0700.
+        for folder in (path.parent, *path.parent.parents):
+            if folder == self.project.parent:
+                break
+            folder.chmod(0o700)
         path.write_bytes(data)
         path.chmod(0o600)
         return path
