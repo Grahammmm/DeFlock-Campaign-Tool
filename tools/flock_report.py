@@ -78,7 +78,7 @@ def context(config, out):
         raise Fail("verify: missing (run the G2 verify first)")
     return {"FO": store.parent, "RO": ro, "CO": co, "slug": slug, "agency": squash(agency), "out": out,
             "deny": [s for d in deny for s in d or ()], "ts": text_state(rv["text_state_file"]) if "text_state_file" in rv else None}
-TEXT_STATES, TS_MAX = ("text_reviewed", "ocr_unreviewed", "awaiting_ocr", "could_not_be_read", "waiting", "unknown_state"), 64 << 20
+TEXT_STATES, TS_MAX = ("text_reviewed", "ocr_flagged", "ocr_unreviewed", "awaiting_ocr", "could_not_be_read", "waiting", "unknown_state"), 64 << 20
 def text_state(value):  # DOC-2 text-state file -> {sha256: label suffix, "" when reviewed}; any doubt fails closed
     why, raw = "config: review.text_state_file %s", os.path.expanduser(value) if isinstance(value, str) else ""
     if not os.path.isabs(raw):
@@ -101,7 +101,7 @@ def text_state(value):  # DOC-2 text-state file -> {sha256: label suffix, "" whe
     if not isinstance(recs, list) or not all(isinstance(r, dict) and isinstance(r.get("sha256"), str) and isinstance(r.get("words"), str)
                                              and r.get("state") in TEXT_STATES for r in recs) or len({r["sha256"] for r in recs}) != len(recs):
         raise Fail(why % "is not a records-text-state-v1 file (schema; records of unique sha256 with state and words)")
-    return {r["sha256"]: "" if r["state"] == "text_reviewed" else "OCR text, not visually reviewed" if r["state"] == "ocr_unreviewed"
+    return {r["sha256"]: "" if r["state"] == "text_reviewed" else "OCR text, not visually reviewed" if r["state"] in ("ocr_unreviewed", "ocr_flagged")
             else "text state: " + (clean(r["words"]) or r["state"].replace("_", " ")) for r in recs}
 def load(c):
     raw = (c["CO"] / "FINDINGS.csv").read_bytes()

@@ -89,7 +89,7 @@ class TextStateTests(unittest.TestCase):
         got = {r["sha256"]: (r["state"], r["words"]) for r in report["records"]}
         for i, outcome in enumerate(outcomes):
             self.assertEqual(got[h(i + 1)], EXPECTED.get(outcome, EXPECTED["NEW_FUTURE_CODE"]), outcome)
-        self.assertEqual(report["counts"], {"text_reviewed": 1, "ocr_unreviewed": 0, "awaiting_ocr": 1,
+        self.assertEqual(report["counts"], {"text_reviewed": 1, "ocr_flagged": 0, "ocr_unreviewed": 0, "awaiting_ocr": 1,
                                             "could_not_be_read": 8, "waiting": 2, "unknown_state": 2})
         self.assertEqual([r["sha256"] for r in report["records"]], sorted(got))
         self.assertEqual(report["schema"], "records-text-state-v1")

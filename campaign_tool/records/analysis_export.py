@@ -25,21 +25,58 @@ import sys
 import tarfile
 
 from .. import __version__
+from . import ocr_review
 from .outcomes import analysis_ready as ar
 from .outcomes import received_items as ri
 from .run_stages import LedgerBusy, snapshot_ro
 
 SCHEMA = "records-analysis-export-v1"
 RUN = re.compile(r"run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}")
-READY_STATE = "text_reviewed"  # OCR text not yet visually checked is TEXT_NOT_READY
+READY_STATES = ("text_reviewed", "ocr_flagged")  # OCR text not yet visually checked and not flaggable is TEXT_NOT_READY
 COLUMNS = ("original_sha256", "agency_id", "request_id", "pages", "text_sha256", "state", "received_at",
            "received_at_source")
+FLAG = "read_with_flag"
+FLAG_COLUMNS = COLUMNS + ("page_flags",)  # only in a run export that holds at least one flagged record
+PAGE_HEADER = re.compile(r"\[\[PAGE ([1-9][0-9]{0,8})( FLAGGED)?\]\]")
 
 
 class Refusal(Exception):
     def __init__(self, code, status=2):
         super().__init__(code)
         self.code, self.status = code, status
+
+
+def flag_json(pages):
+    """Canonical compact page_flags value: {"1":"read_with_flag",...} in numeric page order."""
+    return json.dumps({str(n): FLAG for n in sorted(pages)}, separators=(",", ":"))
+
+
+def flagged_headers(text):
+    """The pages whose PAGE header line carries the FLAGGED decoration, in a decoded text."""
+    found = (PAGE_HEADER.fullmatch(line) for line in text.split("\n"))
+    return {int(m.group(1)) for m in found if m and m.group(2)}
+
+
+def annotation_only(old, new):
+    """True when two texts differ only in the FLAGGED token of whole PAGE header lines (never prose, never a count or order)."""
+    try:
+        old_lines, new_lines = old.decode("utf-8").split("\n"), new.decode("utf-8").split("\n")
+    except UnicodeDecodeError:
+        return False
+    if len(old_lines) != len(new_lines):
+        return False
+    for was, now in zip(old_lines, new_lines):
+        if was != now:
+            a, b = PAGE_HEADER.fullmatch(was), PAGE_HEADER.fullmatch(now)
+            if not (a and b and a.group(1) == b.group(1)):
+                return False
+    return True
+
+
+def unflagged(text):
+    """The text with the FLAGGED token removed from whole PAGE header lines only."""
+    return "\n".join(PAGE_HEADER.sub(lambda m: "[[PAGE %s]]" % m.group(1), line) if PAGE_HEADER.fullmatch(line) else line
+                     for line in text.split("\n"))
 
 
 def _sha(data):
@@ -81,21 +118,61 @@ def _valid(manifest, run):
                 and isinstance(r.get("text_state"), str) for r in a["records"]) for a in agencies)
 
 
-def _text(db, processing, digest, state):
-    """-> (bytes, pages, None) or (None, None, not-ready code). Never partial text."""
-    if state != READY_STATE:
-        return None, None, "TEXT_NOT_READY"
+def _flagged_pages(db, processing, digest, strict):
+    """-> the set of this record's pages that may be read only with a flag, or None when the record may not be exported.
+
+    Every current review-required OCR page goes through ocr_review.page_use_allowed against the read-only snapshot and the
+    exact review bindings. A rejected page, a broken review chain or an unreadable review file denies the record, and so does
+    a page whose earlier decision no longer binds (changed confidence or derivative). A page that was never reviewed and is
+    under 80 or has no confidence denies it when the manifest claims `ocr_flagged` (strict); a `text_reviewed` manifest from
+    the same outputs run keeps its own claim for such a page, as before this policy was wired.
+    """
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='page_state'").fetchone():
+        return set()  # an older ledger without page rows has nothing to review
+    reviews = processing.parent / "ocr-review-v1" / "reviews.jsonl"
+    flagged = set()
+    try:
+        decided = {(r["original_sha256"], r["page_no"]) for r in ocr_review.read_reviews(reviews)}
+        for page in ocr_review.pages(db):
+            if page["original_sha256"] != digest:
+                continue
+            allowed, reason = ocr_review.page_use_allowed(page, reviews)
+            if allowed:
+                if reason == "read_with_flag":
+                    flagged.add(page["page_no"])
+            elif reason == "review_rejected" or strict or (digest, page["page_no"]) in decided:
+                return None
+    except (ValueError, OSError, sqlite3.Error):
+        return None
+    return flagged
+
+
+def _prepare(db, processing, digest, state):
+    """-> (bytes, pages, flagged page numbers, None) or (None, None, None, not-ready code). Never partial text."""
+    if state not in READY_STATES:
+        return None, None, None, "TEXT_NOT_READY"
     try:
         units, diagnostics, _ = ri._current_units(db, processing, digest)
     except (ValueError, OSError):
-        return None, None, "EXTRACTION_UNAVAILABLE"
+        return None, None, None, "EXTRACTION_UNAVAILABLE"
     if diagnostics or not units:
-        return None, None, "EXTRACTION_UNAVAILABLE"
+        return None, None, None, "EXTRACTION_UNAVAILABLE"
+    flagged = _flagged_pages(db, processing, digest, state == "ocr_flagged")
+    if flagged is None:
+        return None, None, None, "TEXT_NOT_READY"
     pages = {}
     for unit in sorted(units, key=lambda u: (u["page"], u["ordinal"])):
         pages.setdefault(unit["page"], []).append(unit["text"])
-    body = "".join("[[PAGE %d]]\n%s\n" % (n, "\n".join(texts)) for n, texts in sorted(pages.items()))
-    return body.encode("utf-8"), len(pages), None
+    marks = sorted(n for n in pages if n in flagged)
+    body = "".join("[[PAGE %d%s]]\n%s\n" % (n, " FLAGGED" if n in marks else "", "\n".join(texts))
+                   for n, texts in sorted(pages.items()))
+    return body.encode("utf-8"), len(pages), marks, None
+
+
+def _text(db, processing, digest, state):
+    """-> (bytes, pages, None) or (None, None, not-ready code). Never partial text."""
+    data, pages, _, code = _prepare(db, processing, digest, state)
+    return data, pages, code
 
 
 def _run_files(run, outcomes, db, processing):
@@ -105,7 +182,7 @@ def _run_files(run, outcomes, db, processing):
     if not _valid(manifest, run):
         raw, manifest = None, None
     files = {}
-    rows, exported = [], 0
+    rows, exported, flagged_any = [], 0, False
     if manifest is not None:
         files["analysis-ready.json"] = raw
         received = {}
@@ -120,19 +197,20 @@ def _run_files(run, outcomes, db, processing):
                     continue
                 seen.add((digest, agency["agency_id"], request))
                 if digest not in texts:
-                    texts[digest] = _text(db, processing, digest, record["text_state"])
-                data, pages, code = texts[digest]
+                    texts[digest] = _prepare(db, processing, digest, record["text_state"])
+                data, pages, marks, code = texts[digest]
                 item = received.get((digest, agency["agency_id"], request)) or {}
                 if data is not None:
                     files["texts/%s.txt" % digest] = data
                     exported += 1
+                    flagged_any = flagged_any or bool(marks)
                 rows.append((digest, agency["agency_id"], request or "", "" if pages is None else pages,
                              "" if data is None else _sha(data), code or "exported",
-                             item.get("received_at") or "", item.get("received_at_source") or ""))
+                             item.get("received_at") or "", item.get("received_at_source") or "", flag_json(marks or ())))
         sink = io.StringIO()
         writer = csv.writer(sink, lineterminator="\n")
-        writer.writerow(COLUMNS)
-        writer.writerows(sorted(rows))
+        writer.writerow(FLAG_COLUMNS if flagged_any else COLUMNS)  # a run with no flagged record keeps the exact legacy bytes
+        writer.writerows(sorted(r if flagged_any else r[:-1] for r in rows))
         files["TEXTS.csv"] = sink.getvalue().encode("utf-8")
     summary = {"schema": SCHEMA, "run_id": run, "analysis_ready": "present" if manifest is not None else "missing",
                "engine": __version__, "files": {name: _sha(data) for name, data in sorted(files.items())}}

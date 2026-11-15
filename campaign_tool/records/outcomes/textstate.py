@@ -7,7 +7,10 @@ files). Records this run's extract did not list (extracted by an earlier run)
 are added from the ledger when their extract stage is done and they have a
 current extraction: their state comes from the current OCR review state, so a
 reviewed PDF is text_reviewed in every later run. An unreviewed or rejected OCR
-page is never text_reviewed. Output carries the state, fixed words and the
+page is never text_reviewed. A record whose OCR pages are all confirmed or
+unreviewed at confidence 80 or more (ocr_review.page_use_allowed: read_with_flag),
+with at least one of the latter, is ocr_flagged: usable for analysis with a flag,
+never a review verdict and never public. Output carries the state, fixed words and the
 record sha256 only: never a path, form, written_at, an awaiting-ocr.jsonl entry
 or document text. Review-required; a state is not a review of what the text
 says. The extract list, the OCR review file and the ledger are read, never
@@ -48,8 +51,9 @@ STATES = {
 }
 REVIEWED = ("text_reviewed", "Text extracted and passed the extraction checks.")
 OCR_UNREVIEWED = ("ocr_unreviewed", "Text came from scanning (OCR) and has not been visually checked yet.")
+OCR_FLAGGED = ("ocr_flagged", "Text came from scanning (OCR); usable for analysis with a flag, not yet visually confirmed.")
 UNKNOWN = ("unknown_state", "State not recognised")
-ORDER = ("text_reviewed", "ocr_unreviewed", "awaiting_ocr", "could_not_be_read", "waiting", "unknown_state")
+ORDER = ("text_reviewed", "ocr_flagged", "ocr_unreviewed", "awaiting_ocr", "could_not_be_read", "waiting", "unknown_state")
 
 
 def _need(condition, code):
@@ -81,19 +85,21 @@ def load_list(path):
     return documents
 
 
-def classify(outcome, ocr_pending, ocr_rejected=False):
+def classify(outcome, ocr_pending, ocr_rejected=False, ocr_flagged=False):
     if outcome == "EXTRACTED":
         if ocr_pending:
             return OCR_UNREVIEWED
-        return STATES["EXTRACT_NOT_ACCEPTED"] if ocr_rejected else REVIEWED
+        if ocr_rejected:
+            return STATES["EXTRACT_NOT_ACCEPTED"]
+        return OCR_FLAGGED if ocr_flagged else REVIEWED
     return STATES.get(outcome, UNKNOWN) if isinstance(outcome, str) else UNKNOWN
 
 
-def build(run_id, documents, pending, rejected=frozenset()):
+def build(run_id, documents, pending, rejected=frozenset(), flagged=frozenset()):
     records = sorted(({"sha256": d["original_sha256"], "state": state, "words": words}
                       for d in documents
                       for state, words in [classify(d.get("outcome"), d["original_sha256"] in pending,
-                                                    d["original_sha256"] in rejected)]),
+                                                    d["original_sha256"] in rejected, d["original_sha256"] in flagged)]),
                      key=lambda r: r["sha256"])
     counts = dict.fromkeys(ORDER, 0)
     for record in records:
@@ -144,22 +150,29 @@ def _extracted_earlier(db, listed):
 
 
 def _ledger_facts(project, processing, listed):
-    """-> (OCR pages pending review, OCR pages rejected, records extracted by earlier runs), by record sha256."""
-    from ..ocr_review import binding, pages, read_reviews
+    """-> (records with an OCR page held, with one rejected, with one read-with-flag, records extracted by earlier runs).
+
+    Each current review-required page goes through the admitted policy ocr_review.page_use_allowed (confirmed: use;
+    rejected: never; unreviewed at confidence 80 or more: read with a flag; anything else: held for a person). A page
+    without a confidence, or under 80, is held exactly as before; a broken review chain raises (never read as reviewed).
+    """
+    from ..ocr_review import page_use_allowed, pages
     from ..run_stages import ledger_ro
+    reviews = project / "ocr-review-v1" / "reviews.jsonl"
     with ledger_ro(processing) as db:
         has_pages = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='page_state'").fetchone()
         review_pages = pages(db) if has_pages else []  # an older ledger without page rows has nothing to review
-        decisions = ({binding(r): r["decision"] for r in read_reviews(project / "ocr-review-v1" / "reviews.jsonl")}
-                     if review_pages else {})
-        pending, rejected = set(), set()
+        pending, rejected, flagged = set(), set(), set()
         for page in review_pages:
-            decision = decisions.get(binding(page))
-            if decision is None:
-                pending.add(page["original_sha256"])
-            elif decision == "rejected":
+            allowed, reason = page_use_allowed(page, reviews)
+            if allowed:
+                if reason == "read_with_flag":
+                    flagged.add(page["original_sha256"])
+            elif reason == "review_rejected":
                 rejected.add(page["original_sha256"])
-        return pending, rejected, _extracted_earlier(db, listed)
+            else:
+                pending.add(page["original_sha256"])
+        return pending, rejected, flagged, _extracted_earlier(db, listed)
 
 
 def write_run_textstate(project, run_id):
@@ -176,9 +189,9 @@ def write_run_textstate(project, run_id):
         processing = project / "processing-v1"
         name = "".join(ch for ch in run_id if ch.isalnum() or ch in "-_.") or "run"  # as write_private_list
         documents = load_list(processing / "runs" / f"extract-{name}.json")
-        pending, rejected, earlier = _ledger_facts(project, processing, {d["original_sha256"] for d in documents})
+        pending, rejected, flagged, earlier = _ledger_facts(project, processing, {d["original_sha256"] for d in documents})
         documents = documents + [{"original_sha256": digest, "outcome": "EXTRACTED"} for digest in sorted(earlier)]
-        report = build(run_id, documents, pending, rejected)
+        report = build(run_id, documents, pending, rejected, flagged)
         files = ((FILES[0], (json.dumps(report, ensure_ascii=False, sort_keys=True) + "\n").encode()),
                  (FILES[1], markdown(report).encode()))
         _need(sum(len(raw) for _, raw in files) <= MAX_OUTPUT_BYTES, "textstate_output_bound")

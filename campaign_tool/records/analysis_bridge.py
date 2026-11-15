@@ -63,15 +63,70 @@ def _read_tar(stream):
     return found
 
 
+def _flag_map(raw, pages):
+    """The page_flags cell -> {page number: label}; ValueError unless it is exactly the canonical compact object."""
+    def unique(pairs):
+        found = {}
+        for key, value in pairs:
+            if key in found:
+                raise ValueError("page_flags")
+            found[key] = value
+        return found
+
+    def refuse(_):
+        raise ValueError("page_flags")
+
+    try:
+        value = json.loads(raw, object_pairs_hook=unique, parse_constant=refuse)
+    except (TypeError, ValueError, RecursionError):
+        raise ValueError("page_flags") from None
+    if not isinstance(value, dict) or any(not re.fullmatch(r"[1-9][0-9]{0,8}", k) or v != ae.FLAG for k, v in value.items()):
+        raise ValueError("page_flags")
+    found = {int(k): v for k, v in value.items()}
+    if raw != ae.flag_json(found) or (found and (pages is None or max(found) > pages)):
+        raise ValueError("page_flags")
+    return found
+
+
 def _rows(data):
-    """TEXTS.csv rows (validated); ValueError on a bad header, agency or hash."""
+    """TEXTS.csv rows (validated); ValueError on a bad header, agency, hash or page_flags.
+
+    Each row gets `flags`, the {page: label} mapping: empty for the legacy eight-column header (nothing serialised).
+    """
     if data is None:
         return []
     reader = csv.DictReader(data.decode("utf-8").splitlines())
     rows = list(reader)
-    if reader.fieldnames != list(ae.COLUMNS) or any(not re.fullmatch("[0-9a-f]{64}", r["original_sha256"] or "") or not r["agency_id"] for r in rows):
+    extended = reader.fieldnames == list(ae.FLAG_COLUMNS)
+    if not extended and reader.fieldnames != list(ae.COLUMNS) or any(
+            not re.fullmatch("[0-9a-f]{64}", r["original_sha256"] or "") or not r["agency_id"] for r in rows):
         raise ValueError("TEXTS.csv")
+    for r in rows:
+        if not extended:
+            r["flags"] = {}
+            continue
+        if None in r or r["page_flags"] is None:
+            raise ValueError("TEXTS.csv")
+        pages = int(r["pages"]) if r["state"] == "exported" and re.fullmatch("[0-9]{1,9}", r["pages"] or "") else None
+        r["flags"] = _flag_map(r["page_flags"], pages)
+        if r["flags"] and r["state"] != "exported":
+            raise ValueError("page_flags")
     return rows
+
+
+def _marked(rows, files):
+    """True when every exported row's FLAGGED headers equal its page_flags, and rows of one hash agree (nothing is trusted from a marker alone)."""
+    seen = {}
+    for r in rows:
+        if r["state"] != "exported":
+            continue
+        try:
+            marked = ae.flagged_headers(files["texts/%s.txt" % r["original_sha256"]].decode("utf-8"))
+        except (KeyError, UnicodeDecodeError):
+            return False
+        if marked != set(r["flags"]) or seen.setdefault(r["original_sha256"], r["flags"]) != r["flags"]:
+            return False
+    return True
 
 
 def _verify(run, files):
@@ -84,7 +139,8 @@ def _verify(run, files):
                 and set(listed) == set(files) - {"EXPORT.json"} and names <= set(listed)
                 and all(ae._sha(files[n]) == d for n, d in listed.items())
                 and all(r["state"] != "exported" or ae._sha(files["texts/%s.txt" % r["original_sha256"]]) == r["text_sha256"]
-                        for r in rows))
+                        for r in rows)
+                and _marked(rows, files))
     except (KeyError, ValueError, TypeError, AttributeError, csv.Error):
         return False
 
@@ -177,7 +233,10 @@ def _place(root, run, agency, files, rows, dry):
     inputs = root / "agencies" / slug / "review" / "inputs"
     texts = {r["original_sha256"]: files["texts/%s.txt" % r["original_sha256"]] for r in mine}
     fresh = [sha for sha in sorted(texts) if not (inputs / "records" / (sha + ".txt")).exists()]
-    if any((inputs / "records" / (sha + ".txt")).read_bytes() != texts[sha] for sha in set(texts) - set(fresh)):
+    # An existing review input is an analysis snapshot: a later export that differs from it only in the FLAGGED token of
+    # whole PAGE header lines (a page confirmed or newly flagged since) syncs its SOURCES row and leaves the input untouched.
+    if any((old := (inputs / "records" / (sha + ".txt")).read_bytes()) != texts[sha] and not ae.annotation_only(old, texts[sha])
+           for sha in set(texts) - set(fresh)):
         return "TEXT_CONFLICT", slug, 0, ""
     if dry:
         return "WOULD_SYNC", slug, len(fresh), ""
@@ -407,10 +466,52 @@ def _page_hold(ids, facts, sources):
     return "EVIDENCE_PAGE_OUT_OF_RANGE" if any(page > count for page, count in pairs if page and count) else None
 
 
-def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft, gate=None, ambiguous=False):
+def _flag_hold(ids, facts, flags):
+    """-> EVIDENCE_PAGE_UNCONFIRMED when a cited page is flagged (read with a flag, not yet confirmed) or its flag evidence is unreadable."""
+    for i in ids:
+        marked = (flags or {}).get(facts[i]["source_sha256"], frozenset())
+        if marked is None or _whole(facts[i]["page"]) in marked:
+            return "EVIDENCE_PAGE_UNCONFIRMED"
+    return None
+
+
+def _current_flags(root, slug, agency, shas):
+    """-> {sha256: frozenset of flagged pages, or None when its latest evidence is malformed} from the newest synced retained run.
+
+    Only a run whose last sync outcome for this agency is SYNCED or UNCHANGED counts; runs are ordered by run id (never by mail date),
+    so a later export that confirmed a page clears it, while failed, pending or conflicting runs clear nothing. The evidence text must
+    equal the analysis input once only the FLAGGED token of whole PAGE header lines is ignored; anything else holds conservatively.
+    """
+    synced = {e["run_id"]: e["outcome"] for e in _ledger(root) if e.get("kind") == "sync" and e.get("agency_id") == agency}
+    inputs, current = root / "agencies" / slug / "review" / "inputs" / "records", {}
+    for run in _runs(root):
+        if synced.get(run) not in ("SYNCED", "UNCHANGED"):
+            continue
+        try:
+            files = _load(root / ".analysis" / "runs" / run)
+            rows = [r for r in _rows(files.get("TEXTS.csv")) if r["agency_id"] == agency and r["state"] == "exported"]
+        except (OSError, ValueError, AttributeError, TypeError, csv.Error):
+            current.update(dict.fromkeys(shas))  # an unreadable newest run: hold what we cannot show
+            continue
+        for r in rows:
+            sha = r["original_sha256"]
+            if sha not in shas:
+                continue
+            try:
+                evidence = files["texts/%s.txt" % sha].decode("utf-8")
+                same = ae.unflagged(evidence) == ae.unflagged((inputs / (sha + ".txt")).read_text(encoding="utf-8"))
+                consistent = ae.flagged_headers(evidence) == set(r["flags"])
+            except (KeyError, OSError, UnicodeDecodeError):
+                same = consistent = False
+            current[sha] = frozenset(r["flags"]) if same and consistent else None
+    return current
+
+
+def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft, gate=None, ambiguous=False, flags=None):
     """-> (packet entry, None) or (None, (code, ids[, private reason])); every join is frozen in the spec and nothing is invented.
 
     `gate(finding_id, found, ambiguous)` is the human finding review (DF2007-05); without one every finding is held FINDING_UNREVIEWED.
+    `flags` ({sha256: flagged pages or None}, DF2007-07) holds a finding that cites a page read only with a flag; without it none is held.
     """
     ids = [i for i in found["fact_ids"].split(";") if i]
     for code, bad in (("EVIDENCE_FACT_MISSING", lambda f: f is None), ("EVIDENCE_FACT_UNREVIEWED", lambda f: f["status"] == "unreviewed"),
@@ -444,7 +545,7 @@ def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft, g
         pp.clean(dict(packet, finding_state=pp.PUBLIC_STATE))  # the lint sees the state the packet gets only after the human review below
     except pp.PacketError as exc:
         return None, ("EVIDENCE_REFUSED " + exc.code, ids)
-    code = _page_hold(ids, facts, sources)  # after every existing check (DF2007-04); DF2007-07's hold goes here, then the finding review
+    code = _page_hold(ids, facts, sources) or _flag_hold(ids, facts, flags)  # after every existing check (DF2007-04); then the finding review
     if code:
         return None, (code, ids)
     held = gate(row["finding_id"], found, ambiguous) if gate else ("FINDING_UNREVIEWED", None)  # last: a human decision on the exact finding
@@ -481,6 +582,7 @@ def _evaluate(root, slug, config, gate=None):
     for r in _table(out / "inputs" / "SOURCES.csv"):
         sources.setdefault(r["original_sha256"], []).append(r)
     ref, package, law_code = _law_package(root, agency)
+    flags = _current_flags(root, slug, agency, set(sources)) if agency and sources else {}
     results = []
     for row in ok:
         found, entry, hold = findings.get(row["finding_id"]), None, None
@@ -489,7 +591,7 @@ def _evaluate(root, slug, config, gate=None):
         elif codes or law_code:
             hold = _hold(row, "EVIDENCE_" + codes[0] if codes else law_code, found["fact_ids"].split(";"))
         else:
-            entry, bad = _packet_one(row, found, facts, sources, ref, package, agency, slug, draft, gate, row["finding_id"] in dups)
+            entry, bad = _packet_one(row, found, facts, sources, ref, package, agency, slug, draft, gate, row["finding_id"] in dups, flags)
             hold = _hold(row, *bad) if bad else None
         results.append((row, found, entry, hold))
     paths = [run / "PUBLIC-OK.csv", run / "FINDINGS.csv", folder / "FACTS.csv", folder / "FACT-REVIEWS.csv", out / "inputs" / "SOURCES.csv"]

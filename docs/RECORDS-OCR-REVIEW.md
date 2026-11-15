@@ -52,9 +52,17 @@ After extraction, `review_required` counts pending page bindings; busy or
 unreadable snapshots leave that count absent without changing the extraction
 outcome. A broken review chain instead refuses the count visibly.
 
-`page_use_allowed` is a pure policy helper, **not yet wired into downstream
-consumers**. Until follow-up work does that, under-80 text is gated only by this
-queue and the existing `needs_visual_review` flag. This unit does not enable
+`page_use_allowed` is the admitted page policy and the analysis lane now calls it
+(DF2007-07): a confirmed page is used, a rejected page never, an unreviewed page at
+confidence 80 or more is `read_with_flag`, and anything else (under 80, or no
+confidence) waits for a person. A record whose OCR pages are all confirmed or
+`read_with_flag`, with at least one of the latter, has text state `ocr_flagged`:
+`analysis-export` exports it with `[[PAGE n FLAGGED]]` markers and a `page_flags`
+column, so analysis may read it, but a finding that cites a flagged page stays held
+(`EVIDENCE_PAGE_UNCONFIRMED`) until that page is confirmed here and the confirmation
+travels in a later export and sync. A flag is not a review, publishes nothing and
+does not make the text confirmed. Under-80 or confidence-less text is still gated only
+by this queue and the existing `needs_visual_review` flag. This unit does not enable
 vision, perform OCR, choose human samples, authorize live runs, or send/publish
 anything. Development and acceptance use synthetic ledgers only; existing
 live-run, acquisition, canonical-store, queue and publication holds remain.
