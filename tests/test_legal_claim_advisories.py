@@ -74,6 +74,29 @@ class IntentTest(unittest.TestCase):
         self.assertEqual(adv("The sheriff's staff aren't shy: the agency's staff hid the readers."), ["intent"])
         self.assertEqual(adv("It's the city's choice; the city's staff secretly shared data."), ["intent"])
 
+    def test_complete_quotations_with_inner_apostrophe_or_newline_are_masked(self):
+        quoted = [
+            "'The agency's staff secretly shared data.'", "The record reads 'The agency's staff secretly shared data.' in full.",
+            "The record reads ‘The agency’s staff covertly shared data.’ in full.",
+            '"The agency secretly shared\ndata from 40 cameras."', "“The agency secretly shared\ndata from 40 cameras.”",
+            "'The agency secretly shared\ndata from 40 cameras.'", "‘The agency hid\nthe readers.’",
+            'The log says "The sheriff\'s office secretly shared data\nwith 40 cameras." and nothing else.',
+        ]
+        for text in quoted:
+            with self.subTest(text=text):
+                self.assertEqual(adv(text), [])
+        # the sentence boundary and line breaks survive the mask: an unquoted claim after or beside the span still warns
+        for text, expected in (
+                ("'The agency's staff secretly shared data.' The sheriff hid the readers.", ["intent"]),
+                ('"The agency secretly shared\ndata."\nThe sheriff hid the readers.', ["intent"]),
+                ('"Quoted line one\nline two." There are 40 cameras.', ["undated-count"]),
+                ("‘The agency’s staff hid it.’ The county did it in secret.", ["intent"])):
+            with self.subTest(text=text):
+                self.assertEqual(adv(text), expected)
+        # a quotation never runs over a blank line, so a stray mark cannot hide later text
+        self.assertEqual(adv('She said "we did it.\n\nThe agency secretly shared data.'), ["intent"])
+        self.assertEqual(adv("The agency's staff secretly shared data."), ["intent"])
+
     def test_negation_capability_and_clause_boundaries(self):
         silent = [
             "The agency did not secretly share data.", "The agency never hid the readers.", "No agency covertly shared data.",

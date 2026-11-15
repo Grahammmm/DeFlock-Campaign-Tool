@@ -108,7 +108,13 @@ ADVISORY_GUARD_ERROR = "warning: wording advisory (guard-error). Fix: Review the
 # matcher and clause scan so the older legal scanner's results never change.
 # Same sentence-boundary contract as SENTENCE_SPLIT (punctuation then whitespace, or a newline), compiled separately so the tiers fail independently.
 ADV_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
-ADV_QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|(?<!\w)\'[^\'\n]*\'(?!\w)')
+# A quotation may run over a line break but never over a blank line (so one stray mark cannot swallow the rest of a document), and a
+# mark between two word characters (agency's, agency’s) is an apostrophe inside the quotation, not its closing delimiter.
+_ADV_NL = r"\n(?!\s*\n)"
+ADV_QUOTED = re.compile(
+    r'"(?:[^"\n]|' + _ADV_NL + r')*"|“(?:[^”\n]|' + _ADV_NL + r')*”'
+    r"|‘(?:[^’\n]|(?<=\w)’(?=\w)|" + _ADV_NL + r")*’"
+    r"|(?<!\w)'(?:[^'\n]|(?<=\w)'(?=\w)|" + _ADV_NL + r")*'(?!\w)")
 INTENT = re.compile(r"\b(?:secretly|covertly|hid|hiding|covered\s+up|in\s+secret)\b", re.I)
 _ROLE = (r"(?:agenc(?:y|ies)|departments?|police|sheriffs?|cit(?:y|ies)|count(?:y|ies)|councils?|mayors?|chiefs?|officials?|"
          r"officers?|staff)")
@@ -131,11 +137,11 @@ _MONTH_NUMBER = {m: n for n, m in enumerate(("jan", "feb", "mar", "apr", "may", 
 
 def _blank_quotes(text):
     """Blank every complete quoted span (same length, so nothing shifts); a span that ended a sentence keeps its final .!? so the
-    sentence boundary survives. Apostrophes inside words are not quotation marks."""
+    sentence boundary survives, and line breaks inside a span stay. Apostrophes inside words are not quotation marks."""
     def blank(match):
         span = match.group(0)
         end = span[1:-1].rstrip()[-1:]
-        return " " * (len(span) - 1) + (end if end in (".", "!", "?") else " ")
+        return re.sub(r"[^\n]", " ", span[:-1]) + (end if end in (".", "!", "?") else " ")
     return ADV_QUOTED.sub(blank, text)
 
 
