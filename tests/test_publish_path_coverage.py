@@ -34,6 +34,7 @@ REVIEWED_NOT_PUBLISHING = {
     "campaign_tool/launch_check.py": "doctor --launch rehearsal build into a temp tree, removed in finally; nothing published",
     "campaign_tool/content.py": "loads and validates content; its only writes are the scaffold helpers",
     "campaign_tool/content_events.py": "validates content/events.json (shared privacy lint on every text field); it writes nothing",
+    "campaign_tool/content_suspected.py": "validates document predictions with shared privacy lint and returns public JSON text; it writes nothing (site.py retains the publication gate)",
     "campaign_tool/content_init.py": "writes the starter content/ templates for the organizer to edit",
     "campaign_tool/content_profile.py": "organizer content writer for content/agencies.json (shared lint on the new document and "
                                         "the site's privacy gate over the whole file before the write); only the next "
