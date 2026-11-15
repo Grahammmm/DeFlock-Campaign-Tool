@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -64,6 +64,29 @@ class FolderCheckCase(unittest.TestCase):
     def cli(self, *extra):
         return subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "social", "--directory", str(self.root), *extra],
                               cwd=REPO_ROOT, capture_output=True, text=True, timeout=90)
+
+    def cli_at_now(self, *extra):
+        """The real ``cli.main`` for ``social --directory ROOT *extra``, run in process with only its clock frozen at NOW.
+
+        ``main`` calls ``check_social(root)`` with the wall clock; here that one call is wrapped to pass ``now=NOW`` and
+        everything else (argument parsing, JSON/text output, exit status, error handling) is the real CLI. Returns a
+        CompletedProcess of the captured stdout/stderr and the SystemExit code (0 when main returns normally)."""
+        from campaign_tool import cli, social
+        real_check = social.check_social
+        argv = ["campaign_tool", "social", "--directory", str(self.root), *extra]
+        out, err, code = io.StringIO(), io.StringIO(), 0
+        old_umask = os.umask(0)
+        os.umask(old_umask)
+        try:
+            with patch.object(sys, "argv", argv), patch.object(social, "check_social", lambda root, now=None: real_check(root, now=NOW)), \
+                    redirect_stdout(out), redirect_stderr(err):
+                try:
+                    cli.main()
+                except SystemExit as stop:
+                    code = stop.code if isinstance(stop.code, int) else (0 if stop.code is None else 1)
+        finally:
+            os.umask(old_umask)
+        return subprocess.CompletedProcess(argv, code, out.getvalue(), err.getvalue())
 
     def tree(self):
         return {str(p): (p.read_bytes() if p.is_file() else b"", p.stat().st_mtime_ns) for p in sorted(self.root.rglob("*"))}
@@ -563,20 +586,22 @@ class Cli(FolderCheckCase):
         self.meeting()
         build_social(self.root)
         build_meeting_social(self.root, now=NOW)
+        # The fixed clock NOW, not the CLI's wall clock: the fixture meeting starts on a fixed date, so a wall-clock
+        # check goes stale the moment that date passes (main red 2026-11-15 09:01 PST).
         before = self.tree()
-        result = self.cli("--check")
+        result = self.cli_at_now("--check")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("kit/social/meetings", json.loads(result.stdout)["folders"])
-        text = self.cli("--check", "--text")
+        text = self.cli_at_now("--check", "--text")
         self.assertEqual(text.returncode, 0, text.stderr)
         self.assertIn("kit/social:\n", text.stdout)
         self.assertIn("kit/social/meetings:\n  m-one: ok\n", text.stdout)
         self.assertTrue(text.stdout.endswith("0 problem(s).\nRead-only. Nothing was posted.\n"))
         (self.social / "meetings" / "m-one.md").unlink()
-        bad = self.cli("--check", "--text")
+        bad = self.cli_at_now("--check", "--text")
         self.assertEqual(bad.returncode, 3)
         self.assertIn("  m-one: missing (missing)\n", bad.stdout)
-        self.assertEqual(self.cli("--check").returncode, 3)
+        self.assertEqual(self.cli_at_now("--check").returncode, 3)
         self.assertEqual(sorted(k for k in before if k.endswith("m-one.md")), [str(self.social / "meetings" / "m-one.md")])
 
     def test_text_needs_check_and_check_refuses_generation_selectors(self):
