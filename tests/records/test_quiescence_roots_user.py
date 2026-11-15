@@ -90,8 +90,8 @@ class RootsUser(unittest.TestCase):
         doc = json.loads(raw)
         self.assertEqual((code, doc["all_writers_stopped"], doc["checks"]["open_files"],
                           doc["checks"]["codes"]), (1, False, {"count": 2, "proc_unreadable": 0}, ["OPEN_FILE"]))
-        for leaked in (canary, "11", "12"):
-            self.assertNotIn(leaked, text)
+        self.assertEqual([line.split("=")[0] for line in text.split()], ["OPEN_FILE", "evidence_sha256"])
+        self.assertNotIn(canary, text)
         self.assertNotIn(canary, raw)
         self.assertEqual(qa._open_files_user(self.roots + [self.roots[0]]), {"count": 2, "proc_unreadable": 0})
 
