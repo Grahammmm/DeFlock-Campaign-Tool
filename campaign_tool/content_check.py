@@ -301,6 +301,13 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
             _attempt(problems, label, lambda: check_finding_agencies(finding, known, label))
 
     from .agency_actions import action_problems  # local: agency_actions imports content
+    from .content import SOURCES_UNKNOWN
+    from .content_suspected import read_suspected
+    suspected = read_suspected(root, agencies, library if library is not None else SOURCES_UNKNOWN, today, problems)
+    if suspected is not None:
+        pages = _attempt(problems, 'pages/', lambda: load_pages(content_dir, slugs))
+        if pages and any(page['slug'] == 'suspected' for page in pages):
+            problems.append('content/pages/suspected.json: collides with generated suspected.html')
     problems.extend(action_problems(root, agencies))  # DF0237-01: the build's own reader; None agencies skips only the id check
     day = today or date.today()
     officials = _officials(problems, root, agencies, day)  # RF0440-4: checked whether or not statements.json exists

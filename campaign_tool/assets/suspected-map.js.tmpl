@@ -1,0 +1,84 @@
+// Optional document predictions: independent of cameraGeojson, activePopup, counts and city filters.
+var suspectedState = null;
+function initSuspectedLayer() {
+  if (suspectedState) return;
+  var state = suspectedState = {popup: null, started: false, failed: false};
+  var toggle = document.getElementById('suspected-toggle');
+  var notice = document.getElementById('suspected-unavailable');
+  var sentence = 'A suspected location is predicted by a document. It is not a confirmed camera.';
+  var sourceId = 'suspected-locations', layerId = 'suspected-location-points', iconId = 'suspected-question';
+  function close() { if (state.popup) { state.popup.remove(); state.popup = null; } }
+  function unavailable() {
+    state.failed = true; close();
+    if (notice) { notice.textContent = 'Suspected location overlay unavailable. Read the suspected locations list.'; notice.hidden = false; }
+    try { if (map && map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', 'none'); } catch (err) {}
+  }
+  function visibility() {
+    close();
+    try { if (map && map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', !state.failed && (!toggle || toggle.checked) ? 'visible' : 'none'); }
+    catch (err) { unavailable(); }
+  }
+  if (toggle) toggle.addEventListener('change', visibility);
+  if (!map || !window.maplibregl) { unavailable(); return; }
+  function sourceLink(value) {
+    if (typeof value !== 'string') throw new Error('source');
+    if (/^[0-9a-f]{12}$/.test(value)) return '/sources/' + value + '.html';
+    var url = new URL(value);
+    if (url.protocol !== 'https:' || !url.hostname || url.username || url.password) throw new Error('source');
+    return value;
+  }
+  function feature(row) {
+    if (!row || typeof row !== 'object' || typeof row.id !== 'string' || !/^[a-z][a-z0-9-]{0,63}$/.test(row.id) ||
+        typeof row.place_label !== 'string' || !row.place_label.trim() || row.place_label.length > 160 ||
+        typeof row.as_of !== 'string' || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(row.as_of) ||
+        ['records','permit','dig_ticket','contract','council_item','other'].indexOf(row.source_kind) < 0 ||
+        typeof row.latitude !== 'number' || !Number.isFinite(row.latitude) || Math.abs(row.latitude) > 90 ||
+        typeof row.longitude !== 'number' || !Number.isFinite(row.longitude) || Math.abs(row.longitude) > 180) throw new Error('shape');
+    sourceLink(row.source);
+    return {type:'Feature', geometry:{type:'Point', coordinates:[row.longitude,row.latitude]}, properties:row};
+  }
+  function popup(event) {
+    try {
+      if (state.failed || (toggle && !toggle.checked) || !event.features || !event.features.length) return;
+      var row = event.features[0].properties, box = document.createElement('div');
+      var title = document.createElement('strong'); title.textContent = row.place_label; box.appendChild(title);
+      var text = document.createElement('p'); text.textContent = sentence; box.appendChild(text);
+      var day = document.createElement('p'); day.textContent = 'As of ' + row.as_of + '; ' + row.source_kind; box.appendChild(day);
+      var link = document.createElement('a'); link.textContent = 'Source'; link.href = sourceLink(row.source);
+      link.rel = 'noopener noreferrer'; box.appendChild(link);
+      close(); state.popup = new maplibregl.Popup().setLngLat(event.lngLat).setDOMContent(box).addTo(map);
+    } catch (err) { unavailable(); }
+  }
+  function install() {
+    if (state.started) return;
+    state.started = true;
+    try {
+      Promise.resolve(fetch('/data/suspected-locations.json')).then(function(response) {
+        if (!response.ok) throw new Error('HTTP');
+        return response.json();
+      }).then(function(doc) {
+        if (state.failed) return;
+        if (!doc || doc.schema_version !== 1 || doc.generated_from !== 'content/suspected-locations.json' ||
+            doc.notice !== sentence || !Array.isArray(doc.entries) || doc.entries.length > 200) throw new Error('shape');
+        var seen = Object.create(null), features = doc.entries.map(function(row) {
+          var f = feature(row); if (seen[row.id]) throw new Error('duplicate'); seen[row.id] = true; return f;
+        });
+        var canvas = document.createElement('canvas'); canvas.width = 40; canvas.height = 40;
+        var ctx = canvas.getContext('2d'); if (!ctx) throw new Error('canvas');
+        ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,40,40);
+        ctx.fillStyle = '#502585'; ctx.font = 'bold 34px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText('?',20,21);
+        if (!map.hasImage(iconId)) map.addImage(iconId, ctx.getImageData(0,0,40,40), {pixelRatio:2});
+        if (!map.getSource(sourceId)) map.addSource(sourceId, {type:'geojson',data:{type:'FeatureCollection',features:features}});
+        if (!map.getLayer(layerId)) map.addLayer({id:layerId,type:'symbol',source:sourceId,
+          layout:{'icon-image':iconId,'icon-allow-overlap':true,visibility:toggle && !toggle.checked ? 'none' : 'visible'}});
+        map.on('click',layerId,popup);
+        if (notice) notice.hidden = true;
+      }).catch(unavailable);
+    } catch (err) { unavailable(); }
+  }
+  try {
+    map.on('error', unavailable);
+    if (map.loaded()) install(); else map.on('load', install);
+  } catch (err) { unavailable(); }
+}

@@ -2205,6 +2205,50 @@ Exit code 0 when everything is `ok` or `moved` (or nothing is cited); 3 after al
 A reachable URL is not proof that the source is authentic, equivalent to what the content cites, factually correct or legally
 reviewed. The command never updates a URL, `checked_on` or `archived_on`.
 
+## Document-predicted suspected locations (optional)
+
+An organizer may review document evidence and add `content/suspected-locations.json`:
+
+```json
+{"schema_version":1,"entries":[{"id":"library-pole","place_label":"Fictional Library & Main","latitude":0.12345,"longitude":1.23455,"source_kind":"permit","source":"https://records.example.test/permit","as_of":"2026-01-01","agency_id":"ca-cedar-police"}]}
+```
+
+This closed envelope accepts at most 200 entries and a regular UTF-8 JSON file of
+at most 512 KiB; duplicate JSON keys, symlinks and nonregular files are refused.
+Each entry requires a unique lowercase slug `id` (1–64 characters), `place_label`
+(1–80 plain single-line Unicode characters, no markup, control/format characters
+or private contact/plate text), numeric latitude [-90,90] and longitude [-180,180],
+`source_kind` (`records`, `permit`, `dig_ticket`, `contract`, `council_item`, `other`),
+`source`, and a real `as_of` date in ASCII YYYY-MM-DD not after the build day.
+Optional `agency_id` must name a loaded campaign agency; omit it for unassigned,
+do not use null. No extra metadata or notes are accepted.
+
+Coordinates are rounded to four decimals, decimal half-up (negative zero becomes
+zero), before any public rendering or export. No hidden higher-precision copy is
+published. A source is either a public HTTPS URL of at most 500 characters (no
+credentials, localhost or non-public literal IP), or the unique 12-lowercase-hex
+prefix of a validated `sources.json` entry. The prefix links to its public record
+page even when the original is private. No URL or private original is fetched.
+`content-check` and build share the validator and name refused fields without
+echoing submitted values. Structural validation does not establish document truth.
+
+Presence, including an empty entries list, writes `suspected.html`, grouped by
+agency display name with unassigned entries last, and
+`data/suspected-locations.json`, listed in the open-data catalogue under
+`schemas/suspected-locations-open-data.schema.json`. The campaign data licence
+applies only if specified; linked records keep their own rights. Presence reserves
+`suspected.html`; without the file, existing custom pages of that name still work.
+The fixed notice is: **A suspected location is predicted by a document. It is not a confirmed camera.**
+
+With nonempty entries and a configured map, a separate checked “Suspected locations”
+overlay uses a locally drawn `?`, its own popup and legend. It stays county-wide
+when choosing a city; its checkbox affects only this layer. Map/library/fetch errors
+leave the list and camera controls usable. No map means page/export only. Suspected
+entries never enter camera totals, `cameras.html`, camera exports or agency counts.
+Absent input adds no output bytes. Removing it clears stale generated artifacts on
+the next successful atomic build; refused input preserves the prior public tree.
+Organizer/source review and ordinary publication gates still apply.
+
 ## What is never rendered
 
 - Findings that are not `state: published`, carry `needs_attorney_review`, or

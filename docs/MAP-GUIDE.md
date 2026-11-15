@@ -180,6 +180,27 @@ python3 -m campaign_tool content add-starter help-map --directory "$CAMPAIGN"
 
 Adding or correcting a camera on OpenStreetMap or the DeFlock reporting page is something a person does outside this tool. This tool never edits OpenStreetMap, and a new point appears on your map only after you refresh (steps 2 and 3) and rebuild. The page names the methods page in words; see "How to read our findings" in the generated site, described under [Generated pages and files](SITE-CONTENT.md#generated-pages-and-files).
 
+## Optional document-predicted locations
+
+A permit, contract, dig ticket or council item can predict a pole without proving
+a reader is there. After organizer review, keep these predictions in the separate
+`content/suspected-locations.json` contract documented in
+[Site content](SITE-CONTENT.md#document-predicted-suspected-locations-optional).
+Do not insert them into `cameras.geojson` or promote them into mapped observations.
+Check each public source, the date, agency association and place label; the build
+rounds coordinates to four decimal places and refuses missing sources/future dates.
+Passing those checks is not evidence that the source's prediction is true.
+
+The normal content-check/build workflow produces a grouped `/suspected.html` list
+and catalogue-linked JSON. A configured map with nonempty entries gets its own
+keyboard-operable checkbox and `? — Suspected locations (not confirmed cameras)`
+legend. The layer remains county-wide during city selection and never contributes
+to camera totals or agency camera counts. If JavaScript, MapLibre or the overlay
+data is unavailable, use the list link; confirmed-camera controls remain separate.
+An empty list publishes an honest empty page without a layer; omit the file to
+retain the old site bytes. Removing it clears stale output at the next successful
+build. No location is discovered, geocoded, fetched, sent or deployed by this feature.
+
 ## Troubleshooting
 
 | You see | Meaning and what to do |
