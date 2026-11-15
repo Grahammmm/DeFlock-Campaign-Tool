@@ -66,7 +66,7 @@ class PacketRotationReplay(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="f1b-packet-probe-") as base, \
                 patch.object(approval, "verify", side_effect=verify):
             now = T0
-        
+
             p = fresh(base, "r1")
             ident = pp.propose(p, packet(), now=now)["id"]
             MODE["m"] = "ok"
@@ -88,7 +88,7 @@ class PacketRotationReplay(unittest.TestCase):
                   try_(pp.write_change, p, ident, now=now + 120), "REFUSED approval_required")
             check("R3d status unchanged by the refusal", view(p, ident, now + 120), "approved@r0 signed_by=g-old")
             check("R3e no change file written", os.path.exists(os.path.join(p, pp.OUT, f"{ident}-r0.json")), False)
-        
+
             check("R4a cancel (no signature; anchor-independent)", try_(pp.decide, p, ident, "cancelled", "console",
                   now=now + 180, revision=0), {"id": ident, "result": "cancelled"})
             got = pp.propose(p, packet(), now=now + 240)
@@ -102,7 +102,7 @@ class PacketRotationReplay(unittest.TestCase):
                   lambda g: isinstance(g, dict) and g.get("result") == "written" and g["file"].endswith(f"{ident}-r1.json"))
             check("R4f the old revision's approval never wrote anything",
                   os.path.exists(os.path.join(p, pp.OUT, f"{ident}-r0.json")), False)
-        
+
             p5 = fresh(base, "r5")
             MODE["m"] = "ok"
             i5 = pp.propose(p5, packet(), now=now)["id"]
@@ -116,7 +116,7 @@ class PacketRotationReplay(unittest.TestCase):
             got = pp.propose(p5, packet(), now=now + 180, only_new=True)
             check("R5c only_new propose (propose-document path) reopens a rejected id", (got["result"], got["revision"]),
                   ("proposed", 1))
-        
+
             p6 = fresh(base, "r6")
             MODE["m"] = "ok"
             i6 = pp.propose(p6, packet(), now=now)["id"]
@@ -135,7 +135,7 @@ class PacketRotationReplay(unittest.TestCase):
             out = os.path.join(base, "export-r6")
             got = packet_changes.export_changes(p6, out)
             check("R6e export-changes still exports the old-key written change (no signature check)", got["active"], 1)
-        
+
             p7 = fresh(base, "r7")
             MODE["m"] = "ok"
             i7 = pp.propose(p7, packet(), now=now)["id"]
@@ -147,7 +147,7 @@ class PacketRotationReplay(unittest.TestCase):
             MODE["m"] = "ok"
             check("R7c write_change after the same anchor is back (no new event needed)",
                   try_(pp.write_change, p7, i7, now=now + 120), lambda g: isinstance(g, dict) and g.get("result") == "written")
-        
+
             p8 = fresh(base, "r8")
             i8 = pp.propose(p8, packet(), now=now)["id"]
             pp.approve(p8, i8, OLD, now=now, revision=0)
