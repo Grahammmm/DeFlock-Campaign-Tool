@@ -118,25 +118,30 @@ def _valid(manifest, run):
                 and isinstance(r.get("text_state"), str) for r in a["records"]) for a in agencies)
 
 
-def _flagged_pages(db, processing, digest):
-    """-> the set of this record's pages that may be read only with a flag, or None when any OCR page is denied.
+def _flagged_pages(db, processing, digest, strict):
+    """-> the set of this record's pages that may be read only with a flag, or None when the record may not be exported.
 
     Every current review-required OCR page goes through ocr_review.page_use_allowed against the read-only snapshot and the
-    exact review bindings; a broken review chain or unreadable review file denies the record (never read as confirmed).
+    exact review bindings. A rejected page, a broken review chain or an unreadable review file denies the record, and so does
+    a page whose earlier decision no longer binds (changed confidence or derivative). A page that was never reviewed and is
+    under 80 or has no confidence denies it when the manifest claims `ocr_flagged` (strict); a `text_reviewed` manifest from
+    the same outputs run keeps its own claim for such a page, as before this policy was wired.
     """
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='page_state'").fetchone():
         return set()  # an older ledger without page rows has nothing to review
     reviews = processing.parent / "ocr-review-v1" / "reviews.jsonl"
     flagged = set()
     try:
+        decided = {(r["original_sha256"], r["page_no"]) for r in ocr_review.read_reviews(reviews)}
         for page in ocr_review.pages(db):
             if page["original_sha256"] != digest:
                 continue
             allowed, reason = ocr_review.page_use_allowed(page, reviews)
-            if not allowed:
+            if allowed:
+                if reason == "read_with_flag":
+                    flagged.add(page["page_no"])
+            elif reason == "review_rejected" or strict or (digest, page["page_no"]) in decided:
                 return None
-            if reason == "read_with_flag":
-                flagged.add(page["page_no"])
     except (ValueError, OSError, sqlite3.Error):
         return None
     return flagged
@@ -152,7 +157,7 @@ def _prepare(db, processing, digest, state):
         return None, None, None, "EXTRACTION_UNAVAILABLE"
     if diagnostics or not units:
         return None, None, None, "EXTRACTION_UNAVAILABLE"
-    flagged = _flagged_pages(db, processing, digest)
+    flagged = _flagged_pages(db, processing, digest, state == "ocr_flagged")
     if flagged is None:
         return None, None, None, "TEXT_NOT_READY"
     pages = {}

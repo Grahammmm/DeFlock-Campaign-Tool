@@ -45,10 +45,19 @@ records analysis-export --project P (--run RUN | --after RUN|- [--max-runs N]) (
   settled run (`EXPORT_RUN_UNSETTLED`, exit 3, otherwise).
 - **Folder per run** (`<run_id>/`): `analysis-ready.json` (byte copy); `texts/<original_sha256>.txt` (0600; one
   `[[PAGE n]]` block per page, unit text in ordinal order) only for a record whose text state is `text_reviewed`
-  and whose current extraction units are all paged and hash-bound; `TEXTS.csv`
-  (`original_sha256,agency_id,request_id,pages,text_sha256,state,received_at,received_at_source`); `EXPORT.json`
+  or `ocr_flagged` (DF2007-07) and whose current extraction units are all paged and hash-bound; `TEXTS.csv`
+  (`original_sha256,agency_id,request_id,pages,text_sha256,state,received_at,received_at_source`, plus a ninth column
+  `page_flags` only in a run export that holds at least one flagged record: compact JSON such as
+  `{"1":"read_with_flag","3":"read_with_flag"}`, `{}` on the other rows; a run with no flagged record keeps the exact
+  eight-column bytes); `EXPORT.json`
   (`records-analysis-export-v1`, `schemas/records-analysis-export-v1.json`; sha256 of every other file; written
   last).
+- **Flagged pages (DF2007-07).** Each current review-required OCR page goes through `ocr_review.page_use_allowed` against the
+  read-only snapshot and the exact review bindings when the export is built (a manifest string alone cannot bypass a rejection
+  or a binding that changed since its decision). An unreviewed page at confidence 80 or more is `read_with_flag`: its header is
+  written `[[PAGE n FLAGGED]]` and it is listed in `page_flags`. Under 80, no confidence, a rejected page, a broken review
+  chain or any other denied page exports no text for the record (`TEXT_NOT_READY`); there is never partial text. A flag is
+  not a review: confirmation happens only through the OCR review queue and reaches the analysis host in a later run's export.
 - **States.** `exported`, `TEXT_NOT_READY` (any other text state, including OCR text not yet visually checked)
   or `EXTRACTION_UNAVAILABLE` (no current, complete extraction). A not-ready record has a row and no text file.
 - **Dates.** `received_at` and `received_at_source` are copied from the same run's `received-items.json` item with
@@ -86,7 +95,9 @@ records analysis-sync --root R --last-received | --pending
   never pruned by code). Its `analysis-ready.json` is the copy DFGL-10 reads for `law_package` and per-record metadata.
 - **Replay.** Every call walks the retained runs in id order; each run x agency pair without a final ledger outcome is placed:
   the agency profile is found by `records_agency_id` (`PROFILE_MISSING`), `texts/<sha>.txt` goes to
-  `agencies/<slug>/review/inputs/records/<sha>.txt` (different existing bytes are `TEXT_CONFLICT`, never overwritten), `MANIFEST.csv`
+  `agencies/<slug>/review/inputs/records/<sha>.txt` (different existing bytes are `TEXT_CONFLICT`, never overwritten, except that a
+  difference only in the `FLAGGED` token of whole `[[PAGE n]]` header lines is an annotation: the existing input keeps its
+  export-time marker and the newer `SOURCES.csv` row syncs), `MANIFEST.csv`
   gets one `(file, orig_sha256)` row per sha, `inputs/SOURCES.csv` one row per `(sha, run_id)` carrying `received_at` and
   `received_at_source` verbatim, then `analysis-config` rebuilds the CONFIG (`CONFIG_INVALID`). `PROFILE_MISSING`, `TEXT_CONFLICT`
   and `CONFIG_INVALID` stay pending and retry every call (a new ledger line only when the code changes); `SYNCED`, `UNCHANGED`,
@@ -148,6 +159,11 @@ and prints one `<slug> PACKET_*` line (and one `kind: packet` ledger line) holdi
   is no larger than the page count in the earliest-received `SOURCES.csv` row of that record (the synced `TEXTS.csv` `pages`). A malformed page or one above the count holds the
   whole finding `EVIDENCE_PAGE_OUT_OF_RANGE`; a missing, empty or non-positive count holds it `EVIDENCE_PAGE_COUNT_UNKNOWN` (page syntax is judged first, then unknown counts, then bounds).
   Nothing is repaired or invented, and a valid packet's bytes and key are unchanged.
+- **Flagged pages (DF2007-07).** After the page check and before the finding review, a finding that cites a page whose latest synced export marked it `read_with_flag` is held
+  `EVIDENCE_PAGE_UNCONFIRMED`, until a later run's export shows that page confirmed and the next tick re-reads it (the finished review DAG is not rerun; a `SOURCES.csv` row for the new run changes the packet key).
+  The latest observation is the newest retained run whose sync outcome for the agency is `SYNCED` or `UNCHANGED`, ordered by run id (never by mail date); failed, pending or conflicting runs clear nothing, and
+  evidence that is malformed or whose text differs from the analysis input beyond header annotations holds conservatively. A flag on another page of the same record does not hold the finding. Hold order:
+  existing checks, then `EVIDENCE_PAGE_OUT_OF_RANGE` / `EVIDENCE_PAGE_COUNT_UNKNOWN`, then `EVIDENCE_PAGE_UNCONFIRMED`, then `FINDING_UNREVIEWED` / `FINDING_REJECTED` / `FINDING_REVIEW_DEFERRED`.
 - **Human finding review (DF2007-05).** A model's `PUBLIC-OK` is not a human decision. After the page check, the last hold is the finding review: no bound approve in
   `.analysis/finding-reviews.jsonl` → `FINDING_UNREVIEWED`; the latest decision a reject → `FINDING_REJECTED` (its private reason rides only in the held row of the outbox file, never in a code, count or ledger line);
   a journal or trust anchor that is unavailable → `FINDING_REVIEW_DEFERRED` (never a final refusal; the next tick re-checks). `finding_state` is set to `approved for public` only after that gate passes.

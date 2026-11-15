@@ -160,7 +160,7 @@ class ListAndPage(OcrBase):
 
 class Decisions(OcrBase):
     def test_confirm_is_journaled_applied_and_the_page_becomes_reviewed(self):
-        self.assertEqual(self.state(self.sha_a, "run_20261110T160000Z_aaaaaaaa")[0::2], ("ocr_unreviewed", "TEXT_NOT_READY"))
+        self.assertEqual(self.state(self.sha_a, "run_20261110T160000Z_aaaaaaaa")[0::2], ("ocr_flagged", None)  # confidence 91, unreviewed: usable with a flag (DF2007-07))
         self.make_export()
         self.up()
         before_root, before_live = tree_state(self.root), tree_state(self.live)
@@ -394,7 +394,7 @@ class ApplyRefusals(OcrBase):
             con.commit()
         self.assertEqual(self.apply_journal(), ["REFUSED ocr_page_changed"])
         self.assertEqual(self.review_lines(), [])
-        self.assertEqual(self.state(self.sha_a, "run_20261110T160000Z_aaaaaaaa")[0], "ocr_unreviewed")
+        self.assertEqual(self.state(self.sha_a, "run_20261110T160000Z_aaaaaaaa")[0], "ocr_flagged")
 
     def test_replay_is_a_noop_and_a_conflicting_decision_is_refused(self):
         self.journal_one()
