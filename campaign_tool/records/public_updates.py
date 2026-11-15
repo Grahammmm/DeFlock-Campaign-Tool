@@ -364,6 +364,8 @@ def enable(project, signature, now=None):
         try:
             who = approval.verify(approval.payload(SWITCH_SCOPE, project_id(project), switch_content(project, rnd),
                                                    round_=rnd), signature)
+        except approval.TrustUnavailable:
+            raise PublicUpdatesError("approval_unavailable") from None
         except approval.ApprovalError:
             raise PublicUpdatesError("approval_required") from None
         lock.append("switch", now, state="on", actor=who, principal=who, round=rnd, signature=signature)

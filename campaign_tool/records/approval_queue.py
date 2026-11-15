@@ -255,6 +255,8 @@ def _public(row):
     if row["status"] == "approved":
         out["approved_by"] = row["approved_by"]
         out["approval_evidence"] = row["approval_evidence"]
+    if row.get("approval_unverified"):
+        out["approval_unverified"] = row["approval_unverified"]
     if row.get("reason") and row["status"] == "rejected":
         out["reason"] = row["reason"]
     return out
@@ -284,6 +286,8 @@ def _fold(root, raw, verify=True):
         if kind == "edited":
             _need(isinstance(ev.get("body"), str), "queue_invalid")
             row.update(body=ev["body"], status="pending", reason=None, actor=ev["actor"])
+            row.pop("approval_recorded", None)
+            row.pop("approval_unverified", None)
             row.pop("approved_by", None)
             row.pop("approval_evidence", None)
         elif kind == "reject":
@@ -294,12 +298,18 @@ def _fold(root, raw, verify=True):
             _need(isinstance(ap, dict) and row["status"] == "pending" and ap.get("signed_revision") == row["revision"]
                   and ap.get("project") == _project_id(root) and isinstance(ap.get("signature"), str)
                   and isinstance(ap.get("principal"), str), "queue_invalid")
+            row["approval_recorded"] = True
+            row["approval_unverified"] = "untrusted"
             valid = False
             if verify:
                 try:
                     valid = approval.verify(_payload(root, row, row["revision"]), ap["signature"]) == ap["principal"]
+                except approval.TrustUnavailable:
+                    row["approval_unverified"] = "unavailable"
                 except approval.ApprovalError:
                     valid = False
+            if valid:
+                row.pop("approval_unverified", None)
             if valid:  # a forged or unverifiable approval never materializes as approved
                 row.update(status="approved", actor=ap["principal"], approved_by=ap["principal"],
                            approval_evidence={"signed_revision": ap["signed_revision"], "project": ap["project"],
@@ -459,6 +469,12 @@ def approval_payload(root, id):
     return _payload(root, row, row["revision"])
 
 
+def _guard_recorded(row):
+    if row.get("approval_recorded") and row["status"] != "approved":
+        raise ApprovalQueueError("approval_unavailable" if row.get("approval_unverified") == "unavailable"
+                                 else "approval_unverified")
+
+
 def approve(root, id, actor):
     if not (isinstance(actor, dict) and actor.get("kind") == "ssh" and isinstance(actor.get("signature"), str)):
         raise ApprovalQueueError("approval_required")
@@ -467,9 +483,12 @@ def approve(root, id, actor):
         if row["status"] == "approved" and row["approval_evidence"]["signature_sha256"] == \
                 hashlib.sha256(actor["signature"].encode()).hexdigest():
             return _public(row)
+        _guard_recorded(row)
         _need(row["status"] == "pending", "invalid_transition")
         try:
             principal = approval.verify(_payload(root, row, row["revision"]), actor["signature"])
+        except approval.TrustUnavailable as error:
+            raise ApprovalQueueError("approval_unavailable") from error
         except approval.ApprovalError as error:
             raise ApprovalQueueError("approval_required") from error
         store.append([_event("approve", id, row["revision"] + 1, principal, approval={
@@ -485,6 +504,7 @@ def reject(root, id, actor, reason):
         row = _row(root, store, id)
         if row["status"] == "rejected" and row.get("reason") == reason:
             return _public(row)
+        _guard_recorded(row)
         _need(row["status"] == "pending", "invalid_transition")
         store.append([_event("reject", id, row["revision"] + 1, label, reason=reason)])
         return _public(_row(root, store, id))

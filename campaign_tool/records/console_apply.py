@@ -24,13 +24,13 @@ FILE = "decisions-applied.jsonl"
 INTENT = "INTENT"  # write-ahead receipt line (never an outcome): recorded before an entry's live mutation, see ``settle``
 QUEUE_ACTIONS = ("approve", "reject", "edit")
 OCR_ACTIONS = {"ocr_confirm": "confirmed", "ocr_reject": "rejected"}  # OCR-REVIEW-ROUTE-1: the existing ocr_review.mark
-TRANSIENT = {"queue_busy", "queue_io", "journal_busy", "ocr_ledger_busy"}  # not final: the entry stays unreceipted and is tried at the next run
+TRANSIENT = {"approval_unavailable", "queue_busy", "queue_io", "journal_busy", "ocr_ledger_busy"}  # not final: the entry stays unreceipted and is tried at the next run
 # A store that cannot be read at all (a moved or restored project whose approvals name another path, a damaged journal) says
 # nothing about the decision itself: the entry is deferred like a transient fault, never receipted as a final refusal.
 STORE_FAULTS = {"queue_invalid", "journal_invalid", "packets_unavailable", "switch_unavailable", "file_invalid",
                 "file_too_large", "project_invalid", "ocr_ledger_unreadable", "ocr_review_chain_broken"}
 NOT_FINAL = TRANSIENT | STORE_FAULTS
-CODES = {"stale_revision": "STALE_REVISION", "packet_stale": "STALE_REVISION", "approval_required": "SIGNATURE_REFUSED",
+CODES = {"approval_unverified": "INVALID_TRANSITION", "stale_revision": "STALE_REVISION", "packet_stale": "STALE_REVISION", "approval_required": "SIGNATURE_REFUSED",
          "invalid_transition": "INVALID_TRANSITION", "packet_not_open": "INVALID_TRANSITION"}
 
 
@@ -214,14 +214,16 @@ def _landed(project, entry, base):
     return False
 
 
-def _defer(entry, code):
+def _defer(entry, code, trust_deferred=None):
     """None (leave the entry unreceipted for the next run); a store fault is logged on stderr with its code."""
+    if code == "approval_unavailable" and trust_deferred is not None:
+        trust_deferred.append(code)
     if code in STORE_FAULTS:
         print("decisions-apply: %s deferred (store unreadable: %s)" % (str(entry.get("entry_id"))[:12], code), file=sys.stderr)
     return None
 
 
-def settle(project, entry, intents):
+def settle(project, entry, intents, trust_deferred=None):
     """The final outcome of one unreceipted entry, or None to leave it for the next run.
 
     Write-ahead: an INTENT line (with the target's ``base``) is receipted before the live mutation, so a run that dies after
@@ -240,7 +242,7 @@ def settle(project, entry, intents):
         base = _mark(project, entry)  # nothing of ours landed since the old base: this attempt starts from where the target is now
     except (aq.ApprovalQueueError, pp.PacketError, pu.PublicUpdatesError) as error:
         if error.code in NOT_FINAL:
-            return _defer(entry, error.code)  # before any write-ahead line: nothing is recorded for an unreadable store
+            return _defer(entry, error.code, trust_deferred)  # before any write-ahead line: nothing is recorded for an unreadable store
         base = None  # a per-entry refusal: outcome() below refuses with the same code
         write = not known  # an existing INTENT keeps its base rather than losing it
     except OSError:
@@ -255,10 +257,10 @@ def settle(project, entry, intents):
             if isinstance(error, OSError) or error.code in TRANSIENT:
                 return None
             raise
-    return outcome(project, entry)
+    return outcome(project, entry, trust_deferred)
 
 
-def outcome(project, entry):
+def outcome(project, entry, trust_deferred=None):
     """APPLIED, STALE_REVISION, SIGNATURE_REFUSED, INVALID_TRANSITION or REFUSED <code>; None for a transient or store fault."""
     try:
         _apply(project, entry)
@@ -272,7 +274,7 @@ def outcome(project, entry):
         code = "queue_io"
     else:
         return "APPLIED"
-    return _defer(entry, code) if code in NOT_FINAL else CODES.get(code) or "REFUSED " + code
+    return _defer(entry, code, trust_deferred) if code in NOT_FINAL else CODES.get(code) or "REFUSED " + code
 
 
 def main(argv=None):
@@ -292,19 +294,23 @@ def main(argv=None):
                 os.close(fd)
         aq._need(len(raw) <= cj.MAX_JOURNAL, "journal_invalid")
         entries, (done, intents), pid = cj.parse(raw), ledger(project), aq._project_id(project)
+        trust_deferred = []
         for entry in entries:
             if entry["entry_id"] in done:
                 result = "ALREADY"
             elif entry.get("source_project_id") != pid:
                 result = "PROJECT_MISMATCH"  # nothing applied and no receipt: another project (or this one moved) owns it
             else:
-                result = settle(project, entry, intents)
+                result = settle(project, entry, intents, trust_deferred)
                 if result is None:
                     result = "DEFERRED"
+
                 else:
                     _receipt(project, entry["entry_id"], result)
                     done[entry["entry_id"]] = result
             print("decisions-apply: %s %s %s" % (entry["entry_id"][:12], str(entry.get("action"))[:20], result))
+        if trust_deferred:
+            print("decisions-apply: approval trust unavailable (anchor or verifier unavailable)")
     except (cj.JournalError, aq.ApprovalQueueError, OSError) as error:
         code = getattr(error, "code", None) or (str(error) if isinstance(error, cj.JournalError) else type(error).__name__)
         print("decisions-apply: refused (%s)" % code, file=sys.stderr)

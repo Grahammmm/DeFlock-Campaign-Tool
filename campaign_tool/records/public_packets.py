@@ -316,6 +316,8 @@ def enable(project, signature, now=None):
         try:
             who = approval.verify(approval.payload(SWITCH_SCOPE, project_id(project), _switch_content(project, rnd), round_=rnd),
                                   signature)
+        except approval.TrustUnavailable:
+            raise PacketError("approval_unavailable") from None
         except approval.ApprovalError:
             raise PacketError("approval_required") from None
         lock.append("switch", now, state="on", principal=who, round=rnd, signature=signature)
@@ -496,6 +498,8 @@ def approve(project, ident, signature, now=None, *, revision=None):
         _lint(row["packet"]["title"], row["packet"]["text"])
         try:
             who = approval.verify(_payload(project, row), signature)
+        except approval.TrustUnavailable:
+            raise PacketError("approval_unavailable") from None
         except approval.ApprovalError:
             raise PacketError("approval_required") from None
         lock.append("approved", now, id=ident, revision=row["revision"], principal=who, signature=signature)
@@ -530,6 +534,8 @@ def write_change(project, ident, now=None):
         packet = clean(row["packet"])
         try:
             who = approval.verify(_payload(project, row), row["signature"])
+        except approval.TrustUnavailable:
+            raise PacketError("approval_unavailable") from None
         except approval.ApprovalError:
             raise PacketError("approval_required") from None
         _need(who == row["signed_by"], "approval_required")

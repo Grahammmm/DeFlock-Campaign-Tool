@@ -189,11 +189,54 @@ def _endpoints(inspect):
     return result
 
 
-def create_body(before, new_image_id):
+TRUST_MOUNT = {"Type": "bind", "Source": "/etc/deflock", "Target": "/etc/deflock", "ReadOnly": True}
+
+
+def trust_mounts(mounts, action):
+    """Only the single fixed directory bind may be added/dropped. Conflicts are refused."""
+    mounts = json.loads(json.dumps(mounts or []))
+    if action not in ("add", "drop"):
+        raise StepFailed("invalid trust mount action")
+    existing = [m for m in mounts if m.get("Target") == TRUST_MOUNT["Target"]]
+    if existing and existing != [TRUST_MOUNT]:
+        raise StepFailed("conflicting trust mount")
+    if action == "add":
+        if not existing:
+            mounts.append(dict(TRUST_MOUNT))
+    else:
+        mounts = [m for m in mounts if m != TRUST_MOUNT]
+    return mounts
+
+
+def _trust_view(before, after, action):
+    """Normalize only the authorized mount delta; all other inspect fields stay strict."""
+    before, after = json.loads(json.dumps(before)), json.loads(json.dumps(after))
+    before.setdefault("HostConfig", {})["Mounts"] = trust_mounts(
+        before.get("HostConfig", {}).get("Mounts"), action)
+    # Inspect's derived mount includes daemon fields; require the exact source, type, RO and default propagation.
+    for view in (before, after):
+        matches = [m for m in view.get("Mounts", []) if m.get("Destination") == "/etc/deflock"]
+        for m in matches:
+            if (m.get("Type"), m.get("Source"), m.get("RW"), m.get("Propagation", "rprivate")) != (
+                    "bind", "/etc/deflock", False, "rprivate") or m.get("Mode", "") not in ("", "ro"):
+                raise StepFailed("conflicting derived trust mount")
+    old = [m for m in before.get("Mounts", []) if m.get("Destination") == "/etc/deflock"]
+    new = [m for m in after.get("Mounts", []) if m.get("Destination") == "/etc/deflock"]
+    expected = 1 if action == "add" else 0
+    if len(new) != expected or len(old) > 1:
+        raise StepFailed("trust mount change missing or duplicated")
+    for view in (before, after):
+        view["Mounts"] = [m for m in view.get("Mounts", []) if m.get("Destination") != "/etc/deflock"]
+    return before, after
+
+
+def create_body(before, new_image_id, trust_mount=None):
     """Engine API create body: the saved settings with only the image changed."""
     body = json.loads(json.dumps(before["Config"]))
     body["Image"] = new_image_id
     host = json.loads(json.dumps(before["HostConfig"]))
+    if trust_mount:
+        host["Mounts"] = trust_mounts(host.get("Mounts"), trust_mount)
     body["HostConfig"] = host
     mode = host.get("NetworkMode") or ""
     if mode not in ("host", "none") and not mode.startswith("container:"):
@@ -238,7 +281,7 @@ def default_normalisations(before, after):
             if left.get(k) != right.get(k) and canon(left.get(k)) == canon(right.get(k))]
 
 
-def inspect_diff(before, after, old_image_config, new_image_config):
+def inspect_diff(before, after, old_image_config, new_image_config, trust_mount=None):
     """Setting names that differ beyond image, ID, creation and state.
 
     Env and Labels may only gain keys that the new image itself adds (keys the
@@ -246,6 +289,11 @@ def inspect_diff(before, after, old_image_config, new_image_config):
     keep its value.
     """
     diffs = []
+    if trust_mount:
+        try:
+            before, after = _trust_view(before, after, trust_mount)
+        except StepFailed:
+            return ["trust_mount"]
     a, b = _normalize(before), _normalize(after)
     for key in sorted(set(a) | set(b)):
         left, right = a.get(key), b.get(key)
@@ -875,6 +923,10 @@ class Swap:
         mounts, excluded = [], []
         for item in sorted(before.get("Mounts") or [], key=lambda m: m["Destination"]):
             kind = item.get("Type")
+            if (kind, item.get("Source"), item.get("Destination"), item.get("RW")) == (
+                    "bind", "/etc/deflock", "/etc/deflock", False):
+                excluded.append({"type": kind, "destination": "/etc/deflock", "reason": "external read-only trust anchor"})
+                continue
             if kind == "tmpfs":
                 excluded.append({"type": kind, "destination": item["Destination"], "reason": "not persistent"})
                 continue
@@ -908,6 +960,36 @@ class Swap:
             self.fail("the container has no persistent mounts to snapshot")
         return mounts, excluded
 
+    def preflight_trust(self, before):
+        action = self.state.get("trust_mount")
+        if not action:
+            return
+        # Validate create delta before Q1 even on drop. Never interpret Binds as authority.
+        create_body(before, before["Image"], action)
+        if any(b.split(":")[1] == "/etc/deflock" for b in before.get("HostConfig", {}).get("Binds") or []
+               if ":" in b):
+            self.fail("trust path already configured in Binds")
+        if action != "add":
+            return
+        engine_approval = _load("flock_trust_approval", "../../campaign_tool/approval.py")
+        try:
+            # Force the unchanged HOST rule, not the namespace dispatcher.
+            engine_approval._require_root_host(engine_approval.TRUSTED_SIGNERS)
+            text = Path(self.state["records_wrapper"]).read_text()
+            pins = re.findall(r'^ENGINE_DIR=[\'\"]?(/[A-Za-z0-9_./-]+/engine-[0-9a-f]{7,40})[\'\"]?$', text, re.M)
+            if len(pins) != 1:
+                self.fail("cannot identify the wrapper's single engine pin")
+        except (OSError, engine_approval.ApprovalError):
+            self.fail("host approval anchor unavailable")
+        self.check_anchor_engine(pins[0])
+
+    def check_anchor_engine(self, engine):
+        code, out, _ = self.sh(["docker", "exec", "-u", "coder", "-w", engine, self.state["container"],
+                                "/opt/campaign-tool/venv/bin/python", "-B", "-m", "campaign_tool.approval",
+                                "--anchor-status"], check=False)
+        if code != 0 or not out.startswith("anchor "):
+            self.fail("pinned engine is not DEFERRED-capable (anchor-status)")
+
     def check_reuse(self, before, tag_id):
         """Validate --reuse-image: an earlier run built and V1-verified this tag on this base image."""
         args = self.args
@@ -929,13 +1011,14 @@ class Swap:
             self.fail("--reuse-image: that run did not pass [V1]")
         if not IMAGE_ID_RE.fullmatch(image) or not HEX64_RE.fullmatch(wheel):
             self.fail("--reuse-image: that run recorded no valid image ID and wheel sha256")
-        if prev.get("old_image") != before["Image"]:
+        same_image = bool(getattr(args, "trust_mount", None)) and image == before["Image"]
+        if not same_image and prev.get("old_image") != before["Image"]:
             self.fail("--reuse-image: that image was built on another base image than the target's")
         if tag_id != image:
             self.fail(f"--reuse-image: {args.new_tag} resolves to {tag_id}, not the recorded {image}")
         old_layers = (self.image_inspect(before["Image"]).get("RootFS") or {}).get("Layers") or []
         new_layers = (self.image_inspect(image).get("RootFS") or {}).get("Layers") or []
-        if not old_layers or len(new_layers) <= len(old_layers) or new_layers[:len(old_layers)] != old_layers:
+        if not same_image and (not old_layers or len(new_layers) <= len(old_layers) or new_layers[:len(old_layers)] != old_layers):
             self.fail("--reuse-image: the image's layers do not extend the target's image layers")
         return {"run_dir": str(prev_dir), "new_image_id": image, "wheel_sha256": wheel}
 
@@ -944,7 +1027,8 @@ class Swap:
         st.update({"container": args.container, "pause_units": list(args.pause_unit),
                    "new_tag": args.new_tag, "build_python": args.build_python,
                    "accepted_malformed_sqlite": dict(args.accepted_malformed_sqlite),
-                   "done": [], "phase": "running"})
+                   "done": [], "phase": "running", "trust_mount": getattr(args, "trust_mount", None),
+                   "records_wrapper": getattr(args, "records_wrapper", None)})
         _, out, _ = self.sh(["docker", "info", "--format", "{{json .SecurityOptions}}"], check=False)
         if "name=rootless" not in out:
             self.fail("the Docker daemon is not rootless; this driver needs rootless Docker")
@@ -958,6 +1042,7 @@ class Swap:
         if before is None:
             self.fail(f"container {args.container} not found")
         self.before = before
+        self.preflight_trust(before)
         st.update({"old_id": before["Id"], "old_image": before["Image"],
                    "target_was_running": bool(before["State"]["Running"])})
         st["helper_image"] = args.helper_image or before["Image"]
@@ -1322,7 +1407,9 @@ class Swap:
         self.require_gate()
         st = self.state
         before = self.before or self.read_json("inspect-before.json")
-        body = create_body(before, st["new_image_id"])
+        body = create_body(before, st["new_image_id"], st.get("trust_mount"))
+        if st.get("trust_mount"):
+            self.log("    trust mount " + st["trust_mount"] + ": " + json.dumps(TRUST_MOUNT, sort_keys=True))
         path = "/containers/create?name=" + urllib.parse.quote(st["container"])
         if self.dry:
             self.log(f"    would POST {path} (saved Config/HostConfig/endpoints, Image=<NEW_IMAGE_ID>)")
@@ -1335,7 +1422,7 @@ class Swap:
         st["new_id"] = response["Id"]
         self.save_state()
         after = self.inspect(st["new_id"])
-        diff = inspect_diff(before, after, self.image_config(st["old_image"]), self.image_config(st["new_image_id"]))
+        diff = inspect_diff(before, after, self.image_config(st["old_image"]), self.image_config(st["new_image_id"]), st.get("trust_mount"))
         self.write_json("inspect-new.json", after)
         self.write_json("create-diff.json", diff)
         if after["Image"] != st["new_image_id"] or after["State"]["Running"]:
@@ -1748,6 +1835,8 @@ class RehearsalSystem(System):
 class RehearsalSwap(Swap):
     """Swap with stand-ins for the steps that need the pinned engine build.
 
+    The anchor-status engine precondition is simulated; actual activation must be
+    checked independently before rehearsal. The host anchor rule is not simulated.
     [B1] writes a synthetic wheel into $RUN/build/dist, [B2] layers it onto
     the throwaway target's image with docker build, [V1] and [A4] check that
     wheel by hash in the image and in the running replacement. Every other
@@ -1763,6 +1852,11 @@ class RehearsalSwap(Swap):
             self.log("    preflight: rehearsal only, --apply would refuse this checkout: " + "; ".join(problems))
         else:
             self.log(f"    preflight: checkout is main at origin/main {head[:12]}")
+
+    def check_anchor_engine(self, engine):
+        # Like B1/V1 this is an explicit stand-in: the synthetic target has no pinned engine.
+        # The attended runbook must check the real engine independently before rehearsal.
+        self.log("    rehearsal: anchor-status engine precondition is simulated; real activation check required separately")
 
     def b1_wheel(self):
         self.require_gate()
@@ -1898,6 +1992,7 @@ class Rehearsal:
         return argparse.Namespace(
             mode="apply", rehearse=True, container=self.name, pause_unit=[f"{self.name}-mail"],
             private=str(self.root / f"{self.name}-private"), new_tag=self.tag,
+            trust_mount=self.args.trust_mount, records_wrapper=self.args.records_wrapper,
             reuse_image=None, build_python=None, helper_image=base, accept_a2=None,
             mail_wait=60, stop_timeout=20, health_wait=120, helper_timeout=3600,
             accepted_malformed_sqlite=dict(pins))
@@ -2056,6 +2151,8 @@ def parse_args(argv):
     parser.add_argument("--private", help="owner-private directory outside Git (created 0700)")
     parser.add_argument("--new-tag", help="new image tag that does not exist yet (name:tag), or the tag "
                                           "that --reuse-image built")
+    parser.add_argument("--trust-mount", choices=("add", "drop"), help="opt-in fixed read-only /etc/deflock directory bind")
+    parser.add_argument("--records-wrapper", help="existing records wrapper whose ENGINE_DIR pin must support anchor-status (required for trust-mount add)")
     parser.add_argument("--reuse-image", metavar="PREV_RUN_DIR",
                         help="reuse the --new-tag image that an earlier run under --private built and passed "
                              "[V1] with; [B1]/[B2] skip the rebuild, [V1] runs again (--apply/--dry-run)")
@@ -2079,6 +2176,10 @@ def parse_args(argv):
                              "requirement only; RELPATH is relative to its mount, SHA256 pins its bytes "
                              "(repeatable; --apply/--dry-run)")
     args = parser.parse_args(argv)
+    if args.trust_mount == "add" and not args.records_wrapper:
+        parser.error("--trust-mount add requires --records-wrapper")
+    if args.records_wrapper and args.trust_mount != "add":
+        parser.error("--records-wrapper requires --trust-mount add")
     try:
         args.accepted_malformed_sqlite = snapshot_evidence.parse_accepted(args.accept_malformed_sqlite)
     except ValueError as error:
@@ -2100,6 +2201,8 @@ def parse_args(argv):
     if args.resume or args.rollback:
         if args.accept_malformed_sqlite:
             parser.error("--accept-malformed-sqlite is fixed at --apply; the run's state.json keeps it")
+        if args.trust_mount:
+            parser.error("--trust-mount is fixed at --apply; state.json keeps it")
         if args.reuse_image:
             parser.error("--reuse-image is fixed at --apply; the run's state.json keeps it")
         args.run_dir = args.resume or args.rollback
