@@ -755,6 +755,7 @@ ROUTES = {"/approvals/approve": ("approve", ("csrf_token", "id", "signature")),
           "/approvals/reject": ("reject", ("csrf_token", "id", "reason")),
           "/approvals/edit": ("edit", ("csrf_token", "id", "body", "expected_revision"))}
 SEND_ROUTE = ("send", ("csrf_token", "id", "fingerprint", "signature", "to", "confirm"))
+RELINK_PATH = "/message-links/relink"
 SECURITY = (("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"), ("Referrer-Policy", "same-origin"),
             ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
                                         "base-uri 'none'; frame-ancestors 'none'"))
@@ -967,6 +968,33 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return 400
         return fields
 
+    def _post_relink(self):
+        """POST /message-links/relink: "This tie is wrong" for one message. It only queues the replacement decision (live) or
+        journals a queue-only action (journal mode); no link is appended and nothing is approved here."""
+        fields = self._body()
+        if isinstance(fields, int):
+            return self._fail(fields)
+        if set(fields) != {"csrf_token", "message_sha256", "supersedes"}:
+            return self._fail(400)
+        if not hmac.compare_digest(fields["csrf_token"].encode("utf-8"), self.server.csrf_token.encode("ascii")):
+            return self._fail(403)
+        sha, supersedes = fields["message_sha256"], fields["supersedes"]
+        if not (unmatched.HEX64.fullmatch(sha) and unmatched.HEX64.fullmatch(supersedes)):
+            return self._fail(400)
+        if self.server.decisions_dir is not None:
+            if console_journal.relink(self, sha, supersedes):
+                self._send(200, console_layout.shell("Queued for next apply", "<h1>Queued for next apply</h1><p>Your note that this tie "
+                           "is wrong is recorded. At the next apply a replacement decision is queued for review; the tie has not "
+                           "changed and nothing is sent.</p><p><a href=\"/\">Back to Home</a></p>"))
+            return
+        try:
+            ident, _ = unmatched.queue_relink(self.server.options["project"], self.options["run_id"], sha, supersedes)
+        except ValueError as error:
+            return self._fail(409 if str(error) == "message_link_stale" else 400 if str(error) == "message_link_invalid" else 503)
+        except (approval_queue.ApprovalQueueError, OSError):
+            return self._fail(503)
+        self._send(303, "", location="/review?id=" + urllib.parse.quote(ident))
+
     def do_POST(self):
         if not console_origin.request_ok(self, post=True):
             return self._fail(403)
@@ -987,6 +1015,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if console_ocr.post(self):  # one OCR page: confirm or reject, journaled
             return
+        if self.path == RELINK_PATH:
+            return self._post_relink()
         route = ROUTES.get(self.path) or (SEND_ROUTE if self.path == "/send" else console_manual_events.ROUTE if self.path == "/manual-event" else None)
         if route is None:
             return self._fail(404)
@@ -1022,10 +1052,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             row = next((r for r in self.options["source"].queue_rows() if r["id"] == ident), None)
             if row is not None and row["kind"] == draft_templates.MESSAGE_LINK and action == "approve":
                 link = unmatched.choose(row, choice)  # not among the candidates -> 400 before anything changes
+                supersedes = approval_queue.link_supersedes(row)
+                if supersedes is not None and row["status"] == "pending" and self.server.decisions_dir is None:
+                    unmatched.require_current(self.server.options["project"], row["item_id"], supersedes, link)  # stale: nothing recorded
             elif choice is not None:
                 return self._fail(400)
-        except ValueError:
-            return self._fail(400)
+        except ValueError as error:
+            return self._fail(409 if str(error) == "message_link_stale" else 400)
         except (approval_queue.ApprovalQueueError, OSError):
             return self._fail(503)
         if action == "edit" and not REVISION.fullmatch(fields["expected_revision"]):
@@ -1061,9 +1094,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if rows[ident].get("approved_choice") != link[1]:  # only the choice the signature names is ever linked
                 return self._fail(403)
             try:
-                unmatched.append_link(project, rows[ident]["item_id"], link[0], link[1], rows[ident]["approved_by"])
+                unmatched.append_link(project, rows[ident]["item_id"], link[0], link[1], rows[ident]["approved_by"],
+                                      supersedes=approval_queue.link_supersedes(rows[ident]))  # only the signed evidence's own fingerprint
             except ValueError as error:
-                return self._fail(409 if str(error) == "message_link_conflict" else 503)
+                return self._fail(409 if str(error) in ("message_link_conflict", "message_link_stale") else 503)
             except OSError:
                 return self._fail(503)
         if hook and self.server.mail_drafts_config and rows[ident].get("kind") not in draft_templates.NON_MAIL_KINDS:

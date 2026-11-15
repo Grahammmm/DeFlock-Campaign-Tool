@@ -105,10 +105,16 @@ def render_link(row, token, payload, refusal=None, *, read_only=False, choice=No
     from . import admin_panel as ap
 
     pending = row["status"] == "pending"
-    out = ["<h1>Tie this message to a request</h1>", "<p role=\"status\">%s</p>" % esc(
+    replaces = row["evidence"].get("replaces") if row["evidence"].get("supersedes") else None  # a "This tie is wrong" replacement
+    title = "Replace the tie for this message" if isinstance(replaces, dict) else "Tie this message to a request"
+    out = ["<h1>%s</h1>" % esc(title), "<p role=\"status\">%s</p>" % esc(
         "Pending" if pending else row["status"].capitalize() + (": " + str(row.get("reason") or "") if row.get("reason") else ""))
            + pending_note(row),
            "<pre>%s</pre>" % esc(row["body"])]
+    if isinstance(replaces, dict):
+        out.append("<p>Currently tied to request <strong>%s</strong> (agency %s). Approving another request replaces that tie from "
+                   "the next run on; the earlier line and the evidence are kept, and nothing is sent.</p>" % (
+                       esc(replaces.get("request_id")), esc(replaces.get("agency_id"))))
     message, field_name, typed = refusal or (None, None, None)
     if message:
         out.append('<p role="alert" class="diag">%s. Nothing was saved or decided.</p>' % esc(message.rstrip(".")))

@@ -15,6 +15,35 @@ semantic, legal or privacy acceptance. No approval publishes by itself.
 | Document redactions | Not connected to console | CLI `tools/flock_redact.py signoff STORE SLUG SHA DOCUMENT --signature ...`, scope `flock-redaction`; separate apply builds a redacted derivative. | Packet approval does not sign off redactions or apply them. | `<store>/agencies/<slug>/redaction/<sha>/SIGNOFF.json`, then `ELIGIBILITY.json`. |
 | Analysis findings | `records finding-review list\|approve\|reject` (CLI only; console not connected) | Verifies a detached SSH signature over the exact finding text (`finding_payload`, scope `finding-review-v1`, bound to agency slug, finding id and a sha256 of topic, claim, fact ids and rule ids), or records a rejection with a private reason. The packet step then stops holding that exact finding as `FINDING_UNREVIEWED`. | Does not approve, sign, stage-publish or send the finding packet: packet approval (`public-packet-v1`) stays a separate decision. A changed claim or fact list needs a new review. Trust unavailable is `FINDING_REVIEW_DEFERRED`, never a final refusal. | `<analysis root>/.analysis/finding-reviews.jsonl`: append-only, hash-chained `approve` (principal, signature, finding text) and `reject` (reason). |
 
+## Correcting a wrong message tie (`message_link` replacement)
+
+A tie is never edited or deleted. A reply tied to the wrong request is corrected with a second, signed decision:
+
+1. On the agency timeline (`/agency?agency=…`), the **Message ties** section lists each message tied by an approved link
+   with the current request. **This tie is wrong** (POST `/message-links/relink`, CSRF-protected, fields `message_sha256`
+   and `supersedes`) only queues one new `message_link` decision for that message. It changes no link and approves
+   nothing. In a hosted journal the action is the queue-only `message_link_relink` entry; the page then says
+   "queued for next apply", not that the tie changed. A read-only export shows no control; an export taken before this
+   feature has no tie metadata and asks for a refresh (an empty set is a real, empty set). The ties shown are the ones at
+   the export's age.
+2. The decision names the line it replaces: its evidence carries `supersedes` (the SHA-256 of the exact current line in
+   `message-links.jsonl`, taken over the stored bytes without the terminating LF) and `replaces` (the current request),
+   and offers the candidates **without** the current request. With no other candidate only a rejection is possible. The
+   decision identity is one per message and replaced line; asking again for the same line returns the same decision, and
+   a later correction (after another line) is a fresh decision.
+3. Approve exactly as for a first tie: the signed text carries the `choice:` line (`message_link_choice_line`) and the
+   evidence, so the signature covers the fingerprint and the candidate list. Direct approve and `decisions-apply` pass only
+   the fingerprint inside that signed evidence to `unmatched.append_link(..., supersedes=…)`.
+4. `append_link` accepts a different choice for a message only from such a line, and only while the current line is still
+   the replaced one; the check, read and append happen under one lock. If the current link changed after the decision was
+   queued the replacement is refused with `message_link_stale` (HTTP 409 on the console, `REFUSED message_link_stale` in
+   `decisions-apply`) and nothing is appended. If it changes after the approval was recorded, the approval record stays and
+   still no link is appended. An exact replay of an applied replacement is a no-op. A queue-only request, an unsigned
+   or wrong-choice approval and a tampered fingerprint never move a link.
+5. `read_links` keeps the latest valid line per message, so the **next** `records run` outputs stage reads the new request
+   into `received-items.json`; earlier run outputs are not rewritten. Nothing is sent or published, and the earlier link
+   line and the message evidence are kept. To refresh the console after a decision, take a new export.
+
 ## Missing work (not implemented here)
 
 - **CON-LINE-APPROVE-1**: signed, text-bound per-line status approval while OFF;
