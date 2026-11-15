@@ -375,6 +375,25 @@ class NotLawTest(unittest.TestCase):
             self.assertEqual(adv(text), [], text)
         self.assertEqual(lc.advisory_notes([("draft", "SB 274 is pending and SB 1013 bans sharing.")]), [self.note(1)])
 
+    def test_not_law_qualification_spans_citations_in_one_clause(self):
+        for text in (
+            "We ask whether SB 274 or SB 1013 bans sharing.",
+            "We ask if SB 274 or SB 1013 bans sharing.",
+            "The complaint alleges SB 274 or SB 1013 bans sharing.",
+            "No SB 274 or SB 1013 bans sharing.",
+            "Neither case is settled: not Carpenter or Yang held ALPR is a search.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(adv(text), [])
+                self.assertEqual(lc.advisory_notes([("draft", text)]), [])
+        for text in (
+            "We ask whether SB 274 bans sharing; SB 1013 bans sharing.",
+            "The complaint alleges SB 274 bans sharing but SB 1013 bans sharing.",
+            "No SB 274 bans sharing, SB 1013 bans sharing.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(lc.advisory_notes([("draft", text)]), [self.note(1)])
+
     def test_not_law_sorted_category_and_row_fix_dedup(self):
         text = " ".join(row[1] for row in reversed(self.EXAMPLES)) + " SB 274 limits retention. CANARY-992."
         mixed = "The agency secretly shared data from 40 cameras. " + text

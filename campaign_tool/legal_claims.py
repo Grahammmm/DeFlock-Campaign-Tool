@@ -237,8 +237,8 @@ def _not_law_rows(text):
                                  for m in row["matcher"].finditer(clause))
                 for a, (start, end, i) in enumerate(anchors):
                     stop = anchors[a + 1][0] if a + 1 < len(anchors) else len(clause)
-                    # A second named citation starts a new claim, not an object supplying the first one's predicate.
-                    prefix = clause[:start] if a == 0 else ""
+                    # Bound the predicate to this citation, but keep governing qualification from the whole clause.
+                    prefix = clause[:start]
                     governed = clause[end:stop]
                     for predicate in _NOT_LAW_PREDICATES[NOT_LAW_TABLE[i]["kind"]].finditer(governed):
                         before = prefix + " " + governed[:predicate.start()]
