@@ -240,6 +240,8 @@ python3 -m campaign_tool kit-denial-reply --directory ../my-campaign --agency ca
 
 `kit-denial-reply` writes a private `kit/followups/ca-example-police-denial-2026-10-31.md` asking which exemption the agency relied on and for a written explanation, with the placeholders `[EDIT ME: what you asked for]` and `[name]` left for you to fill. It never picks an exemption: each `--rule` must be a rule id in the draft law package, is cited with that package's status, and no `--rule` gives a draft with no citations. The draft is not legal advice; have someone qualified read it before it goes anywhere. It works on the `main` request of the agency. Reference: [recording a hand-sent request](AGENCY-DISCOVERY.md#recording-a-hand-sent-request), [withheld basis](AGENCY-TIMELINE.md#withheld-basis-kit-requests).
 
+`kit-extension-reply` and `kit-denial-reply` recognize former CPRA numbering only with an explicit Code, section or § marker, never a bare number. They preserve the agency's historical quote as written. An affected private draft adds exactly this neutral note: "The response cites a section number from before the Public Records Act was renumbered on 2023-01-01; this reply asks the agency to name the current section." It also adds this ask: "Please identify the current section of the Public Records Act on which the agency relies." There is no old-to-new conversion or legal conclusion. The advisory reply checker warns about our own unmarked former-section assertions, not blockquotes, generated agency quotations or directly marked former/historical/pre-2023 citations; this limited heuristic is not general attribution or counsel clearance.
+
 ## 17. How long it took
 
 ```sh

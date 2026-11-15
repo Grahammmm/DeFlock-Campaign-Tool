@@ -631,6 +631,14 @@ class GuideTests(unittest.TestCase):
         self.assertIn("no verified records_email", refused)
 
     # --- entry documents --------------------------------------------------------------------------------------------
+    def test_former_cpra_documentation_contract(self):
+        from campaign_tool.cpra_cites import CURRENT_CPRA_ASK, FORMER_CPRA_NOTE
+        text = sections(read(GUIDE))["16. Reply to a denial"]
+        for phrase in (FORMER_CPRA_NOTE, CURRENT_CPRA_ASK, "kit-extension-reply", "kit-denial-reply",
+                       "explicit Code, section or § marker", "historical quote as written",
+                       "no old-to-new conversion or legal conclusion", "not general attribution or counsel clearance"):
+            self.assertIn(phrase, text)
+
     def test_entry_docs_keep_local_smoke_contract(self):
         readme, launch = read(README), read(LAUNCH)
         self.assertEqual(readme.count("](docs/REQUESTS-GUIDE.md"), 1)

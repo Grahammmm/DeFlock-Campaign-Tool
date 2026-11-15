@@ -100,6 +100,48 @@ class ExtensionReplyTests(unittest.TestCase):
         self.assertEqual(oct(self.followups.stat().st_mode & 0o777), "0o700")
         self.assertEqual(oct(self.draft().stat().st_mode & 0o777), "0o600")
 
+    def test_extension_exactly_one_note_and_one_ask(self):
+        from campaign_tool.cpra_cites import FORMER_CPRA_NOTE, CURRENT_CPRA_ASK
+        reason = REASON + "; Government Code 6254; Gov. Code section 6255"
+        self.step("extension", "--reason", reason)
+        before = self.sent.read_bytes()
+        self.assertEqual(self.reply()[0], 0)
+        text = self.draft().read_text(encoding="utf-8")
+        self.assertIn(f"> {reason}\n\n{FORMER_CPRA_NOTE}\n\nPlease:", text)
+        self.assertEqual(text.count(FORMER_CPRA_NOTE), 1)
+        self.assertEqual(text.count(CURRENT_CPRA_ASK), 1)
+        self.assertIn("3. Send any records that are ready now.\n4. " + CURRENT_CPRA_ASK, text)
+        self.assertEqual(self.sent.read_bytes(), before)
+        self.assertEqual(self.reply()[0], 1)
+        self.assertEqual(self.draft().read_text(encoding="utf-8"), text)
+        self.assertEqual(self.reply("--replace")[0], 0)
+        self.assertEqual(self.draft().read_text(encoding="utf-8"), text)
+
+    def test_no_former_citation_is_byte_identical(self):
+        legacy = json.loads((REPO_ROOT / "tests/fixtures/cpra_reply_legacy.json").read_text())
+        for reason in (None, "Ordinary reason", "Gov. Code § 7922.535"):
+            with self.subTest(reason=reason):
+                if self.draft().exists():
+                    self.draft().unlink()
+                document = json.loads(self.sent.read_text())
+                document["requests"][self.a]["steps"] = []
+                self.sent.write_text(json.dumps(document))
+                self.step("extension", *(["--reason", reason] if reason else []))
+                before = self.sent.read_bytes()
+                expected = legacy["extension:" + str(reason)]
+                self.assertEqual(list(self.reply()), expected["response"])
+                self.assertEqual(self.draft().read_bytes(), expected["draft"].encode())
+                self.assertEqual(self.sent.read_bytes(), before)
+
+    def test_former_citation_does_not_bypass_refusals(self):
+        self.step("extension", "--reason", REASON)
+        self.step("clarification_requested", on="2026-03-05")
+        self.refused("waiting on you", code=3)
+        self.step("clarified", on="2026-03-06")
+        self.step("withdrawn", "--note", "synthetic cancellation", on="2026-03-07")
+        self.refused("withdrawn")
+        self.assertFalse(self.followups.exists())
+
     def test_legacy_extension_asks_for_the_date_and_omits_reason(self):
         self.step("extension")
         self.assertEqual(self.reply()[0], 0)
