@@ -345,6 +345,26 @@ reach content. `content-check` names a linked item whose date (`updated_on`, els
 latest step (`... older than its request's latest step (<kind> on <date>); run kit-asked`) and a link to a request that
 `kit/sent.json` does not have; with no `kit/sent.json` it adds nothing.
 
+### Answer details (`kit-asked --outcomes`)
+
+Without `--outcomes` nothing above changes. With it, `kit-asked` also proposes the answer details the public item can
+carry, read from the same validated private history, and no others (numbers, dates and one state; never agency prose):
+
+- `fee_quoted`: `{amount_usd, status}` from the latest `fee_estimate` (dollars and cents, `1250` cents is `12.50`) and
+  whether a `fee_paid` or `fee_waived` step came after it (`unpaid`, `paid`, `waived`). No estimate, no field.
+- `extension`: `{noticed_on, until}` from the extension step's own date and its stated `extension_expected_on`. The
+  first is when the agency wrote, the second is the date it said it would answer by, which may be in the future and is
+  published as stated, not today's date or a calculated limit. An extension with only a reason, or no date, proposes none.
+- `withheld_sections`: only the section numbers found after `Gov. Code`, `Government Code` or `GC` in the recorded
+  withheld bases, each once, in the order recorded. A basis with no number adds nothing; more than five distinct numbers
+  stop the run (exit 3, nothing written) rather than drop some.
+- state `no_records_stated`: every recorded scope's latest disposition is `no_records_stated`, including on a `closed`
+  request. A `withdrawn` request stays `withdrawn`; any other mix keeps the usual state.
+
+A detail the tracker cannot derive is left as it is on an existing item (never removed). The dry run prints one line per
+changed field, including each detail of a new item. Notes, reasons, basis text, references and record hashes never reach
+content; `--apply` still validates the whole document and writes once.
+
 ## Private calendar (kit-calendar)
 
 `kit-calendar --directory D --out FILE.ics [--as-of DATE]` writes a new private iCalendar file (mode 0600) to import

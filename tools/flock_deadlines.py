@@ -224,8 +224,10 @@ def lines(doc, pkg, read_only, rows):
 
 
 def notes(texts):  # alert-only: the shared legal-claim guard and privacy patterns name a text, never fail closed
+    texts = list(texts)
     return [f"review-required: generated text {n}: {','.join(f)}" for n, t in enumerate(texts, 1)
-            if (f := privacy.legal_claims(t) + privacy.categories(t))]
+            if (f := privacy.legal_claims(t) + privacy.categories(t))] + \
+        privacy.advisory_notes((f"generated text {n}", t) for n, t in enumerate(texts, 1))  # DF2007-15: warnings only, same labels
 
 
 def engine(store, as_of, pkg, read_only=False, out=None):

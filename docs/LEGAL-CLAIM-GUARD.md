@@ -58,6 +58,73 @@ unchanged; the card text carries rule names and places, never the offending word
 shown on the real `/subscribers` and `/approvals` pages while the card stays proposed and approvable), and
 `tests/flock/test_legal_claim_guard.py`.
 
+## Second tier: advisory wording warnings (DF2007-15)
+
+Two further wordings fail a correction (RESEARCH-CAMPAIGNS-1 section 6): an agency's **intent** stated as fact, and a camera
+**count with no date**. They are not legal conclusions, so they are **not** in `legal_claims` and never join its rules; they are a
+separate, advice-only tier beside it. The tier never refuses: it adds a `warning:` line, never an error, and no build, export, draft,
+send, approval state or exit code changes because of it. A warning is not permission to publish or send either: the human gate decides.
+Nothing here checks whether a claim is true, rewrites copy or proves a draft is safe.
+
+**API.** `campaign_tool/legal_claims.py`: `legal_advisories(text)` returns the sorted, unique categories (`[]` for empty or non-string
+input); `advisory_notes(items)` returns warning lines for `(where, text)` items, in item order then sorted category. Both are re-exported
+beside, not through, `legal_claims` by `tools/flock_privacy.py`. `legal_notes(items)` returns its old `review-required` notes first, in
+their old order, then the advisory warnings; text with no advisory hit gets exactly the old list (including its `guard-error` behaviour).
+
+**Output** (the place and category only, never the text, a number, a name or an exception message):
+
+| Category | Warning line |
+|---|---|
+| `intent` | `warning: <where>: wording advisory (intent). Fix: Describe what the record says; do not infer intent.` |
+| `undated-count` | `warning: <where>: wording advisory (undated-count). Fix: Add a date or describe the count as documented or mapped.` |
+| scan fault | `warning: wording advisory (guard-error). Fix: Review the wording manually.` (a fault never discards the old legal notes and never reads as a clean result) |
+
+**`intent`.** The whole words or phrases `secretly`, `covertly`, `hid`, `hiding`, `covered up`, `in secret` (any case, any ordinary
+whitespace between phrase words), said of an agency or official. This is an English heuristic, not named-entity recognition and not a
+claim that intent is unproven in fact. The subject anchor is one of agency/agencies, department, police, sheriff, city, county, council,
+mayor, chief, official(s), officer(s) or staff (so named and possessive forms such as `Sheriff Smith's office` count), found earlier in the
+same comma segment (so `The agency collected plates and secretly shared them` warns), or a passive `by <anchor>` later in it (`was
+covered up by city officials`). A camera that hid a plate, a resident hiding a bicycle and a bare word do not warn, and no pronoun is
+followed across a sentence. No synonyms (`concealed`, `quietly`) are matched.
+- Negation (`not`, `never`, `no`, `nor`, `n't`, but not `not only`) within three words before the phrase suppresses that match; a denial
+  elsewhere in the sentence does not hide a later allegation.
+- `if`, `whether`, `unless`, a question, or an attribution (`alleges`, `according to`, `claims that`) suppresses only the clause it governs,
+  as in the legal guard; a later joined claim (`..., and the sheriff hid the readers`) is a new statement and still warns.
+- `The agency can share data` has no intent wording and passes. `The agency can secretly share data` warns: a capability hedge does not
+  substantiate secrecy.
+
+**`undated-count`.** A number (digits, comma-grouped thousands or a decimal) immediately followed by whitespace and the whole plural
+word `cameras`, `readers` or `ALPRs` (any case) with none of the following in the **same sentence**: `as of`, `documented`, `mapped`
+(whole words) or a date. One warning per place and category however many counts match. Not covered, deliberately: word numbers
+(`forty cameras`), ranges (`40-60 cameras`), singular nouns, `license plate readers`. A negated count (`there are not 40 cameras`)
+passes. A cue or date in another sentence qualifies nothing. A capability hedge does not qualify a count (`The agency can share data
+from 40 cameras` warns), and `mapped 40 cameras` is silent: the rule needs a cue, not proof that the number is true.
+- A date is one of: a real calendar ISO `YYYY-MM-DD`, `M/D/YYYY`, `Month D, YYYY` (comma optional, `Jan`..`Dec` or full names), `Month
+  YYYY`, or a bare year 1900-2099. An invalid calendar date (`2026-02-30`, `2/29/2026`) does not qualify. The number that is itself the
+  count never counts as a year (`2026 cameras` warns). The system clock is never read and freshness is never checked. This is a finite
+  list, not a date parser. An abbreviation period ends a sentence under the guard's sentence contract, so `Mar. 5, 2026` after the
+  count is a different sentence: write `Mar 5, 2026`.
+
+**Quotations.** Complete spans in `"..."`, `“...”`, `‘...’` and `'...'` (apostrophes inside words are not quote marks) are blanked
+before matching, on one line, with their sentence-ending `.`, `!` or `?` kept. Quoted record wording never warns, and a quoted cue or date
+never qualifies an unquoted claim. The legal guard keeps its own, narrower quote matcher, so this changes none of its results.
+
+**Where it shows.** Every surface that already reports `legal_notes` carries the warnings in the same place as its other notes: the
+report, page, publish and publish-stage lints (`review_notes`), the newsletter, site, social, press, kit, FAQ, elsewhere, statement
+and comment-ask notes (`review_flags` or stderr), and `content-check` (stderr, outside its error count). The surfaces that format their
+own guard lines add the warnings alongside their old lines and change nothing else:
+
+| Surface | Where the warnings show |
+|---|---|
+| `tools/flock_deadlines.py` | stderr, after the old `review-required: generated text N` lines, same `generated text N` labels |
+| `tools/collection_triage.py` | `triage-notes.json` notes, after the old notes, same `sentence:N` / `member:ID` labels |
+| `tools/rehearse_agency.py` | `REHEARSAL.md` and `rehearsal.json` `wording_warnings` (key present only when a warning fired), labels `finding N`; stages, verdict, withholding and exit code are unchanged |
+| `tools/custody_report.py` | stdout after the `custody | ...` line, label `custody page`; the generated files, verdict and return code are unchanged |
+
+Tests: `tests/test_legal_claim_advisories.py` (patterns, quotes, negation, capability wording, dates, API and fault contract, the
+unchanged legal corpus) and `tests/flock/test_legal_advisory_surfaces.py` (every reporting surface: advisory-only input keeps its
+exit code, artifacts and state).
+
 ## The older Flock word ban is now alert-only too (operator ruling 1, 2026-11-02)
 
 `compare.GATED` (`violat*`, `illegal*`, `admit*` without a matching quote) used to **refuse** in the Flock lints. The operator
