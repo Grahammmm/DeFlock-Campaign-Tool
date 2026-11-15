@@ -1,0 +1,176 @@
+{
+  "schema": "records-review-profile-v1",
+  "records_agency_id": "ca-morro-bay-police",
+  "slug": "morro-bay",
+  "fact_agency": "Morro Bay",
+  "agency_name": "Morro Bay",
+  "portal": "portal-host-set-by-operator.example.invalid",
+  "review": {
+    "method_dir": "~/agent-work/skills/agency-review",
+    "method_python": "/usr/bin/python3",
+    "added_by": "sonnet-coder"
+  },
+  "rules_intake": {
+    "added_by": "opus-coder-bopus",
+    "added_at": "2026-10-30",
+    "law_specs": [
+      "~/agent-work/skills/agency-review/rules-intake/templates/us-ca-alpr-law.spec.csv"
+    ],
+    "policy_specs": [
+      "~/agent-work/skills/agency-review/rules-intake/templates/lexipol-alpr-policy.spec.csv"
+    ],
+    "extra_specs": [],
+    "f2_law_map": "~/agent-work/skills/agency-review/rules-intake/templates/us-ca-alpr-law.f2map.csv",
+    "sources": [
+      {
+        "id": "civ",
+        "kind": "statute",
+        "label": "Civ. Code 1798.90.5-1798.90.55",
+        "version": "leginfo capture 2026-10-30 (Stats. 2015 ch. 532, eff. 2016-01-01)",
+        "text": "~/agent-work/flock/sources/statute-snapshots/CIV-1798.90.5-55.txt",
+        "page_style": "none",
+        "section_regex": "^(1798\\.90\\.\\d+)\\.\\s",
+        "official_url": "https://leginfo.legislature.ca.gov/faces/codes_displayText.xhtml?lawCode=CIV&division=3.&title=1.81.23.&part=4.&chapter=&article=",
+        "accessed": "2026-10-30"
+      },
+      {
+        "id": "gov",
+        "kind": "statute",
+        "label": "Gov. Code 34090",
+        "version": "leginfo capture 2026-10-30 (Stats. 2018 ch. 467, eff. 2019-01-01)",
+        "text": "~/agent-work/flock/sources/statute-snapshots/GOV-34090.txt",
+        "page_style": "none",
+        "section_regex": "^(34090)\\.\\s*$",
+        "official_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=34090",
+        "accessed": "2026-10-30"
+      },
+      {
+        "id": "doj",
+        "kind": "guidance",
+        "label": "Cal. DOJ Information Bulletin 2023-DLE-06",
+        "version": "dated 2023-10-27 (local PDF, 5 pages, no template attached)",
+        "pdf": "~/deflockslo-workspace/work/policies/california-state/OAG-2023-DLE-06.pdf",
+        "orig_sha256": "de89806ee175ff4959b8e865cfac4bf3690472520655c23ea3d11c944c806109", "scan_note": "# pragma: allowlist secret - public document hash, not a credential",
+        "page_style": "formfeed",
+        "official_url": "https://oag.ca.gov/system/files/media/2023-dle-06.pdf",
+        "accessed": "2026-10-27"
+      },
+      {
+        "id": "mb-435-2020",
+        "kind": "policy",
+        "family": "lexipol-alpr",
+        "label": "MBPD Policy 435 ALPR",
+        "policy_id": "435",
+        "version": "January 2020 manual (footer 2019-12-30)",
+        "footer_version_date": "2019-12-30",
+        "text": "~/agent-work/flock/legwork/t_2e3a3aba/MB-policy-manual-jan-2020.txt",
+        "orig_sha256": "fb271d6c2c9f75f7e709750326d0909e1865b9cc62b7211126be9b3779bb3ec7", "scan_note": "# pragma: allowlist secret - public document hash, not a credential",
+        "page_style": "formfeed",
+        "page_range": [
+          409,
+          411
+        ],
+        "section_regex": "^(\\d{3}(?:\\.\\d+)+)\\s+[A-Z]",
+        "subs": {
+          "P": "435",
+          "AGENCY": "Morro Bay Police Department",
+          "ADMIN": "Administration Commander",
+          "TRAINER": "Training Sergeant"
+        },
+        "adoption_evidence": "unverified"
+      },
+      {
+        "id": "mb-435-2025",
+        "kind": "policy",
+        "family": "lexipol-alpr",
+        "label": "MBPD Policy 435 ALPR",
+        "policy_id": "435",
+        "version": "CPRA 26-55 doc 62535008 (footer 2025-06-03)",
+        "footer_version_date": "2025-06-03",
+        "pdf": "~/deflockslo-workspace/work/collection-20261027/morrobay-portal/files/26-55/62535008__2. Policy 435 Automated License Plate Readers.pdf",
+        "orig_sha256": "78b5e263af32a471206603fad48d6efae7bfa3affa5893f711d7932a1fba59dc", "scan_note": "# pragma: allowlist secret - public document hash, not a credential",
+        "page_style": "formfeed",
+        "section_regex": "^(\\d{3}(?:\\.\\d+)+)\\s+[A-Z]",
+        "subs": {
+          "P": "435",
+          "AGENCY": "Morro Bay Police Department",
+          "ADMIN": "Administration Commander",
+          "TRAINER": "Training Sergeant"
+        },
+        "adoption_evidence": "unverified"
+      },
+      {
+        "id": "mb-435-2026",
+        "kind": "policy",
+        "family": "lexipol-alpr",
+        "label": "MBPD Policy 435 ALPR",
+        "policy_id": "435",
+        "version": "2026-10-13 council packet DocId 7679 (footer 2026-09-22)",
+        "footer_version_date": "2026-09-22",
+        "text": "~/agent-work/flock/sources/policies/MBPD-435-ALPR-2026-09-22.txt",
+        "orig_sha256": "3bba18f3ad0b24441e310efe73c5fc5c4de189f140931318caf9a75543a0ee36", "scan_note": "# pragma: allowlist secret - public document hash, not a credential",
+        "page_style": "marker",
+        "section_regex": "^(\\d{3}(?:\\.\\d+)+)\\s+[A-Z]",
+        "subs": {
+          "P": "435",
+          "AGENCY": "Morro Bay Police Department",
+          "ADMIN": "Administration Commander",
+          "TRAINER": "Training Sergeant"
+        },
+        "adoption_evidence": "unverified"
+      },
+      {
+        "id": "slo-503",
+        "kind": "comparator-policy",
+        "comparison_only": true,
+        "family": "lexipol-alpr",
+        "label": "SLO PD Policy 503 ALPR (comparison only)",
+        "f2_agency": "San Luis Obispo",
+        "policy_id": "503",
+        "version": "slocity.org published copy (footer 2026-08-31)",
+        "footer_version_date": "2026-08-31",
+        "text": "~/agent-work/flock/sources/policies/SLOPD-503-ALPR.txt",
+        "orig_sha256": "2013eef4f54f623c35e278aa3f7057789f50adeb54361755de48195d72ae75d5", "scan_note": "# pragma: allowlist secret - public document hash, not a credential",
+        "page_style": "marker",
+        "section_regex": "^(\\d{3}(?:\\.\\d+)+)\\s+[A-Z]",
+        "subs": {
+          "P": "503",
+          "AGENCY": "San Luis Obispo Police Department",
+          "ADMIN": "Administration Deputy Chief",
+          "TRAINER": "Training Manager"
+        },
+        "adoption_evidence": "unverified",
+        "row_note": "comparison only - not a Morro Bay rule"
+      }
+    ]
+  },
+  "compare_f3": {
+    "applicability": "City PD operates its own Vigilant/Motorola ALPR and searches it: ALPR operator + end-user + public agency under Civ 1798.90.5-.55; MBPD Policy 435.",
+    "golden": "tests/fixtures/flock/morrobay-golden.csv"
+  },
+  "not_posted_analysis_only_ids": [
+    "62535003",
+    "62535012",
+    "62553069",
+    "68545301",
+    "68545303",
+    "70795310",
+    "70795313",
+    "70795316"
+  ],
+  "log_doc_ids": [
+    "62535012",
+    "62767184",
+    "68545301",
+    "70795310",
+    "70795311",
+    "70795312",
+    "70795313",
+    "70795314",
+    "70795315",
+    "70795316",
+    "70795317",
+    "70795318",
+    "70795319"
+  ]
+}

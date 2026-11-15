@@ -17,7 +17,7 @@ SHAPE = {
            {"not_posted_analysis_only_ids", "log_doc_ids"}),
     "review": ({"method_dir", "method_python", "added_by"},
                {"roster_doc_id", "ocr_log_doc_ids", "training_join", "region_config", "verify_sample"}),
-    "rules_intake": ({"law_specs", "policy_specs", "extra_specs", "f2_law_map", "sources"}, set()),
+    "rules_intake": ({"law_specs", "policy_specs", "extra_specs", "f2_law_map", "sources"}, {"added_by", "added_at"}),
     "compare_f3": ({"applicability"}, {"golden"}),
 }
 
@@ -50,7 +50,8 @@ def build_config(root, profile, *, created_date):
         "facts_intake": {"fact_agency": profile["fact_agency"], "portal": profile["portal"], "requests": [], "record_roots": [],
                          "ocr_text_dirs": [], "log_doc_ids": profile.get("log_doc_ids", []),
                          "source_manifest": str(records / "MANIFEST.csv"), "extra_sources": sources, "fact_store": str(FO / "store")},
-        "rules_intake": {**rules, "out": str(RO), "agency_name": profile["agency_name"]},
+        # the method's rules_build reads added_by/added_at from this block: profile values win, else the review author and run date
+        "rules_intake": {"added_by": rv["added_by"], "added_at": created_date, **rules, "out": str(RO), "agency_name": profile["agency_name"]},
         "compare": {"out": str(CO), "facts": str(FO / "store" / "agencies" / slug / "FACTS.csv"), "facts_meta": str(FO / "FACTS-META.csv"),
                     "requirements": str(RO / "REQUIREMENTS.csv"), "version_diff": str(RO / "VERSION-DIFF.csv"),
                     "log_by_user": str(FO / "LOG-SUMMARY-by-user.csv"), "assessments": str(CO / "ASSESSMENTS.yaml"),
@@ -111,7 +112,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="records analysis-config", description=__doc__)
     parser.add_argument("--root", required=True)
     parser.add_argument("--slug", required=True)
-    parser.add_argument("--check-only", action="store_true", help="validate the CONFIG without writing it")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check", action="store_true",
+                      help="the default, named for runbooks: the flock_review --check gate runs first and the CONFIG is written only if it passes")
+    mode.add_argument("--check-only", action="store_true", help="validate the CONFIG without writing it")
     args = parser.parse_args(argv)
     outcome = write_config(args.root, args.slug, check_only=args.check_only)
     print(outcome)
