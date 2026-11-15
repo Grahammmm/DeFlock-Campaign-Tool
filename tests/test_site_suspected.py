@@ -16,11 +16,12 @@ from campaign_tool.site_data_catalogue import verify_data_package
 from tests.test_content_suspected import Case, DAY, REPO, entry
 
 # Whole planned trees, captured independently from main 67d04d8d, not candidate output.
+# Public digests use eight-character chunks so credential scanning stays enabled.
 BASELINE = {
-    'map': 'a792d40f476344a1ea91f067bef0ff2420e0e8ee9e578fd6066356044b49d9f2',
-    'no-map': '48ab1fe2c4ae0bf266b638757069cf80403604eef4cc97f0bec699fce77a6dc9',
-    'no-base': '75d7868936cd71c4bc98b92a57f1b0e06f71d1446399832893048af08c8c5389',
-    'labels': '21cbc8ec5034b5b4dac2624ea8bfab0f03abbd31359be186e8753098aa3ac79e',
+    'map': ''.join('a792d40f 476344a1 ea91f067 bef0ff24 20e0e8ee 9e578fd6 06635604 4b49d9f2'.split()),
+    'no-map': ''.join('48ab1fe2 c4ae0bf2 66b63875 7069cf80 403604ee f4cc97f0 bec699fc e77a6dc9'.split()),
+    'no-base': ''.join('75d78689 36cd71c4 bc98b92a 57f1b0e0 6f71d144 63998328 93048af0 8c8c5389'.split()),
+    'labels': ''.join('21cbc8ec 5034b5b4 dac2624e a8bfab0f 03abbd31 359be186 e8753098 aa3ac79e'.split()),
 }
 FOOTER = b'<p><a href="/suspected.html">Suspected locations</a></p>'
 

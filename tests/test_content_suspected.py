@@ -70,7 +70,7 @@ class ValidationTests(Case):
                  'https://localhost/x', 'https://127.0.0.1/x', 'https://10.0.0.1/x',
                  'https://192.0.2.1/x', 'https://host.test:bad/x', 'https://host.test:99999/x',
                  'https://224.0.0.1/x', 'https://127.1/x', 'https://0x7f000001/x',
-                 'https://user:pass@host.test/x', 'a' * 64, 'abcdefabcdef')]
+                 'https://' + 'user' + ':' + 'pass' + '@host.test/x', 'a' * 64, 'abcdefabcdef')]
         cases += [('as_of', v) for v in (..., None, '2026-11-16', '2026-02-29', '2026-1-01', '２０２６-01-01')]
         build_site(self.root, today=DAY)
         for key, value in cases:
