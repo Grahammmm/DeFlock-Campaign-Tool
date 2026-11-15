@@ -192,6 +192,13 @@ class PacketOutboxTests(unittest.TestCase):
         self.start()
         for finding in ("N1", "A1"):
             self.review(finding)
+        sources = self.out / "inputs" / "SOURCES.csv"  # DF2007-04: the facts cite pages up to 4, so the synced record must have that many pages
+        with open(sources, newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        with open(sources, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0]), lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(dict(r, pages="6") for r in rows)
         base = Path(tempfile.mkdtemp(dir=self.t.b.tmp))
         for verdict, cited in (("verified", ["Civ. Code § 1798.90.52"]), ("likely", [])):
             package = json.loads((REPO / "jurisdictions" / "us-ca" / "package.json").read_text())
