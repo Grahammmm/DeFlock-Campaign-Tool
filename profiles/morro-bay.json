@@ -4,7 +4,7 @@
   "slug": "morro-bay",
   "fact_agency": "Morro Bay",
   "agency_name": "Morro Bay",
-  "portal": "cityofmorrobayca.nextrequest.com",
+  "portal": "portal-host-set-by-operator.example.invalid",
   "review": {
     "method_dir": "~/agent-work/skills/agency-review",
     "method_python": "/usr/bin/python3",
@@ -50,7 +50,7 @@
         "label": "Cal. DOJ Information Bulletin 2023-DLE-06",
         "version": "dated 2023-10-27 (local PDF, 5 pages, no template attached)",
         "pdf": "~/deflockslo-workspace/work/policies/california-state/OAG-2023-DLE-06.pdf",
-        "orig_sha256": "de89806ee175ff4959b8e865cfac4bf3690472520655c23ea3d11c944c806109",
+        "orig_sha256": "de89806ee175ff4959b8e865cfac4bf3690472520655c23ea3d11c944c806109", "scan_note": "# pragma: allowlist secret - public document hash, not a credential",
         "page_style": "formfeed",
         "official_url": "https://oag.ca.gov/system/files/media/2023-dle-06.pdf",
         "accessed": "2026-10-27"
@@ -64,7 +64,7 @@
         "version": "January 2020 manual (footer 2019-12-30)",
         "footer_version_date": "2019-12-30",
         "text": "~/agent-work/flock/legwork/t_2e3a3aba/MB-policy-manual-jan-2020.txt",
-        "orig_sha256": "fb271d6c2c9f75f7e709750326d0909e1865b9cc62b7211126be9b3779bb3ec7",
+        "orig_sha256": "fb271d6c2c9f75f7e709750326d0909e1865b9cc62b7211126be9b3779bb3ec7", "scan_note": "# pragma: allowlist secret - public document hash, not a credential",
         "page_style": "formfeed",
         "page_range": [
           409,
@@ -88,7 +88,7 @@
         "version": "CPRA 26-55 doc 62535008 (footer 2025-06-03)",
         "footer_version_date": "2025-06-03",
         "pdf": "~/deflockslo-workspace/work/collection-20261027/morrobay-portal/files/26-55/62535008__2. Policy 435 Automated License Plate Readers.pdf",
-        "orig_sha256": "78b5e263af32a471206603fad48d6efae7bfa3affa5893f711d7932a1fba59dc",
+        "orig_sha256": "78b5e263af32a471206603fad48d6efae7bfa3affa5893f711d7932a1fba59dc", "scan_note": "# pragma: allowlist secret - public document hash, not a credential",
         "page_style": "formfeed",
         "section_regex": "^(\\d{3}(?:\\.\\d+)+)\\s+[A-Z]",
         "subs": {
@@ -108,7 +108,7 @@
         "version": "2026-10-13 council packet DocId 7679 (footer 2026-09-22)",
         "footer_version_date": "2026-09-22",
         "text": "~/agent-work/flock/sources/policies/MBPD-435-ALPR-2026-09-22.txt",
-        "orig_sha256": "3bba18f3ad0b24441e310efe73c5fc5c4de189f140931318caf9a75543a0ee36",
+        "orig_sha256": "3bba18f3ad0b24441e310efe73c5fc5c4de189f140931318caf9a75543a0ee36", "scan_note": "# pragma: allowlist secret - public document hash, not a credential",
         "page_style": "marker",
         "section_regex": "^(\\d{3}(?:\\.\\d+)+)\\s+[A-Z]",
         "subs": {
@@ -130,7 +130,7 @@
         "version": "slocity.org published copy (footer 2026-08-31)",
         "footer_version_date": "2026-08-31",
         "text": "~/agent-work/flock/sources/policies/SLOPD-503-ALPR.txt",
-        "orig_sha256": "2013eef4f54f623c35e278aa3f7057789f50adeb54361755de48195d72ae75d5",
+        "orig_sha256": "2013eef4f54f623c35e278aa3f7057789f50adeb54361755de48195d72ae75d5", "scan_note": "# pragma: allowlist secret - public document hash, not a credential",
         "page_style": "marker",
         "section_regex": "^(\\d{3}(?:\\.\\d+)+)\\s+[A-Z]",
         "subs": {

@@ -15,6 +15,7 @@ from tests.flock import test_review
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / "profiles" / "morro-bay.json"
 SLUG = "morro-bay"
+ANNOTATION = '"scan_note": "# pragma: allowlist secret - public document hash, not a credential'
 
 
 class MorroBayProfileTest(unittest.TestCase):
@@ -68,7 +69,7 @@ class MorroBayProfileTest(unittest.TestCase):
         self.assertEqual(cfg["review"]["slug"], SLUG)
         self.assertEqual(cfg["review"]["method_dir"], "~/agent-work/skills/agency-review")
         self.assertEqual(cfg["facts_intake"]["fact_agency"], "Morro Bay")
-        self.assertEqual(cfg["facts_intake"]["portal"], "cityofmorrobayca.nextrequest.com")
+        self.assertEqual(cfg["facts_intake"]["portal"], profile["portal"])  # the real portal host is never committed (public-scan portal_host)
         self.assertEqual(cfg["not_posted_analysis_only_ids"], profile["not_posted_analysis_only_ids"])
         self.assertEqual(len(cfg["not_posted_analysis_only_ids"]), 8)
         self.assertEqual(cfg["compare"]["f3"]["slug"], SLUG)
@@ -83,7 +84,14 @@ class MorroBayProfileTest(unittest.TestCase):
         profile = json.loads(text)
         analysis_config._validate(profile, SLUG)  # frozen shape: no field outside records-review-profile-v1
         self.assertNotIn("/home/", text)
-        self.assertNotRegex(text, r"(?i)\b(?:password|token|secret|api[_-]?key)\b")
+        # the only sanctioned use of the word is the inline scanner annotation on a provenance-hash line (detect-secrets has no JSON comments)
+        bare = []
+        for line in text.splitlines():
+            if ANNOTATION in line:
+                self.assertRegex(line, r'^\s*"orig_sha256": "[0-9a-f]{64}", ' + re.escape(ANNOTATION) + r'",$')
+                line = ""
+            bare.append(line)
+        self.assertNotRegex("\n".join(bare), r"(?i)\b(?:password|token|secret|api[_-]?key)\b")
         self.assertEqual(profile["schema"], "records-review-profile-v1")
         for source in profile["rules_intake"]["sources"]:
             if "orig_sha256" in source:
@@ -92,6 +100,20 @@ class MorroBayProfileTest(unittest.TestCase):
                 self.assertEqual(source["adoption_evidence"], "unverified")  # adoption is never claimed here
         for key in ("roster_doc_id", "training_join", "ocr_log_doc_ids", "region_config"):
             self.assertNotIn(key, profile["review"])  # the lane config carries no record roots or roster file for them
+
+    def test_committed_portal_is_a_placeholder_and_the_operator_copy_carries_the_real_host(self):
+        profile = json.loads(PROFILE.read_text())
+        self.assertTrue(profile["portal"].endswith(".example.invalid"), profile["portal"])
+        profile["portal"] = "records.example.invalid"  # stands for the host the operator sets in the copy under <root>/profiles/
+        (self.root / "profiles" / (SLUG + ".json")).write_text(json.dumps(profile))
+        self.assertEqual(self.cli("--check").stdout.strip(), "CONFIG_WRITTEN")
+        self.assertEqual(self.config()["facts_intake"]["portal"], "records.example.invalid")
+
+    def test_every_provenance_hash_line_carries_the_scanner_annotation(self):
+        lines = [line for line in PROFILE.read_text().splitlines() if '"orig_sha256"' in line]
+        self.assertEqual(len(lines), 5)
+        for line in lines:
+            self.assertIn(ANNOTATION, line)  # without it detect-secrets fails the wp5 credential scan
 
     def test_rules_intake_defaults_added_by_and_date_for_a_profile_without_them(self):
         profile = json.loads(PROFILE.read_text())
