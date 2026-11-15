@@ -248,6 +248,14 @@ DEFAULTS = {
     "requests.state_awaiting_response": "Awaiting response", "requests.state_acknowledged": "Acknowledged",
     "requests.state_partly_answered": "Partly answered", "requests.state_answered": "Answered",
     "requests.state_declined_in_writing": "Declined in writing", "requests.state_withdrawn": "Withdrawn",
+    # DF2007-13: only with an asked item that records the state or the field; the sentences are fixed, never the agency's words
+    "requests.state_no_records_stated": "No responsive records stated",
+    "requests.no_records_sentence": "The agency stated that it had no responsive records.",
+    "requests.no_records_sentence_dated": "The agency stated that it had no responsive records on {date}.",
+    "requests.fee_quoted": "The agency quoted USD {amount_usd}; recorded fee status: {status}.",
+    "requests.fee_status_unpaid": "unpaid", "requests.fee_status_paid": "paid", "requests.fee_status_waived": "waived",
+    "requests.extension": "On {noticed_on} the agency said it would respond by {until}.",
+    "requests.withheld_sections": "The agency cited Government Code sections {sections} when withholding records.",
     "requests.note": ("Each row is a request we have listed on an agency's page, in the state we last recorded. "
                       "This page does not say any response is late."),
     "requests.empty": "No public requests are listed yet.",

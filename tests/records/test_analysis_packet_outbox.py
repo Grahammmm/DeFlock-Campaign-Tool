@@ -3,6 +3,7 @@ import csv
 import datetime
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -12,7 +13,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from campaign_tool import law
-from campaign_tool.records import analysis_bridge as bridge, public_packets as pp
+from campaign_tool.records import analysis_bridge as bridge, finding_review as fr, public_packets as pp
+from tests.approval_signing import Signer
 from tests.flock import test_review as tr
 from tests.records import test_analysis_bridge as tb, test_analysis_tick as tt
 
@@ -55,6 +57,11 @@ class PacketOutboxTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.t.setUp()
+        self.signer = Signer()  # the throwaway human approver of findings; trusted in this process only
+        self.addCleanup(self.signer.close)
+        trust = self.signer.trust()
+        trust.__enter__()
+        self.addCleanup(trust.__exit__, None, None, None)
         rows = "request,doc_id,title,sha256,analysis_only\nREQ-101,1,doc.pdf,%s,no\n" % digest
         tr.write_stub(self.t.method, "inventory", "Path(a[1]).mkdir(parents=True, exist_ok=True); (Path(a[1]) / 'INVENTORY.csv').write_text(%r); sys.exit(0)" % rows)
         self.addCleanup(self.t.doCleanups)
@@ -70,11 +77,23 @@ class PacketOutboxTests(unittest.TestCase):
         with open(run / "FINDINGS.csv", newline="") as handle:
             self.cited = {r["finding_id"]: r["fact_ids"] for r in csv.DictReader(handle)}
 
-    def review(self, finding, status="checked"):
+    def review(self, finding, status="checked", approve=True):
+        """A real second-reviewer fact check; a checked fact also gets the human finding approval (DF2007-05) unless approve=False."""
         done = subprocess.run([sys.executable, "-B", str(FACTS_TOOL), "review", "--store", str(self.store), "--agency", tt.SLUG, "--ids",
                                self.cited[finding], "--set", status, "--reviewer", "second-reviewer", "--note", "n",
                                "--date", datetime.date.today().isoformat()], capture_output=True, text=True, check=False)
         self.assertEqual(done.returncode, 0, done.stdout)
+        if status == "checked" and approve:
+            self.approve_finding(finding)
+
+    def sign_finding(self, finding):
+        """-> (the exact payload of the current finding, a throwaway-key signature over it)."""
+        (row,) = [r for r in fr.list_findings(self.root, agency=tt.SLUG) if r["finding_id"] == finding]
+        return row["payload"], self.signer.sign(row["payload"].encode("utf-8"))
+
+    def approve_finding(self, finding):
+        os.chmod(self.root / ".analysis", 0o700)  # the journal's parent must be owner-only, as the CLI's umask makes it
+        return fr.approve(self.root, tt.SLUG, finding, self.sign_finding(finding)[1])
 
     def outbox(self):
         folder = self.root / ".analysis" / "packet-outbox"
@@ -192,6 +211,13 @@ class PacketOutboxTests(unittest.TestCase):
         self.start()
         for finding in ("N1", "A1"):
             self.review(finding)
+        sources = self.out / "inputs" / "SOURCES.csv"  # DF2007-04: the facts cite pages up to 4, so the synced record must have that many pages
+        with open(sources, newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        with open(sources, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0]), lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(dict(r, pages="6") for r in rows)
         base = Path(tempfile.mkdtemp(dir=self.t.b.tmp))
         for verdict, cited in (("verified", ["Civ. Code § 1798.90.52"]), ("likely", [])):
             package = json.loads((REPO / "jurisdictions" / "us-ca" / "package.json").read_text())

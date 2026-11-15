@@ -32,7 +32,8 @@ AGENCY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 MAX_BYTES = 64 * 1024 * 1024
 LABEL = "Review required, not publishable until G approves a public version."
 NO_AGENCY = "(not linked to an agency)"
-STATE_WORDS = {"text_reviewed": "text, checked", "ocr_unreviewed": "text from OCR, not visually checked",
+STATE_WORDS = {"text_reviewed": "text, checked", "ocr_flagged": "text from OCR, flagged, not visually confirmed",
+               "ocr_unreviewed": "text from OCR, not visually checked",
                "awaiting_ocr": "waiting for OCR", "could_not_be_read": "could not be read",
                "waiting": "waiting", "unknown_state": "state not recognised"}
 

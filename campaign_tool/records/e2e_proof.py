@@ -4,12 +4,14 @@ The message (an .eml already in a local mail store, attachments included) is cop
 under ``--out``; the live project, mailbox and ledger are never opened for writing. Nothing is fetched, sent,
 posted or published, and no credential or environment file is read. The stages run in order and each is timed:
 
-  arrival_trigger -> save_mail -> extract -> digest_gates -> outputs (inventory, classify, policy comparison,
+  arrival_trigger -> [adoption_setup -> delta -> adoption, with --with-adoption] -> save_mail -> extract ->
+  digest_gates -> outputs (inventory, classify, policy comparison,
   gap proposals, follow-up drafts, next steps) -> next_steps check -> telegram_text (a file, never sent) ->
   console pages (Inbox, Documents, Findings, Deadlines, Drafts, Next Steps, Run health) -> deny one next step
   through the real panel POST (writes the decision to the queue journal and sends nothing).
 
-The report lists every stage's output file and every manual step the run needed (there should be none). Output is
+The report lists every stage's output file, every manual step the run needed (there should be none) and the originals
+extract did not read (``unread``: hash prefix, kind, outcome code). Output is
 metadata only: counts, codes, relative file names. The pages and queue hold the private record text, so the sandbox
 stays private on this host and is never to be committed.
 """
@@ -22,6 +24,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import sys
 import threading
 import time
@@ -29,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
-from . import approval_queue, arrival, arrival_summary, notify_text, run_orchestrator, run_stages
+from . import approval_queue, arrival, arrival_summary, native_extract, notify_text, run_orchestrator, run_stages
 
 SCHEMA = "records-e2e-proof-v1"
 MARKER = run_stages.SANDBOX_MARKER
@@ -38,10 +41,24 @@ PAGES = (("inbox", "/dashboard", "Inbox: mail received"), ("documents", "/docume
          ("deadlines", "/dashboard", "Deadlines"), ("drafts", "/dashboard", "Drafts"), ("next_steps", "/next-steps", "Next steps"))
 NEXT_KINDS = ("next-social-post", "next-site-update", "next-followup-probe")
 ARRIVAL_DONE = ("sync", "delta", "adoption", "portal")  # the live mailbox-side stages; a replay starts after them
-EXTRACT_UNFINISHED = ("AWAITING_OCR", "EXTRACT_ERROR", "EXTRACT_TIMEOUT", "EXTRACT_NOT_ACCEPTED")
+# Extract outcomes that leave an original unread because of THIS host/pipeline (a missing parser, decoder or
+# workbook policy, an OCR wait, a timeout or error): each is a manual step. CORRUPT_DOCUMENT and EXTRACT_INCOMPLETE are
+# agency-side (the supplied bytes are damaged or partial): they are listed as unread but do not fail the proof.
+EXTRACT_UNFINISHED = ("AWAITING_OCR", "EXTRACT_ERROR", "EXTRACT_TIMEOUT", "EXTRACT_NOT_ACCEPTED",
+                      "PARSER_MISSING", "DECODER_NEEDED", "WORKBOOK_POLICY_REQUIRED")
+AGENCY_SIDE = ("CORRUPT_DOCUMENT", "EXTRACT_INCOMPLETE")
+EXTRACT_LIST_UNAVAILABLE = "extract:PROOF_EXTRACT_LIST_UNAVAILABLE"
+EXTRACT_LIST_SCHEMA = "records-extract-outcomes-v1"
+EXTRACT_LIST_MAX_BYTES = 16 * 1024 * 1024
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+FORM = re.compile(r"^[A-Za-z0-9_.+-]{1,32}$")
 SEED_SCHEMA = "records-e2e-seed-v1"
 SEED_MAX_BYTES = 64 * 1024
 OUTPUTS_UNFINISHED = re.compile(r"^(OUTPUTS_[A-Z_]+_UNAVAILABLE|OUTPUTS_DIGEST_UNRESOLVED)$")
+# --with-adoption: fixed fictional identity of the synthetic export (never read from a message, setting or mailbox)
+ADOPTION_ACCOUNT, ADOPTION_FOLDER = "owner@adoption.example.invalid", "Sandbox.example.invalid/INBOX"
+ADOPTION_CONFIG, ADOPTION_CONFIG_SCHEMA = ".e2e-adoption-config.json", "mail-history-adoption-v1"
+ADOPTION_STAGES = ("delta", "adoption")  # actually run (not skipped) when the rehearsal is on
 
 
 class ProofError(Exception):
@@ -214,8 +231,143 @@ def _apply_seed(project, seed):
                         "fact_sheets": int(facts is not None)}
 
 
-def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None, ocr=False, seed=None):
-    """Replay one message; return the proof report dict. ``out/label`` must not exist yet."""
+def _adoption_guard(project):
+    """Sandbox-only gate for the adoption rehearsal: ``ADOPTION_NOT_SANDBOX`` unless PROJECT is the replay's own
+    ``project`` directory (no symlink) holding an owner-only regular marker with the exact sandbox text."""
+    project = Path(project)
+    marker = project / MARKER
+    try:
+        root_info, info = os.lstat(project), os.lstat(marker)
+        ok = (project.name == "project" and stat.S_ISDIR(root_info.st_mode) and stat.S_ISREG(info.st_mode)
+              and info.st_uid == os.geteuid() and not info.st_mode & 0o077
+              and run_stages.sandbox_refusal(str(project)) is None
+              and marker.read_text(encoding="utf-8") == "e2e-proof sandbox\n")
+    except (OSError, ValueError):
+        ok = False
+    if not ok:
+        raise ProofError("ADOPTION_NOT_SANDBOX")
+
+
+def _private_dir(path):
+    """Create ``path`` (0700) or accept an existing owner-only real directory; anything else is refused."""
+    try:
+        if not os.path.lexists(path):
+            os.mkdir(path, 0o700)
+        info = os.lstat(path)
+    except OSError:
+        raise ProofError("ADOPTION_SETUP_REFUSED") from None
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise ProofError("ADOPTION_SETUP_REFUSED")
+
+
+def _private_file(path, data):
+    """Write ``data`` as a new 0600 file, or accept an existing regular owner-only file with identical bytes."""
+    try:
+        if os.path.lexists(path):
+            info = os.lstat(path)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077
+                    or Path(path).read_bytes() != data):
+                raise ProofError("ADOPTION_SETUP_REFUSED")
+            return
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+    except OSError:
+        raise ProofError("ADOPTION_SETUP_REFUSED") from None
+
+
+def _adoption_config_bytes():
+    """The owner-only mail-history-adoption-v1 config for the fresh sandbox (no marker pin: there is no marker)."""
+    return (json.dumps({"schema": ADOPTION_CONFIG_SCHEMA, "source": "mail-history", "adoption": "enabled",
+                        "disable_marker_sha256": None}, sort_keys=True) + "\n").encode()
+
+
+def _mime_payload(raw, locator):
+    """Decoded payload of the MIME part at ``locator`` ("1.2.1") of ``raw``, as the real exporter reads it."""
+    from email import policy
+    from email.parser import BytesParser
+    part = BytesParser(policy=policy.default).parsebytes(raw)
+    for index in locator.split(".")[1:]:
+        part = list(part.iter_parts())[int(index) - 1]
+    return part.get_payload(decode=True) or b""
+
+
+def _adoption_receipt(raw, now):
+    """(receipt dict, {relative object path: bytes}) for ``raw``, laid out as the real exporter does: the exact EML
+    plus one object per attachable MIME part, listed by the real ``mail_delta`` classification. A message the real
+    classifier rejects gets no part list, so the real delta/adoption adapter refuses it with its own code."""
+    from .intake import mail_delta
+    sha = hashlib.sha256(raw).hexdigest()
+    where = lambda digest: "objects/%s/%s" % (digest[:2], digest)  # noqa: E731
+    objects = {where(sha): raw}
+    try:
+        candidates = [c for c in mail_delta.mime_candidates(None, raw=raw, legacy_scalar=True) if c["attachable"]]
+    except mail_delta.Rejected:
+        candidates = []
+    attachments = []
+    for candidate in candidates:
+        payload = _mime_payload(raw, candidate["locator"])
+        if hashlib.sha256(payload).hexdigest() != candidate["sha"]:
+            raise ProofError("ADOPTION_SETUP_REFUSED")
+        objects[where(candidate["sha"])] = payload
+        attachments.append({"part": candidate["locator"], "path": where(candidate["sha"]), "bytes": candidate["size"],
+                            "sha256": candidate["sha"], "filename": mail_delta.safe_filename(candidate["name"]),
+                            "original_filename": candidate["name"], "content_type": candidate["content_type"]})
+    receipt = {"complete": True, "account_id": ADOPTION_ACCOUNT, "folder": ADOPTION_FOLDER, "uidvalidity": 1, "uid": 1,
+               "bytes": len(raw), "internaldate": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+               "original_eml": {"path": where(sha), "bytes": len(raw), "sha256": sha}, "attachments": attachments}
+    return receipt, objects
+
+
+def _prepare_adoption(project, raw, now):
+    """Sandbox-only: write a synthetic owner adoption config and a synthetic mail-store export of ``raw`` under the
+    replay's own project, and initialise its empty canonical ledger. The account and folder are fixed fictional
+    ``.example.invalid`` values, never read from the message or from any real mailbox or setting. Existing generated
+    material is reused only when byte-identical; anything else is refused without being changed."""
+    project = Path(os.path.abspath(project))
+    _adoption_guard(project)
+    mail = project / "mail-history"
+    processing = project / "processing-v1"
+    from .mail_adoption import DISABLE_MARKER
+    if os.path.lexists(processing / DISABLE_MARKER):
+        raise ProofError("ADOPTION_SETUP_REFUSED")  # the gate is never repaired, superseded or pinned here
+    receipt, objects = _adoption_receipt(raw, now)
+    try:
+        from .run import Pipeline
+        Pipeline(processing)
+        _private_dir(mail)
+        for name in ("objects", "receipts"):
+            _private_dir(mail / name)
+        for relative, data in sorted(objects.items()):
+            _private_dir((mail / relative).parent)
+            _private_file(mail / relative, data)
+        identity = json.dumps([receipt[k] for k in ("account_id", "folder", "uidvalidity", "uid")])
+        _private_file(mail / "receipts" / (hashlib.sha256(identity.encode()).hexdigest() + ".json"),
+                      (json.dumps(receipt, sort_keys=True) + "\n").encode())
+        _private_file(project / ADOPTION_CONFIG, _adoption_config_bytes())
+    except (OSError, ValueError, sqlite3.Error):
+        raise ProofError("ADOPTION_SETUP_REFUSED") from None
+    return "ok", None, {"counts": {"input": 1, "output": len(objects), "failed": 0, "skipped": 0}}
+
+
+def _rehearse_adoption(project, run_id, config, timeline):
+    """Run the real ``delta`` then ``adoption`` stage adapters on the sandbox and return their timeline entries.
+
+    Each stage rechecks the sandbox gate first; an earlier failure leaves the next stage ``not_run``."""
+    def stage(name, *extra):
+        def run():
+            _adoption_guard(project)
+            return _adapter(name, project, run_id, *extra)
+        return run
+    return (timeline.run("delta", stage("delta"), []),
+            timeline.run("adoption", stage("adoption", "--config", str(config)), ["project/processing-v1/ledger.sqlite"]))
+
+
+def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None, ocr=False, seed=None,
+           with_adoption=False):
+    """Replay one message; return the proof report dict. ``out/label`` must not exist yet.
+
+    ``with_adoption`` (sandbox only) rehearses the real delta and adoption stages on a synthetic export first."""
     now = now or datetime.now(timezone.utc)
     base = Path(os.path.abspath(out)) / label
     if base.exists():
@@ -257,6 +409,24 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None,
             raise ProofError("SAVE_MAIL_FAILED")
         return "ok", None, {"failures": 0, "messages": report.get("messages") or 1}
 
+    def save_mail_adopted():
+        # --with-adoption: the real adoption already enrolled the message; this stage only verifies and opens the queue.
+        from .portal.store import Queue  # the portal stage already ran live: an empty queue stands in
+        Queue(project / "portal-queue-v1").close()
+        db = sqlite3.connect("file:%s?mode=ro" % (project / "processing-v1" / "ledger.sqlite"), uri=True)
+        try:
+            held = [r[0] for r in db.execute("SELECT eml_sha256 FROM mail_messages")]
+        finally:
+            db.close()
+        if held != [hashlib.sha256(raw).hexdigest()]:
+            raise ProofError("SAVE_MAIL_NOT_ADOPTED")  # e.g. the real adopter set the message aside as a coded gap
+        return "ok", None, {"failures": 0, "messages": 1}
+
+    def adoption_setup():
+        status, code, detail = _prepare_adoption(project, raw, now)
+        arrival_summary.capture_baseline(str(project), run_id)  # before the adoption enrolls the message
+        return status, code, detail
+
     def outputs():
         return _adapter("outputs", project, run_id, "--campaign-root", str(campaign_root))
 
@@ -270,11 +440,16 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None,
         return "ok", None, {"queued_by_kind": kinds}
 
     def telegram_text():
-        stages = [run_orchestrator.stage_entry(s["stage"], s["status"] if s["status"] != "not_run" else "skipped",
-                                               _counts(s), s["seconds"], s["code"] if s["status"] != "ok" else None)
-                  for s in line.stages if s["stage"] in ("extract", "digest_gates", "outputs")]
-        stages = [run_orchestrator.stage_entry(name, "skipped", None, None, "REPLAY_STARTS_AFTER_MAILBOX_SYNC")
-                  for name in ARRIVAL_DONE] + stages + [run_orchestrator.pending_notify()]
+        rehearsed = ADOPTION_STAGES if with_adoption else ()  # delta and adoption report what they actually did
+        actual = {s["stage"]: run_orchestrator.stage_entry(
+            s["stage"], s["status"] if s["status"] != "not_run" else "skipped", _counts(s), s["seconds"],
+            s["code"] if s["status"] != "ok" else None)
+            for s in line.stages if s["stage"] in rehearsed + ("extract", "digest_gates", "outputs")}
+        stages = [actual[name] if name in rehearsed else
+                  run_orchestrator.stage_entry(name, "skipped", None, None, "REPLAY_STARTS_AFTER_MAILBOX_SYNC")
+                  for name in ARRIVAL_DONE]
+        stages += [actual[name] for name in ("extract", "digest_gates", "outputs") if name in actual]
+        stages.append(run_orchestrator.pending_notify())
         started = now.strftime("%Y-%m-%dT%H:%M:%SZ")
         summary = {"received_by_kind": None, "pending_drafts": None}
         with contextlib.suppress(Exception):
@@ -327,7 +502,13 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None,
 
     try:
         line.run("arrival_trigger", arrival_trigger, ["runtime/arrival"])
-        line.run("save_mail", save_mail, ["project/processing-v1/ledger.sqlite"])
+        if with_adoption:
+            line.run("adoption_setup", adoption_setup, ["project/mail-history/objects", "project/mail-history/receipts",
+                                                       "project/" + ADOPTION_CONFIG])
+            _rehearse_adoption(project, run_id, project / ADOPTION_CONFIG, line)
+            line.run("save_mail", save_mail_adopted, ["project/processing-v1/ledger.sqlite"])
+        else:
+            line.run("save_mail", save_mail, ["project/processing-v1/ledger.sqlite"])
         if seed is not None:
             line.run("seed", lambda: _apply_seed(project, seed), ["project/agency-fact-sheets.json"])
         extract_args = ("--ocr", "--timeout", str(OCR_STAGE_TIMEOUT), "--ocr-page-timeout", str(OCR_PAGE_TIMEOUT),
@@ -345,14 +526,22 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None,
             os.environ.pop(run_orchestrator.TRIGGER_ENV, None)
         else:
             os.environ[run_orchestrator.TRIGGER_ENV] = env_old
+    unread = _unread_originals(project, run_id)
     for stage in line.stages:
         if stage["status"] in ("fail", "not_run"):
             manual.append({"stage": stage["stage"], "why": stage["code"]})
         manual.extend({"stage": stage["stage"], "why": why} for why in _unfinished_work(stage))
+        if stage["stage"] == "extract" and stage["status"] in ("ok", "warn") and unread is None:
+            # An extract that finished must have left its per-original list; never report a clean inventory without it.
+            manual.append({"stage": "extract", "why": EXTRACT_LIST_UNAVAILABLE})
     report = {"schema": SCHEMA, "run_id": run_id, "sandbox": str(base), "message_sha256": hashlib.sha256(raw).hexdigest(),
               "sent": False, "published": False, "stages": line.stages, "manual_steps": manual,
               "total_seconds": round(sum(s["seconds"] for s in line.stages), 3),
-              "result": "PASS" if not manual else "FAIL", "ocr": bool(ocr)}
+              "result": "PASS" if not manual else "FAIL", "ocr": bool(ocr),
+              # Originals extract did not read (metadata only). [] with a failed/not-run extract means coverage unknown.
+              "unread": unread or []}
+    if with_adoption:
+        report["with_adoption"] = True
     (base / "proof-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (base / "proof-report.md").write_text(render_markdown(report), encoding="utf-8")
     return report
@@ -368,6 +557,39 @@ def _unfinished_work(stage):
     if stage["stage"] == "outputs" and stage["status"] == "warn" and OUTPUTS_UNFINISHED.match(stage["code"] or ""):
         return ["outputs:" + stage["code"]]
     return []
+
+
+def _unread_originals(project, run_id):
+    """Every original this run's extract did not read, as ``{sha256_prefix, kind, outcome}`` rows (read-only).
+
+    Reads only ``processing-v1/runs/extract-<run>.json`` (``records-extract-outcomes-v1``) for this exact run. Returns
+    ``None`` when the list is missing, unreadable or malformed, so the caller never mistakes it for a clean inventory.
+    Rows carry no file name, path, subject, diagnostic or text; they are sorted by the full original hash.
+    """
+    path = Path(project) / "processing-v1" / "runs" / ("extract-%s.json" % native_extract.safe_run_name(run_id))
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > EXTRACT_LIST_MAX_BYTES:
+            return None
+        body = json.loads(path.read_bytes())
+        if type(body) is not dict or body.get("schema") != EXTRACT_LIST_SCHEMA or body.get("run_id") != run_id:
+            return None
+        documents = body.get("documents")
+        if type(documents) is not list:
+            return None
+        rows = []
+        for doc in documents:
+            if type(doc) is not dict:
+                return None
+            digest, form, outcome = doc.get("original_sha256"), doc.get("form"), doc.get("outcome")
+            if (type(digest) is not str or not SHA256.match(digest) or type(outcome) is not str
+                    or outcome not in native_extract.OUTCOMES
+                    or not (form is None or (type(form) is str and FORM.match(form)))):
+                return None
+            if outcome != native_extract.EXTRACTED:
+                rows.append((digest, {"sha256_prefix": digest[:12], "kind": form or "unknown", "outcome": outcome}))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return [row for _, row in sorted(rows, key=lambda r: (r[0], r[1]["outcome"]))]
 
 
 def _counts(stage):
@@ -387,9 +609,21 @@ def render_markdown(report):
         rows.append("| %s | %s%s | %.3f | %s |" % (s["stage"], s["status"], " (%s)" % s["code"] if s["code"] else "",
                                                  s["seconds"], ", ".join("`%s`" % o for o in s["outputs"]) or "-"))
     manual = ["- %s: %s" % (m["stage"], m["why"]) for m in report["manual_steps"]] or ["- none"]
+    unread = ["| %s | %s | %s | %s |" % (u["sha256_prefix"], u["kind"], u["outcome"],
+                                        "agency-side" if u["outcome"] in AGENCY_SIDE else "-")
+              for u in report.get("unread") or []]
+    unread = (["| Original (sha256 prefix) | Kind | Outcome | Classification |", "| --- | --- | --- | --- |", *unread]
+              if unread else ["- none"])
+    note = (["Adoption rehearsal: the real delta and adoption stages ran on a synthetic, fictional export built for "
+             "this replay. Mailbox sync, portal transport, live credentials and owner approval were not rehearsed.", ""]
+            if report.get("with_adoption") else [])
     return "\n".join(["# Records e2e proof %s" % report["run_id"], "", "Result: **%s**. Sent: no. Published: no." %
-                      report["result"], "", *rows, "", "Total seconds: %.3f" % report["total_seconds"], "",
-                      "Manual steps needed:", *manual, ""])
+                      report["result"], "", *note, *rows, "", "Total seconds: %.3f" % report["total_seconds"], "",
+                      "Manual steps needed:", *manual, "",
+                      "Unread originals (extract outcome other than EXTRACTED; hash prefix, kind and code only):", *unread,
+                      "", "`agency-side` rows are damaged or incomplete documents the agency supplied. PASS can coexist with "
+                      "them and is not a claim that every supplied byte was read. With a failed or not-run extract an "
+                      "empty list means coverage is unknown, not that everything was read.", ""])
 
 
 def main(argv=None):
@@ -403,11 +637,13 @@ def main(argv=None):
     parser.add_argument("--as-of", help="YYYY-MM-DD clock for the deadline and health views")
     parser.add_argument("--seed", help="records-e2e-seed-v1 JSON: synthetic agency, request and typed joins for the sandbox ONLY")
     parser.add_argument("--ocr", action="store_true", help="run extract with local OCR (stage 600 s, document budget fits one page)")
+    parser.add_argument("--with-adoption", action="store_true", help="rehearse the real delta and adoption stages on a "
+                        "synthetic fictional export and owner config in the sandbox ONLY")
     args = parser.parse_args(argv)
     try:
         path = pick_message(args.message, args.mail_store, args.nth)
         report = replay(path, args.out, args.campaign_root, label=args.label, as_of=args.as_of, ocr=args.ocr,
-                        seed=args.seed)
+                        seed=args.seed, with_adoption=args.with_adoption)
     except ProofError as error:
         print("records e2e-proof: refused (%s)" % error.code, file=sys.stderr)
         return 2

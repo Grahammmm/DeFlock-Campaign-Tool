@@ -49,6 +49,12 @@ class SocialMeetingTests(unittest.TestCase):
     def text(self, path):
         return path.read_text(encoding="utf-8").split("\n", 2)[2].rstrip("\n")
 
+    def check_at_now(self):
+        """``social --check`` at the fixed clock NOW: the same report and exit status the CLI gives, without its wall clock."""
+        report = check_social(self.root, now=NOW)
+        return subprocess.CompletedProcess(["social", "--check"], 3 if report["problems"] else 0,
+                                           json.dumps(report, indent=2, ensure_ascii=False), "")
+
     def cli(self, *extra):
         return subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "social", "--directory", str(self.root),
                                *extra], cwd=REPO_ROOT, capture_output=True, text=True, timeout=60)
@@ -266,12 +272,14 @@ class SocialMeetingTests(unittest.TestCase):
         self.meeting("cedar-verified")
         build_social(self.root)
         findings_before = {p.name: p.read_bytes() for p in (self.root / "kit" / "social").glob("*.md")}
-        check_before = self.cli("--check")
+        # The fixed clock NOW, not the CLI's wall clock: the fixture meeting starts on a fixed date, so a wall-clock
+        # check goes stale the moment that date passes (main red 2026-11-15 09:01 PST).
+        check_before = self.check_at_now()
         self.assertEqual(check_before.returncode, 0, check_before.stdout)
         build_meeting_social(self.root, ["x"], now=NOW)
         build_meeting_social(self.root, now=NOW)
         self.assertEqual({p.name: p.read_bytes() for p in (self.root / "kit" / "social").glob("*.md")}, findings_before)
-        check_after = self.cli("--check")
+        check_after = self.check_at_now()
         report_after = json.loads(check_after.stdout)
         folders_after = report_after.pop("folders")  # the meeting folders are now named; the finding part is unchanged
         self.assertEqual((check_after.returncode, report_after), (check_before.returncode, json.loads(check_before.stdout)))
@@ -280,7 +288,7 @@ class SocialMeetingTests(unittest.TestCase):
         summary = build_social(self.root)  # finding drafts rerun: nothing about meetings
         self.assertEqual(sorted(summary), ["kept_edited", "posted", "stale", "suggested", "written"])
         self.assertEqual(summary["stale"], [])
-        self.assertEqual(check_social(self.root)["problems"], 0)
+        self.assertEqual(check_social(self.root, now=NOW)["problems"], 0)
 
     def test_check_with_meetings_refused_and_within_days_needs_meetings(self):
         for args in (("--check", "--meetings"), ("--within-days", "5")):

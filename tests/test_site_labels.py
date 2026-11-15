@@ -319,6 +319,11 @@ class LabelsTest(unittest.TestCase):
                   "requests.col_topic", "requests.col_updated_on", "requests.not_recorded",
                   "requests.state_acknowledged", "requests.state_answered", "requests.state_awaiting_response",
                   "requests.state_declined_in_writing", "requests.state_partly_answered", "requests.state_withdrawn",
+                  # DF2007-13: only an asked item with an answer detail or the no_records_stated state renders these
+                  # (tests/test_agency_asked_outcomes.py overrides every one).
+                  "requests.extension", "requests.fee_quoted", "requests.fee_status_paid", "requests.fee_status_unpaid",
+                  "requests.fee_status_waived", "requests.no_records_sentence", "requests.no_records_sentence_dated",
+                  "requests.state_no_records_stated", "requests.withheld_sections",
 
                   "schedule.join_many", "schedule.join_two", "schedule.ordinal_1", "schedule.ordinal_2",
                   "schedule.ordinal_3", "schedule.ordinal_4", "schedule.ordinal_last", "schedule.rule",

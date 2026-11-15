@@ -517,9 +517,26 @@ data or feeds, and an agency without `contract_check` shows no section.
 An agency's optional `asked` (≤ 20 items) lists what the organizer asked it: `{"topic", "asked_on", "state",
 "updated_on"?, "note"?}`. `topic` ≤ 120 and `note` ≤ 200 plain-text characters; `asked_on`/`updated_on` are real
 YYYY-MM-DD dates not after the build date, `updated_on` not before `asked_on`; `state` is one of `awaiting_response`,
-`acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn`. A bad item stops the build naming
+`acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn`, `no_records_stated` (DF2007-13: the
+agency's own statement that it had no responsive records, never a claim that none exist). A bad item stops the build naming
 `content/agencies.json[n].asked[i].<field>`; `content-check` lists every such problem, one line each. Kit agencies
-never carry it. It is shown only on `agencies.html` (docs/AGENCY-CARDS.md) and `requests.html` (below), never exported to data or feeds.
+never carry it. It is shown on `agencies.html` (docs/AGENCY-CARDS.md) and `requests.html` (below); its `topic`, `state`,
+`asked_on`, `updated_on` and the answer details below are also in `data/agencies.json` for an agency with a public page, but
+never its `note` or private `request` link, and never in feeds.
+
+Three optional answer details (DF2007-13) record what the agency answered. Absent means not recorded: nothing is filled in.
+`fee_quoted` is `{"amount_usd", "status"}`: `amount_usd` a string of 1 to 6 digits with at most two decimals (`12.50`; no
+sign, comma, exponent or currency symbol, kept exactly as written) and `status` one of `unpaid`, `paid`, `waived`.
+`extension` is `{"noticed_on", "until"}`, both real YYYY-MM-DD days from 2000-01-01: `noticed_on` is the event (not after the
+build date) and `until` is the deadline the agency stated (not before `noticed_on`; equal is valid). `until` may be after
+the build date: a future deadline is valid and is never refused, clipped or rewritten, and no statutory period is inferred.
+`withheld_sections` is a list of 1 to 5 distinct Government Code section numbers, digits only (`7923.600`), in the order
+given; never the agency's words, and nothing says the citation is valid or sufficient. Each present detail adds one fixed
+sentence after the state sentence, from labels `requests.fee_quoted` (with `requests.fee_status_*`), `requests.extension`
+and `requests.withheld_sections`, in that order. The `no_records_stated` state uses `requests.no_records_sentence`, or
+`requests.no_records_sentence_dated` with `updated_on`, and the badge/count label `requests.state_no_records_stated`. A bad
+value stops the build naming `content/agencies.json[n].asked[i].<field>` (a nested value names `.<field>.<key>`); the
+loader checks the dates and their order, which JSON Schema cannot compare.
 
 `agencies.html` opens with an "At a glance" table (`#at-a-glance`, labels `agencies.glance_*`): one row per agency in
 the list's own order, never sorted by any number, with no ranking, score or "best/worst" wording. Cells: cameras,
@@ -558,11 +575,11 @@ a correction-request file, the ledger or any other organizer state. One row per 
 separate rows. Columns, in order: Agency (linked to its `agencies/<slug>.html` page, or to its card `agencies.html#<slug>`
 when it has no individual page of its own), Topic, Asked on, State, Updated on. Rows run newest `asked_on` first; equal
 days go by `agency_id`, then by position in that agency's list, and an `updated_on` never reorders them. State is exactly
-the sentence the agency card uses (`asked_sentence`, no note added); `awaiting_response` with no `updated_on` shows the
+the sentence the agency card uses (`asked_sentence` plus any answer-detail sentences, no note added); `awaiting_response` with no `updated_on` shows the
 build day, like the card, so that sentence changes from day to day. A missing `updated_on` shows "Not recorded", never the
 asked date or today's date. The lead gives the number of rows and a count for each of the six states in the order
 `awaiting_response`, `acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn` (zero counts included),
-counted from the very rows shown; no state is inferred and nothing says a response is late. With no rows the page says "No
+counted from the very rows shown, and a seventh count for `no_records_stated` only when at least one row uses it; no state is inferred and nothing says a response is late. With no rows the page says "No
 public requests are listed yet." after the zero counts and shows no table. It reuses the `.glance-table` markup, so rows
 stack on phones with each cell's header, and adds no CSP rule (a script, style and asset only with the filter below). It is linked as "What we have
 asked for" in the footer between the findings feed and Corrections (on every page), is listed once in `sitemap.xml` (with
@@ -1637,7 +1654,8 @@ contacts, `location`, `agenda_item`, `verified_by`, `verified_at` or any other k
 `agencies.html` and `about.html`: only agencies that have a public page (`/agencies/<slug>.html`), sorted by `name` then
 `agency_id` (`"agencies": []` with none). Top level `schema_version`, `campaign`, `generated_from`, `base_url`, `url_kind`
 and `agencies`; per agency `agency_id`, `name`, `kind`, `url` (the page path, with the base URL when one is set), `asked`
-(`topic`, `state`, `asked_on`, `updated_on` or null, newest `asked_on` first as the card lists them), `alpr_policy`
+(`topic`, `state`, `asked_on`, `updated_on` or null and, only when recorded, `fee_quoted`, `extension`, `withheld_sections`,
+newest `asked_on` first as the card lists them), `alpr_policy`
 (`url`, `checked_on`) or null, `contract` (`vendor`, `start`, `end`, `source_url`, `checked_on` and, only when the contract
 has one, `cost`: `amount_usd`, `period`, `as_stated_in`) or null, `transparency`
 (the newest snapshot only: the portal numbers the page shows, `source_url` and `checked_on`) or null, an optional

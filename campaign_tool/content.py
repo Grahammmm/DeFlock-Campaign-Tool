@@ -1148,8 +1148,15 @@ def check_source_pages(findings, sources):
 AGENCY_KEYS = {"agency_id", "name", "kind", "jurisdiction_name", "records_url", "records_email",
                "portal", "selected", "verified", "sources", "slug", "profile", "place_fips",
                "flock_transparency_slug", "muckrock_agency_id", "notes", "verification", "asked"}
-ASKED_STATES = ("awaiting_response", "acknowledged", "partly_answered", "answered", "declined_in_writing", "withdrawn")
-ASKED_KEYS, ASKED_TEXT = ("topic", "asked_on", "state", "updated_on", "note", "request"), {"topic": 120, "note": 200}
+ASKED_STATES = ("awaiting_response", "acknowledged", "partly_answered", "answered", "declined_in_writing", "withdrawn",
+                "no_records_stated")  # DF2007-13: the seventh is the agency's own statement, appended after the six
+ASKED_KEYS, ASKED_TEXT = (("topic", "asked_on", "state", "updated_on", "note", "request", "fee_quoted", "extension",
+                           "withheld_sections"), {"topic": 120, "note": 200})
+# DF2007-13: optional public answer details. The amount grammar is kit_track.AMOUNT's, the section grammar is the number
+# capture of kit_track.SECTION; local copies keep tracker I/O out of the public loaders (a test pins the amount pattern).
+ASKED_AMOUNT, ASKED_SECTION, ASKED_DAY = (re.compile(r"[0-9]{1,6}(\.[0-9]{1,2})?"), re.compile(r"[0-9]{4}(?:\.[0-9]+)?"),
+                                          re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}"))
+ASKED_FEE_STATUSES, ASKED_SECTIONS_MAX, ASKED_EARLIEST = ("unpaid", "paid", "waived"), 5, date(2000, 1, 1)
 ASKED_REQUEST = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")  # DF1207-03: kit_track.REQUEST; private link to kit/sent.json, never rendered
 CONTRACT_KEYS = {"vendor", "start", "end", "renewal_note", "source_url", "checked_on", "cost"}
 COST_KEYS, COST_PERIODS = ("amount_usd", "period", "as_stated_in"), ("annual", "total", "one_time")
@@ -1825,6 +1832,65 @@ def _agency_slug(agency):
     return _slug(rest, f"agencies[{agency['agency_id']}] derived slug")
 
 
+def _asked_object(value, label, keys):
+    """An answer-detail object with exactly ``keys``; the message names the field, never the submitted value."""
+    if not isinstance(value, dict):
+        raise ContentError(f"{label}: must be an object with {' and '.join(keys)}")
+    for key in sorted(map(str, set(value) - set(keys))):
+        raise ContentError(f"{label}: unknown field {key!r}")
+    for key in keys:
+        if key not in value:
+            raise ContentError(f"{label}.{key}: required")
+
+
+def _asked_day(value, label):
+    """A canonical YYYY-MM-DD string that is a real calendar day from 2000-01-01."""
+    if not isinstance(value, str) or not ASKED_DAY.fullmatch(value):
+        raise ContentError(f"{label}: must be a YYYY-MM-DD date")
+    try:
+        day = date.fromisoformat(value)
+    except ValueError:
+        raise ContentError(f"{label}: must be a real calendar day") from None
+    if day < ASKED_EARLIEST:
+        raise ContentError(f"{label}: must not be before {ASKED_EARLIEST.isoformat()}")
+    return day
+
+
+def _asked_fee_quoted(value, label):
+    """DF2007-13: ``{amount_usd, status}`` as recorded; the amount string is kept exactly as supplied."""
+    _asked_object(value, label, ("amount_usd", "status"))
+    if not isinstance(value["amount_usd"], str) or not ASKED_AMOUNT.fullmatch(value["amount_usd"]):
+        raise ContentError(f"{label}.amount_usd: must be a plain USD amount string such as 12.50 (up to 6 digits, "
+                           "at most 2 decimals; no sign, comma or currency symbol)")
+    if not isinstance(value["status"], str) or value["status"] not in ASKED_FEE_STATUSES:
+        raise ContentError(f"{label}.status: choose one of {list(ASKED_FEE_STATUSES)}")
+    return {"amount_usd": value["amount_usd"], "status": value["status"]}
+
+
+def _asked_extension(value, label, today=None):
+    """DF2007-13: ``{noticed_on, until}``. ``noticed_on`` is the event (not after the build day); ``until`` is the
+    agency's stated deadline (not before ``noticed_on``) and may be after the build day: a future deadline is valid."""
+    _asked_object(value, label, ("noticed_on", "until"))
+    noticed = _asked_day(value["noticed_on"], f"{label}.noticed_on")
+    if noticed > (today or date.today()):
+        raise ContentError(f"{label}.noticed_on: must not be after the build date")
+    if _asked_day(value["until"], f"{label}.until") < noticed:
+        raise ContentError(f"{label}.until: must not be before noticed_on")
+    return {"noticed_on": value["noticed_on"], "until": value["until"]}
+
+
+def _asked_withheld_sections(value, label):
+    """DF2007-13: 1-5 distinct Government Code section numbers (digits only), in the order supplied."""
+    if not isinstance(value, list) or not 1 <= len(value) <= ASKED_SECTIONS_MAX:
+        raise ContentError(f"{label}: must be a list of 1-{ASKED_SECTIONS_MAX} section numbers")
+    for index, section in enumerate(value):
+        if not isinstance(section, str) or not ASKED_SECTION.fullmatch(section):
+            raise ContentError(f"{label}[{index}]: must be a section number such as 7923.600 (digits only)")
+        if section in value[:index]:
+            raise ContentError(f"{label}[{index}]: duplicate section number")
+    return list(value)
+
+
 def _asked(entry, label, today=None, problems=None):
     """Organizer-entered requests; every problem goes to ``problems`` (content-check), else the first is raised."""
     issues, result, values, linked = [], [], entry.get("asked", []), {}
@@ -1842,6 +1908,15 @@ def _asked(entry, label, today=None, problems=None):
                     raise ContentError(f"{item}.{key}: at most {ASKED_TEXT[key]} characters")
                 if key == "state" and value.get(key) not in ASKED_STATES:
                     raise ContentError(f"{item}.state: choose one of {list(ASKED_STATES)}")
+                if key == "fee_quoted":
+                    clean[key] = _asked_fee_quoted(value[key], f"{item}.fee_quoted")
+                    continue
+                if key == "extension":
+                    clean[key] = _asked_extension(value[key], f"{item}.extension", today)
+                    continue
+                if key == "withheld_sections":
+                    clean[key] = _asked_withheld_sections(value[key], f"{item}.withheld_sections")
+                    continue
                 if key == "request" and (not isinstance(value[key], str) or not ASKED_REQUEST.fullmatch(value[key])):
                     raise ContentError(f"{item}.request: 1-40 characters a-z, 0-9 or -, starting with a letter or digit")
                 if key == "request" and value[key] in linked:

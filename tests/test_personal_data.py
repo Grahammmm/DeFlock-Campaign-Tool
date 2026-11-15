@@ -945,7 +945,7 @@ FUNCTION_LEVEL_MODULES = {"findings", "kit", "kit_track", "kit_assign", "kit_und
 _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
         records.schedule_snapshot
-        records.admin_panel records.agency_reconciliation records.analysis_bridge records.analysis_config records.analysis_packets records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links
+        records.admin_panel records.agency_reconciliation records.analysis_bridge records.analysis_config records.analysis_packets records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links records.finding_review
         records.catalog_stage records.console_calendar records.console_documents records.console_export records.contained_resume records.e2e_proof records.container_host records.export_clearance
         records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes records.first_request
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
@@ -1066,7 +1066,7 @@ MODULE_FUNCTIONS = {
         'Journal._change', 'Journal.allocate', 'PrivateDir.write', 'admit', 'build_board', 'entry',
         'postrun_entry'
     ),
-    'records.e2e_proof': ('replay', 'replay.console', 'replay.telegram_text', '_apply_seed',),  # replay writes only under a new --out proof dir (OUT_EXISTS refuses reuse); _apply_seed writes only the replay sandbox ledger and its fact-sheets file (SEED_NOT_SANDBOX refuses any other project); sends and publishes nothing
+    'records.e2e_proof': ('replay', 'replay.console', 'replay.telegram_text', '_apply_seed', '_private_file',),  # replay writes only under a new --out proof dir (OUT_EXISTS refuses reuse); _apply_seed writes only the replay sandbox ledger and its fact-sheets file (SEED_NOT_SANDBOX refuses any other project); _private_file (--with-adoption, called only by _prepare_adoption after the sandbox-marker guard: ADOPTION_NOT_SANDBOX refuses any other project) writes only the generated synthetic .example.invalid mail export and owner adoption config as new 0600 files under the replay sandbox, or accepts byte-identical existing ones; sends and publishes nothing
     'records.export_clearance': ('clearance',),
     'records.project_init': ('_write', 'init_project',),  # one new private records project: campaign.json, .campaign-root, empty ledger and queue; refuses an existing root; sends nothing
     'records.first_request': ('main',),  # prints a draft to stdout; --queue appends only via the approval journal
@@ -1129,6 +1129,7 @@ MODULE_FUNCTIONS = {
     'records.outcomes.analysis_ready': ('write_run_analysis_ready',),
     'records.analysis_export': ('_run_files', '_tar', '_write', 'main',),  # read-only export: stdout tar or new 0600 folders under an owner-chosen --out outside the project; sends nothing
     'records.analysis_packets': ('main',),  # appends one 0600 receipt line per packet and calls only public_packets.propose (a pending packet needs G's signed approval); sends nothing
+    'records.finding_review': ('_locked_append', 'main',),  # one append-only hash-chained 0600 line per signed approve or reject in .analysis/finding-reviews.jsonl under the operator analysis root; sends and publishes nothing
     'records.outcomes.timeline': ('write_run_timeline',),
     'records.outcomes.response_items': ('write_run_response_items',),
     'records.outcomes.factsheets': ('write_run_factsheets',),
