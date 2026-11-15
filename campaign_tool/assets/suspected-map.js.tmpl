@@ -60,7 +60,7 @@ function initSuspectedLayer() {
         if (state.failed) return;
         if (!doc || doc.schema_version !== 1 || doc.generated_from !== 'content/suspected-locations.json' ||
             doc.notice !== sentence || !Array.isArray(doc.entries) || doc.entries.length > 200) throw new Error('shape');
-        var seen = {}, features = doc.entries.map(function(row) {
+        var seen = Object.create(null), features = doc.entries.map(function(row) {
           var f = feature(row); if (seen[row.id]) throw new Error('duplicate'); seen[row.id] = true; return f;
         });
         var canvas = document.createElement('canvas'); canvas.width = 40; canvas.height = 40;

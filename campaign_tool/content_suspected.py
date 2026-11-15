@@ -62,11 +62,12 @@ def _public_source(value, sources):
         _https(value, FILE + '.source')
         parsed = urlsplit(value)
         parsed.port  # rejects malformed/out-of-range ports
-        host = parsed.hostname.lower().rstrip('.')
+        host = (parsed.hostname or '').lower().rstrip('.')
         if host == 'localhost' or host.endswith('.localhost'):
             return False
         try:
-            return ipaddress.ip_address(host).is_global
+            address = ipaddress.ip_address(host)
+            return address.is_global and not address.is_multicast and not address.is_reserved
         except ValueError:
             # Reject legacy numeric IPv4 forms rather than relying on browser normalization/DNS.
             return not (re.fullmatch(r'[0-9.]+', host) or host.startswith('0x'))

@@ -63,6 +63,8 @@ test('integrated app installs its own question icon/source/layer once, correct a
 });
 
 test('toggle before map load and already-loaded install are idempotent',async()=>{
+  const prototype=harness({doc:{...documentData,entries:[{...row,id:'constructor'}]}});await prototype.init();
+  assert.ok(prototype.layers['suspected-location-points']);
   const h=harness();h.context.initSuspectedLayer();h.nodes['suspected-toggle'].checked=false;h.nodes['suspected-toggle'].listeners.change();
   h.emit('load');await new Promise(resolve=>setImmediate(resolve));assert.equal(h.layers['suspected-location-points'].layout.visibility,'none');
   const loaded=harness({loaded:true});await loaded.init();assert.equal(loaded.requests.length,1);

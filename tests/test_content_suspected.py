@@ -69,6 +69,7 @@ class ValidationTests(Case):
         cases = [('source', v) for v in (..., None, '', 'http://example.test/', 'javascript:alert(1)',
                  'https://localhost/x', 'https://127.0.0.1/x', 'https://10.0.0.1/x',
                  'https://192.0.2.1/x', 'https://host.test:bad/x', 'https://host.test:99999/x',
+                 'https://224.0.0.1/x', 'https://127.1/x', 'https://0x7f000001/x',
                  'https://user:pass@host.test/x', 'a' * 64, 'abcdefabcdef')]
         cases += [('as_of', v) for v in (..., None, '2026-11-16', '2026-02-29', '2026-1-01', '２０２６-01-01')]
         build_site(self.root, today=DAY)
@@ -143,6 +144,28 @@ class ValidationTests(Case):
                 self.path.rmdir() if kind == 'directory' else self.path.unlink()
 
     def test_cli_build_and_content_check(self):
+        # Read descriptor replacement, read failures and cap-plus-one growth must fail closed.
+        from campaign_tool.content_suspected import read_suspected, MAX_BYTES
+        self.put([entry()])
+        original_open = os.open
+        def replaced(path, flags):
+            other = self.content / 'replacement.json'
+            other.write_bytes(self.path.read_bytes())
+            os.replace(other, self.path)
+            return original_open(path, flags)
+        with mock.patch('campaign_tool.content_suspected.os.open', side_effect=replaced):
+            with self.assertRaises(ContentError): read_suspected(self.root, [], [], DAY)
+        with mock.patch('campaign_tool.content_suspected.os.open', side_effect=PermissionError):
+            with self.assertRaises(ContentError): read_suspected(self.root, [], [], DAY)
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = fake
+        fake.fileno.return_value = 123
+        fake.read.return_value = b' ' * (MAX_BYTES + 1)
+        with mock.patch('campaign_tool.content_suspected.os.open', return_value=123), \
+                mock.patch('campaign_tool.content_suspected.os.fdopen', return_value=fake), \
+                mock.patch('campaign_tool.content_suspected.os.fstat', return_value=self.path.stat()):
+            with self.assertRaises(ContentError): read_suspected(self.root, [], [], DAY)
+        fake.read.assert_called_once_with(MAX_BYTES + 1)
         self.put([entry(as_of='2026-01-01')])
         for command in ('content-check', 'build'):
             result = subprocess.run([sys.executable, '-B', '-m', 'campaign_tool', command, '--directory', str(self.root)],
