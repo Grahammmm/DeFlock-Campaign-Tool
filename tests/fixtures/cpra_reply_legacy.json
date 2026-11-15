@@ -1,0 +1,74 @@
+{
+  "extension:None": {
+    "response": [
+      0,
+      "{\n  \"written\": \"kit/followups/ca-arroyo-grande-police-extension-2026-03-04.md\",\n  \"agency_id\": \"ca-arroyo-grande-police\",\n  \"request\": \"main\",\n  \"extension_on\": \"2026-03-04\",\n  \"law_package_status\": \"draft\"\n}\nDraft only. Nothing was sent.\n",
+      ""
+    ],
+    "draft": "# Extension reply draft: Arroyo Grande Police Department\n\nDRAFT — NOT SENT. Review before sending it yourself.\n\nTo: Arroyo Grande Police Department, records custodian\n\nOn 2026-03-02 we sent a records request by email to Arroyo Grande Police Department. On 2026-03-04 we recorded the agency's extension notice.\n\nPlease:\n1. Tell us which circumstance the agency relies on for the extension under the determination-and-extension rule, Gov. Code § 7922.535 (AB 370, Stats. 2025, ch. 34, § 1; effective 2026-01-01) (law package status: draft; rule review: needs_attorney_review).\n2. Tell us the date on which the determination will be dispatched.\n3. Send any records that are ready now.\n\nThank you,\n\n[name]\n\n---\nDraft only. Not legal advice. Nothing was sent or recorded.\nlaw package: draft (not independently reviewed)\n"
+  },
+  "extension:Ordinary reason": {
+    "response": [
+      0,
+      "{\n  \"written\": \"kit/followups/ca-arroyo-grande-police-extension-2026-03-04.md\",\n  \"agency_id\": \"ca-arroyo-grande-police\",\n  \"request\": \"main\",\n  \"extension_on\": \"2026-03-04\",\n  \"law_package_status\": \"draft\"\n}\nDraft only. Nothing was sent.\n",
+      ""
+    ],
+    "draft": "# Extension reply draft: Arroyo Grande Police Department\n\nDRAFT — NOT SENT. Review before sending it yourself.\n\nTo: Arroyo Grande Police Department, records custodian\n\nOn 2026-03-02 we sent a records request by email to Arroyo Grande Police Department. On 2026-03-04 we recorded the agency's extension notice.\n\nThe agency stated this reason, as written:\n> Ordinary reason\n\nPlease:\n1. Tell us which circumstance the agency relies on for the extension under the determination-and-extension rule, Gov. Code § 7922.535 (AB 370, Stats. 2025, ch. 34, § 1; effective 2026-01-01) (law package status: draft; rule review: needs_attorney_review).\n2. Tell us the date on which the determination will be dispatched.\n3. Send any records that are ready now.\n\nThank you,\n\n[name]\n\n---\nDraft only. Not legal advice. Nothing was sent or recorded.\nlaw package: draft (not independently reviewed)\n"
+  },
+  "extension:Gov. Code § 7922.535": {
+    "response": [
+      0,
+      "{\n  \"written\": \"kit/followups/ca-arroyo-grande-police-extension-2026-03-04.md\",\n  \"agency_id\": \"ca-arroyo-grande-police\",\n  \"request\": \"main\",\n  \"extension_on\": \"2026-03-04\",\n  \"law_package_status\": \"draft\"\n}\nDraft only. Nothing was sent.\n",
+      ""
+    ],
+    "draft": "# Extension reply draft: Arroyo Grande Police Department\n\nDRAFT — NOT SENT. Review before sending it yourself.\n\nTo: Arroyo Grande Police Department, records custodian\n\nOn 2026-03-02 we sent a records request by email to Arroyo Grande Police Department. On 2026-03-04 we recorded the agency's extension notice.\n\nThe agency stated this reason, as written:\n> Gov. Code § 7922.535\n\nPlease:\n1. Tell us which circumstance the agency relies on for the extension under the determination-and-extension rule, Gov. Code § 7922.535 (AB 370, Stats. 2025, ch. 34, § 1; effective 2026-01-01) (law package status: draft; rule review: needs_attorney_review).\n2. Tell us the date on which the determination will be dispatched.\n3. Send any records that are ready now.\n\nThank you,\n\n[name]\n\n---\nDraft only. Not legal advice. Nothing was sent or recorded.\nlaw package: draft (not independently reviewed)\n"
+  },
+  "denial:None:False": {
+    "response": [
+      0,
+      "{\n  \"written\": \"kit/followups/ca-arroyo-grande-police-denial-2026-03-20.md\",\n  \"rules\": [],\n  \"law_package_status\": \"draft\"\n}\nDraft only. Nothing was sent.\n",
+      ""
+    ],
+    "draft": "# Denial reply draft: Arroyo Grande Police Department (Your reference SYNTHETIC-123)\n\nDRAFT — NOT SENT. Review before sending it yourself.\n\nTo: Arroyo Grande Police Department, records custodian\n\nRegarding your reference SYNTHETIC-123,\n\nOn 2026-03-02 we sent a records request by email to Arroyo Grande Police Department. On 2026-03-20 we recorded the agency's response\nas a denial. We asked for: [EDIT ME: what you asked for]\n\nPlease:\n1. Tell us which exemption or other legal basis the agency relied on for each record or category withheld.\n2. Send the parts of the requested records that are not exempt, with only the exempt portions redacted.\n3. Explain the denial in writing.\n\nThank you,\n\n[name]\n\n---\nDraft only. Not legal advice.\nlaw package: draft\n"
+  },
+  "denial:None:True": {
+    "response": [
+      0,
+      "{\n  \"written\": \"kit/followups/ca-arroyo-grande-police-denial-2026-03-20.md\",\n  \"rules\": [\n    \"ca-gov-7922.535-determination-and-extension-2026\"\n  ],\n  \"law_package_status\": \"draft\"\n}\nDraft only. Nothing was sent.\n",
+      ""
+    ],
+    "draft": "# Denial reply draft: Arroyo Grande Police Department (Your reference SYNTHETIC-123)\n\nDRAFT — NOT SENT. Review before sending it yourself.\n\nTo: Arroyo Grande Police Department, records custodian\n\nRegarding your reference SYNTHETIC-123,\n\nOn 2026-03-02 we sent a records request by email to Arroyo Grande Police Department. On 2026-03-20 we recorded the agency's response\nas a denial. We asked for: [EDIT ME: what you asked for]\n\nPlease:\n1. Tell us which exemption or other legal basis the agency relied on for each record or category withheld.\n2. Send the parts of the requested records that are not exempt, with only the exempt portions redacted.\n3. Explain the denial in writing.\n\nRules we noted for this reply:\n- ca-gov-7922.535-determination-and-extension-2026 (law package status: draft): Gov. Code § 7922.535 (AB 370, Stats. 2025, ch. 34, § 1; effective 2026-01-01)\n\nThank you,\n\n[name]\n\n---\nDraft only. Not legal advice.\nlaw package: draft\n"
+  },
+  "denial:Ordinary basis:False": {
+    "response": [
+      0,
+      "{\n  \"written\": \"kit/followups/ca-arroyo-grande-police-denial-2026-03-20.md\",\n  \"rules\": [],\n  \"law_package_status\": \"draft\"\n}\nDraft only. Nothing was sent.\n",
+      ""
+    ],
+    "draft": "# Denial reply draft: Arroyo Grande Police Department (Your reference SYNTHETIC-123)\n\nDRAFT — NOT SENT. Review before sending it yourself.\n\nTo: Arroyo Grande Police Department, records custodian\n\nRegarding your reference SYNTHETIC-123,\n\nOn 2026-03-02 we sent a records request by email to Arroyo Grande Police Department. On 2026-03-20 we recorded the agency's response\nas a denial. We asked for: [EDIT ME: what you asked for]\n\nThe agency stated these reasons, as written:\n- \"Ordinary basis\" (denied on 2026-03-20)\n\nPlease:\n1. For each record or category withheld that the reasons above do not cover, tell us which exemption or other legal basis the agency relied on.\n2. Send the parts of the requested records that are not exempt, with only the exempt portions redacted.\n3. Explain the denial in writing.\n\nThank you,\n\n[name]\n\n---\nDraft only. Not legal advice.\nlaw package: draft\n"
+  },
+  "denial:Ordinary basis:True": {
+    "response": [
+      0,
+      "{\n  \"written\": \"kit/followups/ca-arroyo-grande-police-denial-2026-03-20.md\",\n  \"rules\": [\n    \"ca-gov-7922.535-determination-and-extension-2026\"\n  ],\n  \"law_package_status\": \"draft\"\n}\nDraft only. Nothing was sent.\n",
+      ""
+    ],
+    "draft": "# Denial reply draft: Arroyo Grande Police Department (Your reference SYNTHETIC-123)\n\nDRAFT — NOT SENT. Review before sending it yourself.\n\nTo: Arroyo Grande Police Department, records custodian\n\nRegarding your reference SYNTHETIC-123,\n\nOn 2026-03-02 we sent a records request by email to Arroyo Grande Police Department. On 2026-03-20 we recorded the agency's response\nas a denial. We asked for: [EDIT ME: what you asked for]\n\nThe agency stated these reasons, as written:\n- \"Ordinary basis\" (denied on 2026-03-20)\n\nPlease:\n1. For each record or category withheld that the reasons above do not cover, tell us which exemption or other legal basis the agency relied on.\n2. Send the parts of the requested records that are not exempt, with only the exempt portions redacted.\n3. Explain the denial in writing.\n\nRules we noted for this reply:\n- ca-gov-7922.535-determination-and-extension-2026 (law package status: draft): Gov. Code § 7922.535 (AB 370, Stats. 2025, ch. 34, § 1; effective 2026-01-01)\n\nThank you,\n\n[name]\n\n---\nDraft only. Not legal advice.\nlaw package: draft\n"
+  },
+  "denial:Gov. Code § 7922.535:False": {
+    "response": [
+      0,
+      "{\n  \"written\": \"kit/followups/ca-arroyo-grande-police-denial-2026-03-20.md\",\n  \"rules\": [],\n  \"law_package_status\": \"draft\"\n}\nDraft only. Nothing was sent.\n",
+      ""
+    ],
+    "draft": "# Denial reply draft: Arroyo Grande Police Department (Your reference SYNTHETIC-123)\n\nDRAFT — NOT SENT. Review before sending it yourself.\n\nTo: Arroyo Grande Police Department, records custodian\n\nRegarding your reference SYNTHETIC-123,\n\nOn 2026-03-02 we sent a records request by email to Arroyo Grande Police Department. On 2026-03-20 we recorded the agency's response\nas a denial. We asked for: [EDIT ME: what you asked for]\n\nThe agency stated these reasons, as written:\n- \"Gov. Code § 7922.535\" (denied on 2026-03-20)\n\nPlease:\n1. For each record or category withheld that the reasons above do not cover, tell us which exemption or other legal basis the agency relied on.\n2. Send the parts of the requested records that are not exempt, with only the exempt portions redacted.\n3. Explain the denial in writing.\n\nThank you,\n\n[name]\n\n---\nDraft only. Not legal advice.\nlaw package: draft\n"
+  },
+  "denial:Gov. Code § 7922.535:True": {
+    "response": [
+      0,
+      "{\n  \"written\": \"kit/followups/ca-arroyo-grande-police-denial-2026-03-20.md\",\n  \"rules\": [\n    \"ca-gov-7922.535-determination-and-extension-2026\"\n  ],\n  \"law_package_status\": \"draft\"\n}\nDraft only. Nothing was sent.\n",
+      ""
+    ],
+    "draft": "# Denial reply draft: Arroyo Grande Police Department (Your reference SYNTHETIC-123)\n\nDRAFT — NOT SENT. Review before sending it yourself.\n\nTo: Arroyo Grande Police Department, records custodian\n\nRegarding your reference SYNTHETIC-123,\n\nOn 2026-03-02 we sent a records request by email to Arroyo Grande Police Department. On 2026-03-20 we recorded the agency's response\nas a denial. We asked for: [EDIT ME: what you asked for]\n\nThe agency stated these reasons, as written:\n- \"Gov. Code § 7922.535\" (denied on 2026-03-20)\n\nPlease:\n1. For each record or category withheld that the reasons above do not cover, tell us which exemption or other legal basis the agency relied on.\n2. Send the parts of the requested records that are not exempt, with only the exempt portions redacted.\n3. Explain the denial in writing.\n\nRules we noted for this reply:\n- ca-gov-7922.535-determination-and-extension-2026 (law package status: draft): Gov. Code § 7922.535 (AB 370, Stats. 2025, ch. 34, § 1; effective 2026-01-01)\n\nThank you,\n\n[name]\n\n---\nDraft only. Not legal advice.\nlaw package: draft\n"
+  }
+}

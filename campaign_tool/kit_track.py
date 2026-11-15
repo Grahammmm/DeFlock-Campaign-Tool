@@ -11,6 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from . import kit, kit_check, law
+from .cpra_cites import CURRENT_CPRA_ASK, FORMER_CPRA_NOTE, find_former_cpra_cites
 
 CHANNELS = ("email", "portal", "mail", "muckrock")
 MUCKROCK_URL = re.compile(r"https://www\.muckrock\.com/foi/(?:[a-z0-9-]+/){0,2}[a-z0-9-]*-[0-9]+/?")  # recorded, never fetched
@@ -1446,11 +1447,11 @@ To: {name}, records custodian
 {first}On {sent_on} we sent a records request by {channel} to {name}. On {denied_on} we recorded the agency's response
 as a denial. We asked for: [EDIT ME: what you asked for]
 
-{stated}Please:
+{stated}{former_note}Please:
 1. {first_ask}
 2. Send the parts of the requested records that are not exempt, with only the exempt portions redacted.
 3. Explain the denial in writing.
-{citations}
+{current_ask}{citations}
 Thank you,
 
 [name]
@@ -1496,7 +1497,9 @@ def denial_reply(root, agency_id, rules=(), *, replace=False, law_base=None):
     if not all(map(_basis_ok, steps)):
         raise ValueError(f"kit/sent.json unreadable: malformed steps for {agency_id!r}")
     stated = [s for s in steps if s.get("kind") == "produced" or s in denied and s["on"] == denied_on]
-    quoted = [f'- "{b["basis"]}" ({b["kind"]} on {b["on"]})' for b in _bases(stated)]
+    bases = _bases(stated)
+    former = any(find_former_cpra_cites(b["basis"]) for b in bases)
+    quoted = [f'- "{b["basis"]}" ({b["kind"]} on {b["on"]})' for b in bases]
     citations = "".join(f"- {r} (law package status: {status}): {in_force[r]['citation']}\n" for r in rules)
     path = root / "kit" / "agencies.json"
     names = {e["agency_id"]: e["name"] for e in kit._load_existing(path)} \
@@ -1509,6 +1512,8 @@ def denial_reply(root, agency_id, rules=(), *, replace=False, law_base=None):
         channel=entry["channel"], denied_on=denied_on, status=status,
         stated="The agency stated these reasons, as written:\n" + "\n".join(quoted) + "\n\n" if quoted else "",
         first_ask=ASK_REST if quoted else ASK_ALL,
+        former_note=FORMER_CPRA_NOTE + "\n\n" if former else "",
+        current_ask="4. " + CURRENT_CPRA_ASK + "\n" if former else "",
         citations=f"\nRules we noted for this reply:\n{citations}" if rules else ""))
     return {"written": f"kit/followups/{target.name}", "rules": rules, "law_package_status": status}
 
@@ -1522,11 +1527,11 @@ To: {name}, records custodian
 
 {first}On {sent_on} we sent a records request by {channel} to {name}. On {extension_on} we recorded the agency's extension notice.
 
-{stated}Please:
+{stated}{former_note}Please:
 1. Tell us which circumstance the agency relies on for the extension under the determination-and-extension rule, {citation} (law package status: {status}{review}).
 2. {second}
 3. Send any records that are ready now.
-
+{current_ask}
 Thank you,
 
 [name]
@@ -1576,6 +1581,7 @@ def extension_reply(root, agency_id, *, request="main", replace=False, law_base=
     second = (f"Your notice states {stated_on} for dispatch of the determination; please confirm." if stated_on
               else "Tell us the date on which the determination will be dispatched.")
     reason = notice.get("extension_reason")
+    former = bool(find_former_cpra_cites(reason))
     stated = f"The agency stated this reason, as written:\n> {reason}\n\n" if reason is not None else ""
     review = f"; rule review: {rule['review']}" if rule.get("review") else ""
     target = _followup_target(root, f"{_stem(agency_id, request)}-extension-{notice['on']}.md", replace)
@@ -1584,6 +1590,8 @@ def extension_reply(root, agency_id, *, request="main", replace=False, law_base=
     kit._write_text(target, EXTENSION_TEMPLATE.format(
         name=name, subject=subject, first=first and first + "\n\n", sent_on=entry["sent_on"], channel=entry["channel"],
         extension_on=notice["on"], stated=stated, citation=rule["citation"], status=package["status"], review=review,
+        former_note=FORMER_CPRA_NOTE + "\n\n" if former else "",
+        current_ask="4. " + CURRENT_CPRA_ASK + "\n" if former else "",
         second=second, not_reviewed="" if package["status"] == "reviewed" else " (not independently reviewed)"))
     return {"written": f"kit/followups/{target.name}", "agency_id": agency_id, "request": request,
             "extension_on": notice["on"], "law_package_status": package["status"]}
