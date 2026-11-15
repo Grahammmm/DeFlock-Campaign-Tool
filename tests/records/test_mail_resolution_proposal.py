@@ -8,6 +8,7 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -175,6 +176,49 @@ class ProposalTests(Workdir):
             with self.assertRaises(adoption.AdoptionError):
                 self.write(big)
         self.assertEqual(sorted(os.listdir(self.out)), sorted(before + ["big.json"]))
+
+    def test_inputs_require_owner_only_permissions(self):
+        inv = self.inv(census({h("p"): entry("proposed", 1)}))
+        for path in (inv, self.approval):
+            for mode in (0o640, 0o604):
+                with self.subTest(input=path.name, mode=oct(mode)):
+                    path.chmod(mode)
+                    before = self.snap()
+                    inputs = {p.name: (p.read_bytes(), p.stat()) for p in self.out.iterdir()}
+                    try:
+                        with self.assertRaisesRegex(adoption.AdoptionError,
+                                                    "resolution_proposal_input_invalid"):
+                            self.write(inv, f"refused-{path.stem}-{mode:o}.json")
+                        self.assertEqual(self.snap(), before)
+                        self.assertEqual({p.name: (p.read_bytes(), p.stat())
+                                          for p in self.out.iterdir()}, inputs)
+                    finally:
+                        path.chmod(0o600)
+
+    def test_inputs_require_current_owner(self):
+        inv = self.inv(census({h("p"): entry("proposed", 1)}))
+        real_fstat = os.fstat
+        for path in (inv, self.approval):
+            identity = (path.stat().st_dev, path.stat().st_ino)
+
+            def foreign_owner(fd):
+                info = real_fstat(fd)
+                if (info.st_dev, info.st_ino) == identity:
+                    info = SimpleNamespace(**{name: getattr(info, name) for name in dir(info)
+                                              if name.startswith("st_")})
+                    info.st_uid = os.getuid() + 1
+                return info
+
+            with self.subTest(input=path.name):
+                before = self.snap()
+                inputs = {p.name: (p.read_bytes(), p.stat()) for p in self.out.iterdir()}
+                with patch.object(os, "fstat", side_effect=foreign_owner):
+                    with self.assertRaisesRegex(adoption.AdoptionError,
+                                                "resolution_proposal_input_invalid"):
+                        self.write(inv, f"refused-{path.stem}.json")
+                self.assertEqual(self.snap(), before)
+                self.assertEqual({p.name: (p.read_bytes(), p.stat())
+                                  for p in self.out.iterdir()}, inputs)
 
     def test_output_confinement(self):
         inv = self.inv(census({}))

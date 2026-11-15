@@ -34,7 +34,7 @@ def _need(value):
 def _read(path, limit):
     path = Path(os.path.abspath(path))
     try:
-        return read_regular(path, limit)
+        return read_regular(path, limit, owner_only=True)
     except (OSError, ValueError):
         raise _invalid() from None
 
