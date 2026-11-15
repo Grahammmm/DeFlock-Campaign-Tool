@@ -74,6 +74,7 @@ def _collect(db, processing, reviews):
     flagged = ocr_review.pages(db)
     decisions = {ocr_review.binding(r): r["decision"] for r in ocr_review.read_reviews(reviews)} if flagged else {}
     counts, rows, truncated, total = dict(pending=0, confirmed=0, rejected=0), [], False, 0
+    waiting = 0  # waiting rows listed so far: the cap counts these only, never the pages already decided
     texts = {}
     for page in flagged:
         decision = decisions.get(ocr_review.binding(page))
@@ -84,9 +85,10 @@ def _collect(db, processing, reviews):
                "bucket": ocr_review.bucket(page["confidence"]), "state": state, "text": None, "text_code": None,
                "text_truncated": False}
         if state == "pending":
-            if len(rows) >= MAX_ROWS or total >= MAX_TOTAL_TEXT:
+            if waiting >= MAX_ROWS or total >= MAX_TOTAL_TEXT:
                 truncated = True
                 continue
+            waiting += 1
             if page["original_sha256"] not in texts:
                 wanted = {p["page_no"] for p in flagged if p["original_sha256"] == page["original_sha256"]}
                 texts[page["original_sha256"]] = _page_text(db, processing, page["original_sha256"], wanted)
@@ -162,6 +164,11 @@ def _open(row):
     return row["state"] == "pending" and not (row.get("pending_apply") or "").startswith("pending apply")
 
 
+def complete_text(row):
+    """True only when the page's whole text was exported: a page whose text is missing or cut short is never confirmed."""
+    return type(row.get("text")) is str and row.get("text_truncated") is False
+
+
 def _form(path, token, row, button, extra=""):
     hidden = {"csrf_token": token, "id": row["id"], "derivative_sha256": row["derivative_sha256"] or "",
               "confidence": json.dumps(row["confidence"])}
@@ -213,7 +220,8 @@ def render_page(row, items, token):
     if row["text"] is not None:
         out.append("<pre>%s</pre>" % esc(row["text"]))
         if row["text_truncated"]:
-            out.append("<p>Text shortened after %d characters.</p>" % MAX_PAGE_TEXT)
+            out.append('<p class="diag" role="alert">Text shortened after %d characters. Do not confirm this page: the whole '
+                       "text is not shown. It can be rejected.</p>" % MAX_PAGE_TEXT)
     elif row["state"] == "pending":
         out.append('<p class="diag" role="alert">The text could not be shown (%s). Do not confirm this page.</p>' % esc(
             row["text_code"] or "unavailable"))
@@ -221,9 +229,10 @@ def render_page(row, items, token):
         out.append("<p>The text is shown only while a page is waiting.</p>")
     out.append("<p>%s</p>" % esc(NOTE))
     if _open(row) and token is not None:
-        out.append(_form("/ocr-review/confirm", token, row, "Confirm this page",
-                         '<label><input type="checkbox" name="read" value="1" required> '
-                         "I compared this text with the page and it matches.</label>"))
+        if complete_text(row):  # no Confirm form unless the whole text is on the page; Reject stays available
+            out.append(_form("/ocr-review/confirm", token, row, "Confirm this page",
+                             '<label><input type="checkbox" name="read" value="1" required> '
+                             "I compared this text with the page and it matches.</label>"))
         out.append(_form("/ocr-review/reject", token, row, "Reject this page"))
     out.append('<p><a href="/ocr-review">Back to the OCR pages</a></p>')
     return console_layout.shell(title, "\n".join(out), active="OCR pages")

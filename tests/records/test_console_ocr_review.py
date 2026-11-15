@@ -15,6 +15,7 @@ import sqlite3
 import threading
 import unittest
 from contextlib import redirect_stderr
+from unittest import mock
 
 from campaign_tool.records import admin_panel as ap
 from campaign_tool.records import console_apply, console_journal, console_ocr, ocr_review, run_stages
@@ -258,6 +259,83 @@ class Decisions(OcrBase):
                 del fields["read"]
             self.assertEqual(self.decide("/ocr-review/" + action, **fields)[0], 409)
         self.assertEqual(len(self.lines()), 1)
+
+
+class IncompleteText(OcrBase):
+    """A page whose text was not exported whole (missing or cut short) can be rejected but never confirmed."""
+
+    def confirm_fields(self):
+        return {"id": self.id_a, "derivative_sha256": hashlib.sha256(b"Alpha scan text: 12 cameras").hexdigest(),
+                "confidence": "91.0", "read": "1"}
+
+    def check(self, shown):
+        self.up()
+        page = self.get("/ocr-review?id=" + self.id_a)
+        self.assertIn(shown, page)
+        self.assertIn("Do not confirm this page", page)
+        self.assertEqual(sorted(self.forms(self.id_a)), ["/ocr-review/reject"])  # no Confirm form is offered
+        self.assertNotIn("Confirm this page", page)
+        self.assertEqual(self.decide("/ocr-review/confirm", **self.confirm_fields())[0], 409)  # nor taken when posted anyway
+        self.assertEqual(self.lines(), [])
+        self.assertEqual(self.post("reject", self.id_a)[:2], (303, "/ocr-review"))  # reject stays available
+        (entry,) = self.lines()
+        self.assertEqual((entry["action"], entry["target_id"]), ("ocr_reject", self.id_a))
+
+    def test_text_that_could_not_be_exported_is_never_confirmed(self):
+        with mock.patch.object(console_ocr, "_page_text", lambda *a: ({}, "extraction_unavailable")):
+            self.make_export()
+        self.assertIsNone(next(r for r in self.model()["rows"] if r["id"] == self.id_a)["text"])
+        self.check("extraction_unavailable")
+
+    def test_text_cut_short_is_never_confirmed(self):
+        with mock.patch.object(console_ocr, "MAX_PAGE_TEXT", 10):
+            self.make_export()
+        row = next(r for r in self.model()["rows"] if r["id"] == self.id_a)
+        self.assertEqual((row["text"], row["text_truncated"]), ("Alpha scan", True))
+        self.check("Text shortened after")
+
+    def test_a_complete_page_is_still_confirmed(self):
+        self.make_export()
+        self.up()
+        self.assertEqual(sorted(self.forms(self.id_a)), ["/ocr-review/confirm", "/ocr-review/reject"])
+        self.assertEqual(self.post("confirm", self.id_a)[:2], (303, "/ocr-review"))
+
+
+class WaitingCap(OcrBase):
+    """The waiting-row cap counts waiting pages only: decided pages never push a waiting page out of every later export."""
+
+    def test_a_waiting_page_follows_after_earlier_decisions(self):
+        first, second = sorted((self.id_a, self.id_b))  # export order is by document hash
+        with mock.patch.object(console_ocr, "MAX_ROWS", 1):
+            self.make_export()
+            self.up()
+            model = self.model()
+            self.assertEqual([r["id"] for r in model["rows"]], [first])  # one waiting page fits; the other follows
+            self.assertTrue(model["truncated"])
+            self.assertEqual(model["counts"], {"pending": 2, "confirmed": 0, "rejected": 0})
+            self.assertEqual(self.post("reject", first)[:2], (303, "/ocr-review"))
+            self.assertEqual(self.apply_journal(), ["APPLIED"])
+            self.make_export(RUN2)
+            model = self.model()
+            self.assertEqual([(r["id"], r["state"]) for r in model["rows"]], [(first, "rejected"), (second, "pending")])
+            self.assertFalse(model["truncated"])
+            self.assertEqual(model["counts"], {"pending": 1, "confirmed": 0, "rejected": 1})
+            self.assertIn("Awaiting confirmation", self.get("/ocr-review?id=" + second))
+
+    def test_decided_pages_do_not_count_against_the_cap_at_scale(self):
+        flagged = [{"original_sha256": "%064x" % n, "page_no": 1, "confidence": 91.0, "derivative_sha256": "%064x" % (n + 7)}
+                   for n in range(console_ocr.MAX_ROWS + 3)]
+        decided = [{"decision": "confirmed", **p} for p in flagged[:console_ocr.MAX_ROWS]]
+        with mock.patch.object(console_ocr.ocr_review, "pages", lambda db: flagged), \
+                mock.patch.object(console_ocr.ocr_review, "read_reviews", lambda path: decided), \
+                mock.patch.object(console_ocr.ocr_review, "binding", lambda r: (r["original_sha256"], r["page_no"])), \
+                mock.patch.object(console_ocr, "_page_text", lambda *a: ({1: "text"}, None)):
+            with run_stages.ledger_ro(self.processing) as db:
+                body = console_ocr._collect(db, self.processing, self.reviews)
+        waiting = [r for r in body["rows"] if r["state"] == "pending"]
+        self.assertEqual(len(waiting), 3)  # all waiting pages listed after 1,000 decided ones
+        self.assertFalse(body["truncated"])
+        self.assertEqual(body["counts"], {"pending": 3, "confirmed": console_ocr.MAX_ROWS, "rejected": 0})
 
 
 class WithoutAPinnedExport(OcrBase):

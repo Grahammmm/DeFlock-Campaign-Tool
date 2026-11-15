@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timezone
 
 from . import approval_queue as aq, console_snapshot as snap, public_packets as pp
-from .console_ocr import OcrPagesError
+from .console_ocr import OcrPagesError, complete_text
 
 SCHEMA, FILE, LOCK, MAX_JOURNAL = "records-console-decision-v1", "decisions.jsonl", "decisions.lock", 64 * 1024 * 1024
 LATER = ("takes effect at the next apply (records run); for an immediate stop use the attended command "
@@ -206,6 +206,8 @@ def ocr(handler, action, ident, derivative, confidence):
     if row["state"] != "pending" or str(row.get("pending_apply") or "").startswith("pending apply"):
         return handler._fail(409) or False
     if derivative != (row["derivative_sha256"] or "") or confidence != json.dumps(row["confidence"]):
+        return handler._fail(409) or False
+    if action == "ocr_confirm" and not complete_text(row):  # the whole text was not presented: only a reject is taken
         return handler._fail(409) or False
     value = _canon({"confidence": row["confidence"], "derivative_sha256": row["derivative_sha256"]})
     return _record(handler, action, ident, None, value)
