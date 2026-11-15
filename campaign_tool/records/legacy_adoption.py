@@ -41,13 +41,21 @@ def load_inputs(args):
     fields = {"schema", "manifest_sha256", "policy_sha256", "export_root", "supplement_root", "adoption"}
     require(type(config) is dict and set(config) == fields and config["schema"] == "legacy-adoption-v1"
             and config["adoption"] in ("enabled", "disabled"), "legacy_config_invalid")
-    for key in ("manifest_sha256", "policy_sha256"):
-        capture.sha(config[key])
+    capture.sha(config["manifest_sha256"])
+    # JSON null is the sole bootstrap exception: it may only write the first proposal.
+    bootstrap = config["policy_sha256"] is None
+    if not bootstrap:
+        capture.sha(config["policy_sha256"])
     for key in ("export_root", "supplement_root"):
         require(type(config[key]) is str and Path(config[key]).is_absolute()
                 and ".." not in Path(config[key]).parts, "legacy_config_invalid")
     manifest = private_bytes(args.manifest, 48 * 1024 * 1024, exact_mode=True)
     require(capture.digest(manifest) == config["manifest_sha256"], "legacy_manifest_hash_mismatch")
+    if bootstrap:
+        require(args.policy is None and args.write_policy_proposal and not args.apply,
+                "legacy_policy_required")
+        return config, capture.digest(raw), manifest, None
+    require(args.policy is not None, "legacy_policy_required")
     policy_raw = private_bytes(args.policy, capture.MAX_POLICY_BYTES)
     require(capture.digest(policy_raw) == config["policy_sha256"], "legacy_policy_hash_mismatch")
     policy = capture.ApprovedCapturePolicy(policy_raw, expected_sha256=config["policy_sha256"])
@@ -218,8 +226,9 @@ def proposal(config, config_hash, eligible):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for key in ("root", "config", "manifest", "policy"):
+    for key in ("root", "config", "manifest"):
         parser.add_argument("--" + key, required=True)
+    parser.add_argument("--policy", default=None)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--write-policy-proposal")
     args = parser.parse_args(argv)
@@ -252,7 +261,8 @@ def main(argv=None):
             "legacy_source_class_unknown", "legacy_manifest_invalid", "legacy_manifest_duplicate",
             "legacy_manifest_conflict", "legacy_source_unsafe", "legacy_adoption_disabled",
             "legacy_config_changed", "legacy_source_hash_mismatch", "capture_not_in_approved_inventory",
-            "original_out_of_scope", "canonical_original_missing", "local_capture_requires_readonly_source"}
+            "original_out_of_scope", "canonical_original_missing", "local_capture_requires_readonly_source",
+            "legacy_policy_required"}
         code = str(exc) if str(exc) in codes else "legacy_adoption_refused"
         print(json.dumps({code: 1}, sort_keys=True))
         return 2

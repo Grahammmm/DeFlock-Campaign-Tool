@@ -953,7 +953,7 @@ _MODULES = {
         records.intake.eml_export records.intake.folder records.intake.local_capture records.intake.mail_delta
         records.intake.mail_wire records.intake.repair_intake records.intake.scope_quarantine
         records.ledger.reconcile records.ledger.store records.ledger_catalog records.ledger_catalog_acceptance
-        records.legacy_adoption records.mail_adoption records.mail_arrival records.mail_drafts records.mail_poll records.mail_send records.mail_resolution_census records.model_advice
+        records.legacy_adoption records.mail_adoption records.mail_arrival records.mail_drafts records.mail_poll records.mail_send records.mail_resolution_census records.mail_resolution_proposal records.model_advice
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
         records.analysis_export records.outcomes.analysis_ready records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register records.outcomes.timeline
         records.outcomes.textstate records.outcomes.unmatched records.pipeline_health records.project_init records.portal.download records.portal.engine records.portal.ledger_adapter
@@ -1106,7 +1106,7 @@ MODULE_FUNCTIONS = {
     ),  # DFGL-16 private console copy: export only reads the project and writes a new tree (a new --out dir or a temp dir streamed to stdout as tar); import writes only a new sealed 0500/0400 export and the relative current pointer under an owner-only 0700 --out root; never copies approvals, packets, public-update or mail journals; sends nothing
     'records.ledger_catalog_acceptance': ('_connect', '_locked',),
     'records.legacy_adoption': ('apply_batch', 'main', 'write_proposal',),
-    'records.mail_adoption': ('_snapshot_db',),
+    'records.mail_adoption': ('_snapshot_db', 'main',),  # main --write-resolution-policy-proposal writes one new 0600 file via mail_resolution_proposal
     'records.mail_arrival': ('main', 'write_state',),  # metadata-only arrival stamps and atomic 0600 mail-poll health state under the private runtime; no mail or project writes
     'records.mail_drafts': ('_Journal.append',),  # approvals/mail-drafts.jsonl placement journal, 0600 append-only; sends nothing
     'records.mail_send': ('_Dir.append', 'init',),  # approvals/mail-send.jsonl attempt log + send.json/SEND-STOP at setup; 0600, owner-only
@@ -1115,6 +1115,7 @@ MODULE_FUNCTIONS = {
     'records.quiescence_audit': ('main',),  # writes only the 0600 evidence file --out, outside the project
     'records.holds': ('_commit', '_write_receipt',),  # HOLD-RELEASE-1: one new 0600 receipt (sha256 prefixes and codes) in an owner-only dir outside the project; the ledger write is attempt counters only
     'records.mail_resolution_census': ('inventory',),
+    'records.mail_resolution_proposal': ('write_proposal',),  # one new 0600 policy proposal outside the project; no ids on stdout
     'records.native_extract': ('_write_private', 'run', 'write_awaiting_ocr', 'write_failure_manifest', 'write_private_list',),
     'records.ocr_closure': ('load_cas_page', 'load_cas_vision',),
     'records.ocr_review': ('export', 'mark',),
