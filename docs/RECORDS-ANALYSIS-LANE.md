@@ -144,6 +144,10 @@ and prints one `<slug> PACKET_*` line (and one `kind: packet` ledger line) holdi
   `Research draft - not legal advice. The <id> law package is draft and unreviewed.` note to the text.
 - **Pre-validation.** Each packet passes `public_packets.clean` unchanged (`EVIDENCE_REFUSED <code>`, `EVIDENCE_TITLE_INVALID`,
   `EVIDENCE_AGENCY_INVALID`); the text is never rewritten. Nothing here approves or publishes: G's signature remains the only approval.
+- **Cited pages (DF2007-04).** After every check above, each cited fact's `page` must be a positive integer written canonically (`2`, never `0`, `p2`, `+2`, `02`, `2.0`, empty) that
+  is no larger than the page count in the earliest-received `SOURCES.csv` row of that record (the synced `TEXTS.csv` `pages`). A malformed page or one above the count holds the
+  whole finding `EVIDENCE_PAGE_OUT_OF_RANGE`; a missing, empty or non-positive count holds it `EVIDENCE_PAGE_COUNT_UNKNOWN` (page syntax is judged first, then unknown counts, then bounds).
+  Nothing is repaired or invented, and a valid packet's bytes and key are unchanged.
 - **Outbox.** `.analysis/packet-outbox/<slug>-<key[:12]>.json` (0600, atomic, schema `records-analysis-packet-v2`: `agency_id`, `slug`, `key`,
   `inputs` hashes, `packets[]` of `{packet, provenance}`, `held[]` of `{finding_id, code, ids}`), written only when `packets` is non-empty and
   the key is new. Outcomes: `PACKET_STAGED <file> n=<packets> held=<held> <code>=<n>…`, `PACKET_UNCHANGED`, `PACKET_NOTHING_OK`, `PACKET_ALL_HELD`.
@@ -157,5 +161,9 @@ and calls only `public_packets.propose`; it never calls `approve`, `decide`, `wr
 - **File checks.** Schema `records-analysis-packet-v2`, the `key` recomputed from the body and equal, the file name carrying `key[:12]`; otherwise `IMPORT_INVALID`, exit 1, nothing from that file proposed.
 - **Packet checks (before any write).** `packet.agency_key` equals the file `agency_id` and `kind` is `finding` (`IMPORT_IDENTITY_MISMATCH`); each `packet.documents[i]` matches `provenance.documents[i]`; the live project's
   `run-outputs/<run_id>/outcomes/received-items.json` (read-only) has an item with that `original_sha256` and the packet's agency (`IMPORT_DOCUMENT_UNKNOWN`) whose `received_at[:10]` equals `date_received` (`IMPORT_DATE_MISMATCH`, also for a null time). The host's claims are never trusted.
-- **Receipt.** `<P>/analysis-packets-imported.jsonl` (0600, append-only), one `{key, source, result}` line per packet; result is `proposed r<rev>`, `duplicate`, `IMPORT_*` or `REFUSED <PacketError code>`. A `(key, source)` already there prints `ALREADY` and is skipped, so a re-sent file is a no-op and a refused packet waits for a new key.
-- **Output and exit.** Codes and counts only. Exit 0 when every file parsed (refusals are outcomes), 1 on `IMPORT_INVALID`, 75 on `journal_busy` (no receipt, retry later). DFGL-20s moves an outbox file to `packet-outbox/sent/` only after exit 0.
+- **Cited pages (DF2007-04).** Every citation written as `record <12 hex> page <n> (<fact id>)` must name exactly one of the packet's documents by its first 12 hex digits and a page from 1 to that record's page count, otherwise the
+  packet is receipted `PACKET_PAGE_OUT_OF_RANGE` and nothing is proposed (a malformed `record …` citation, an unknown or ambiguous prefix and an unknown count are refused the same way). The count is never taken from the file:
+  it is the number of distinct usable pages of the record's current extraction in `processing-v1/ledger.sqlite`, read through a read-only snapshot and only when those pages run 1..N without a gap; a missing ledger, failed
+  or missing extraction, unreadable or symlinked evidence leaves it unknown. Other (legal) citations are opaque. A busy ledger ends the run with `ledger_busy`, exit 75, no receipt, retry later.
+- **Receipt.** `<P>/analysis-packets-imported.jsonl` (0600, append-only), one `{key, source, result}` line per packet; result is `proposed r<rev>`, `duplicate`, `IMPORT_*`, `PACKET_PAGE_OUT_OF_RANGE` or `REFUSED <PacketError code>`. A `(key, source)` already there prints `ALREADY` and is skipped, so a re-sent file is a no-op and a refused packet waits for a new key.
+- **Output and exit.** Codes and counts only. Exit 0 when every file parsed (refusals are outcomes), 1 on `IMPORT_INVALID`, 75 on `journal_busy` or `ledger_busy` (no receipt, retry later). DFGL-20s moves an outbox file to `packet-outbox/sent/` only after exit 0.
