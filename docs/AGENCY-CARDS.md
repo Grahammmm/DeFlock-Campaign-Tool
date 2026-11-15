@@ -112,7 +112,10 @@ a published finding yet." "What is not known": `profile.open` then `profile.flag
 we asked": each `asked` item, newest `asked_on` first, as "<topic> — asked <date>. <state sentence>", else "No request
 is listed for this agency yet." Wording is neutral and fixed: "No written response recorded as of <updated_on, else
 the build date>", "Acknowledged <date>; no records yet.", "Partly answered <date>.", "Answered <date>.", "Declined in
-writing on <date>.", "We withdrew this request <date>." (without a date when `updated_on` is absent). Never
+writing on <date>.", "We withdrew this request <date>.", "The agency stated that it had no responsive records on <date>."
+(without a date when `updated_on` is absent). An item that records an answer detail then adds one fixed sentence each, in
+this order: "The agency quoted USD <amount>; recorded fee status: <status>.", "On <noticed_on> the agency said it would
+respond by <until>.", "The agency cited Government Code sections <numbers> when withholding records." (docs/SITE-CONTENT.md). Never
 "ignored", "refused", "late", "overdue" or "violated"; no legal characterisation is made.
 
 ## Map city panel: agency page link
