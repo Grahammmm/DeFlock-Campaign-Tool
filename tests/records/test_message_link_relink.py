@@ -1,4 +1,5 @@
 """DF2007-02: a wrong message tie is corrected by a signed, append-only replacement line (supersedes + message_link_stale)."""
+import contextlib
 import hashlib
 import io
 import json
@@ -552,10 +553,10 @@ class Timeline(unittest.TestCase):
         self.addCleanup(server.shutdown)
 
         def get():
-            conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
-            conn.request("GET", "/agency?agency=alpha-pd")
-            response = conn.getresponse()
-            return response.status, response.read().decode()
+            with contextlib.closing(http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)) as conn:
+                conn.request("GET", "/agency?agency=alpha-pd")
+                response = conn.getresponse()
+                return response.status, response.read().decode()
         status, body = get()
         self.assertEqual(status, 200)
         self.assertEqual(body.count("This tie is wrong"), 2)
