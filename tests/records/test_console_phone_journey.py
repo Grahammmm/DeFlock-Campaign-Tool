@@ -265,8 +265,8 @@ def by_label(text):
             ".map(l => l.control)[0]" % json.dumps(text))
 
 
-def radio_choice(value):
-    return "document.querySelector('input[type=radio][name=choice][value=' + CSS.escape(%s) + ']')" % json.dumps(value)
+def link_choice(value):
+    return "document.querySelector('a.request-choice[href$=' + JSON.stringify('choice=' + encodeURIComponent(%s)) + ']')" % json.dumps(value)
 
 
 def submit_of(action):
@@ -384,15 +384,16 @@ class PhoneJourney(Journal):
         page = self.phone.text()
         self.assertIn("Tie this message to a request", page)
         before = self.entries()
-        labels = self.phone.js("Array.from(document.querySelectorAll('input[name=choice]'), input => {"
-                               "const rect = input.closest('label').getBoundingClientRect();"
+        labels = self.phone.js("Array.from(document.querySelectorAll('a.request-choice'), link => {"
+                               "const rect = link.getBoundingClientRect();"
                                "return {height: rect.height, width: rect.width};})")
         self.assertEqual(len(labels), 2)
         for rect in labels:
-            self.assertGreaterEqual(rect['height'], 44, 'request choice label is too short to tap')
-            self.assertGreaterEqual(rect['width'], 44, 'request choice label is too narrow to tap')
-        self.phone.tap("(%s).closest('label')" % radio_choice("req-b"))
-        self.assertTrue(self.phone.js("(%s).checked" % radio_choice("req-b")), "the tap did not choose the request")
+            self.assertGreaterEqual(rect['height'], 44, 'request choice link is too short to tap')
+            self.assertGreaterEqual(rect['width'], 44, 'request choice link is too narrow to tap')
+        self.assertIsNone(self.phone.js("document.getElementById('approval-payload')"), "signable text before a selection")
+        self.phone.tap(link_choice("req-b"), settle=True)  # step two: the exact text for this one request
+        self.assertIn("choice: req-b (agency caltrans)", self.phone.text())
         self.phone.type_into(by_label("Detached SSH signature"), SIGNATURE)
         self.phone.tap(submit_of("/approvals/approve"), settle=True)
         entry = self.only_new_entry(len(before), action="approve", target_id=self.tie_id, route="/approvals/approve",

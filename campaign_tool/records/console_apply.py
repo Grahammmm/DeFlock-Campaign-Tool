@@ -96,6 +96,7 @@ def _link_choice(project, ident, entry):
 
 def _append_link(project, ident, link):  # as the console does after a message-link approve; the mail-draft placement hook is not run
     done = next(r for r in aq.load_queue(project) if r["id"] == ident)
+    aq._need(done.get("status") == "approved" and done.get("approved_choice") == link[1], "approval_required")  # the signed choice only
     unmatched.append_link(project, done["item_id"], link[0], link[1], done["approved_by"])
 
 
@@ -137,7 +138,7 @@ def _apply(project, entry):
     actor = entry["actor"]
     if action == "approve":
         link = _link_choice(project, ident, entry)
-        aq.approve(project, ident, {"kind": "ssh", "signature": value})
+        aq.approve(project, ident, {"kind": "ssh", "signature": value}, choice=entry.get("choice"))
         if link:
             _append_link(project, ident, link)
     elif action == "reject":
@@ -195,8 +196,9 @@ def _landed(project, entry, base):
             ev = aq._strict_load(line, "queue_invalid")
             if ev.get("id") != ident or ev.get("revision") != base + 1:
                 continue
-            if action == "approve":
-                return ev.get("event") == "approve" and (ev.get("approval") or {}).get("signature") == value
+            if action == "approve":  # the signed choice is part of the approval: a substituted one is not this entry's mutation
+                return ev.get("event") == "approve" and (ev.get("approval") or {}).get("signature") == value \
+                    and (ev.get("approval") or {}).get("choice") == entry.get("choice")
             if action == "reject":
                 return ev.get("event") == "reject" and ev.get("reason") == value and ev.get("actor") == actor
             return ev.get("event") == "edited" and ev.get("body") == value and ev.get("actor") == actor
@@ -236,7 +238,8 @@ def settle(project, entry, intents, trust_deferred=None):
         if known and _landed(project, entry, intents[ident]):
             if entry["action"] == "approve":  # the message-link step after the approve is idempotent
                 link = _link_choice(project, entry["target_id"], entry)
-                if link:
+                if link:  # reverified against the signed revision and this choice before any append (same API as a fresh apply)
+                    aq.approve(project, entry["target_id"], {"kind": "ssh", "signature": entry["value"]}, choice=entry.get("choice"))
                     _append_link(project, entry["target_id"], link)
             return "APPLIED"
         base = _mark(project, entry)  # nothing of ours landed since the old base: this attempt starts from where the target is now
