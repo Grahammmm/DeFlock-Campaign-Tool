@@ -1415,6 +1415,8 @@ def main():
                                   "(dry run by default); nothing is sent or published")
     asked_p.add_argument("--directory", required=True)
     asked_p.add_argument("--apply", action="store_true", help="Write the proposal (validated, one atomic write)")
+    asked_p.add_argument("--outcomes", action="store_true", help="Also propose the recorded fee quote, extension dates, "
+                         "withheld section numbers and no-records state (numbers, dates and states only)")
     personal_p = commands.add_parser("personal-data", help="List the private files that can hold a person's name, email, "
                                      "phone or address: counts and dates only, never values (read-only)")
     personal_p.add_argument("--directory", required=True)
@@ -2761,7 +2763,7 @@ def main():
             print("Recorded only. Nothing was sent.")
         elif args.command == "kit-asked":
             from .kit_asked import run_cli as kit_asked_cli
-            code = kit_asked_cli(root, args.apply)
+            code = kit_asked_cli(root, args.apply, outcomes=args.outcomes)
             if code:
                 sys.exit(code)
         elif args.command == "kit-search-log":

@@ -13,6 +13,16 @@ change; only a request with no recorded scopes gets the generic topic). A change
 reader's ``content.MAX_JSON_BYTES`` is refused in ``propose`` (exit 3) before any write. The original ``agencies.json`` is
 read from one no-follow, nonblocking descriptor that must be a regular file; a known oversized file is refused before any
 payload read and an admitted one is read at most the limit plus one byte (RF0211-1). Nothing is fetched or sent.
+
+``--outcomes`` (DF2007-14, opt in; without it every proposal, line and byte is exactly as before) also proposes the
+answer details DF2007-13 admits, and only these: ``fee_quoted`` (the latest fee estimate's amount as dollars.cents and
+its unpaid/paid/waived status, from ``kit_track._fee``/``_fee_state``), ``extension`` (the extension step's own date as
+``noticed_on`` and its stated ``extension_expected_on`` as ``until``; a step with no stated date proposes none),
+``withheld_sections`` (only the section numbers ``kit_track.SECTION`` captures from recorded withheld bases, deduplicated
+in first-seen order; a basis with no number adds nothing; more than five distinct numbers refuse the whole proposal) and
+the state ``no_records_stated`` (every recorded scope's latest disposition says no records; a withdrawn request stays
+withdrawn). A detail that cannot be derived is left as it is, never removed. Notes, reasons, basis text, references and
+record hashes still never reach content, and the dry run prints one line per changed field.
 """
 import copy
 import json
@@ -29,6 +39,9 @@ TOPIC_MAX = 120
 NO_SCOPES = "Records request"
 ORGANIZER = "organizer to choose"
 UNRESOLVED = "kit-asked: cannot resolve all recorded scope titles from the law package; nothing proposed"
+OUTCOME_FIELDS = ("fee_quoted", "extension", "withheld_sections")
+SECTIONS_MAX = 5  # content.ASKED_SECTIONS_MAX: the public list holds at most five section numbers
+SECTIONS_CAPACITY = "kit-asked: more than 5 distinct withheld section numbers are recorded; nothing proposed"
 
 
 def latest_step(steps):
@@ -55,13 +68,22 @@ def topic_text(titles):
     return "; ".join(kept) if kept else titles[0][:TOPIC_MAX - 3] + "..."
 
 
-def state_of(entry):
+def _no_records_only(entry, steps):
+    """True when the request recorded scopes and every one's latest disposition is ``no_records_stated``."""
+    scopes, answers = entry.get("scopes"), kit_track._answers(steps)
+    return isinstance(scopes, list) and bool(scopes) and all(answers.get(i, (None,))[0] == "no_records_stated"
+                                                             for i in scopes)
+
+
+def state_of(entry, *, outcomes=False):
     """The public state for one sent entry, or None for a request closed without production (organizer to choose)."""
     steps = [s for s in entry["steps"] if isinstance(s, dict)]
     if not steps:
         return "awaiting_response"
     if any(s.get("kind") == "withdrawn" for s in steps):  # the campaign's own terminal act wins over any production
         return "withdrawn"
+    if outcomes and _no_records_only(entry, steps):
+        return "no_records_stated"
     produced = [s for s in steps if s.get("kind") == "produced"]
     if produced:
         scopes, answers = entry.get("scopes"), kit_track._answers(steps)
@@ -83,8 +105,31 @@ def _titles(root, law_base=None):
     return {scope["scope_id"]: scope["title"] for scope in package["request_scopes"]}
 
 
-def _proposal(entry, titles):
-    state = state_of(entry)
+def _outcomes(entry):
+    """Only the answer details the tracker actually records: ``fee_quoted``, ``extension``, ``withheld_sections``."""
+    steps = [s for s in entry["steps"] if isinstance(s, dict)]
+    found = {}
+    index, _settled = kit_track._fee(steps)
+    if index is not None:
+        cents = steps[index]["amount_cents"]
+        found["fee_quoted"] = {"amount_usd": f"{cents // 100}.{cents % 100:02d}", "status": kit_track._fee_state(steps)}
+    extension = kit_track._extension_step(steps)
+    if extension is not None and "extension_expected_on" in extension:
+        found["extension"] = {"noticed_on": extension["on"], "until": extension["extension_expected_on"]}
+    sections = []
+    for basis in kit_track._bases(steps):
+        for match in kit_track.SECTION.finditer(basis["basis"]):
+            if match.group(1) not in sections:
+                sections.append(match.group(1))
+    if len(sections) > SECTIONS_MAX:
+        raise ContentError(SECTIONS_CAPACITY)
+    if sections:
+        found["withheld_sections"] = sections
+    return found
+
+
+def _proposal(entry, titles, *, outcomes=False):
+    state = state_of(entry, outcomes=outcomes)
     asked = entry.get("scopes")
     if state is not None and isinstance(asked, list) and not all(i in titles for i in asked):
         # Checked over the whole recorded list, before the display limit can hide a missing title.
@@ -92,7 +137,8 @@ def _proposal(entry, titles):
     found = [titles[i] for i in asked] if state is not None and isinstance(asked, list) else []
     proposal = {"topic": topic_text(found), "asked_on": entry["sent_on"], "state": state}
     step = latest_step([s for s in entry["steps"] if isinstance(s, dict)])
-    return {**proposal, **({"updated_on": step[1]} if step else {})}
+    proposal = {**proposal, **({"updated_on": step[1]} if step else {})}
+    return {**proposal, **_outcomes(entry)} if outcomes and state is not None else proposal
 
 
 def _read_agencies(path, limit=MAX_JSON_BYTES):
@@ -139,7 +185,7 @@ def _validate_history(sent, today):
             raise ValueError(f"kit/sent.json unreadable: {label!r} was sent after {day.isoformat()}")
 
 
-def propose(root, today=None, law_base=None):
+def propose(root, today=None, law_base=None, *, outcomes=False):
     """``{"lines", "document", "changed", "error"}``: the printed changes, the proposed whole document, and the
     first refusal of ``load_agencies`` on it (None when it validates). Writes nothing."""
     root = Path(root)
@@ -165,15 +211,19 @@ def propose(root, today=None, law_base=None):
         if not isinstance(items, list):
             raise ContentError(f"content/agencies.json {agency_id}.asked: must be a list")
         index = next((i for i, item in enumerate(items) if isinstance(item, dict) and item.get("request") == request), None)
-        proposal = _proposal(entry, titles)
+        proposal = _proposal(entry, titles, outcomes=outcomes)
         if proposal["state"] is None:  # closed without production: no state is inferred
             where = f"{agency_id}.asked[{index}]" if index is not None else f"{agency_id} request {request}"
             lines.append(f"content/agencies.json {where}: closed without production; {ORGANIZER}")
             continue
         if index is None:
-            agency["asked"] = items = items + [{**proposal, "request": request}]
+            extra = {k: proposal[k] for k in OUTCOME_FIELDS if k in proposal}
+            core = {k: v for k, v in proposal.items() if k not in extra}
+            agency["asked"] = items = items + [{**core, "request": request, **extra}]
             lines.append(f"+ new item content/agencies.json {agency_id}.asked[{len(items) - 1}]: "
-                         + json.dumps(items[-1], ensure_ascii=False))
+                         + json.dumps({**core, "request": request}, ensure_ascii=False))
+            lines += [f"content/agencies.json {agency_id}.asked[{len(items) - 1}].{field}: (absent) -> {_show(value)}"
+                      for field, value in extra.items()]
             changed = True
             continue
         for field, value in proposal.items():
@@ -203,11 +253,11 @@ def propose(root, today=None, law_base=None):
     return {"lines": lines, "document": new, "changed": changed, "error": error}
 
 
-def run_cli(root, apply=False, today=None):
+def run_cli(root, apply=False, today=None, *, outcomes=False):
     """Print the proposal; with ``apply`` write it once (after validation). Returns the exit code (3 = Stopped)."""
     root = Path(root)
     try:
-        result = propose(root, today)
+        result = propose(root, today, outcomes=outcomes)
     except ValueError as exc:  # ContentError and an unreadable kit/sent.json
         print(f"Stopped: {exc}", file=sys.stderr)
         return 3
