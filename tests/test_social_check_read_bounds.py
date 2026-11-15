@@ -407,6 +407,7 @@ class SpecialFilesAndSurfaces(ReadBoundsCase):
         build_social(self.root, ["x"])
         pad_draft(self.social / "x" / f"{F.SLUG}.md", SC.MAX_DRAFT_BYTES + 1)
         pad_json(self.social / "meetings" / ".check.json", SC.MAX_STATE_BYTES + 1)
+        # The fixed clock NOW, not the CLI wall clock: the fixture meeting starts on a fixed date (see cli_at_now).
         before = self.tree()
         text_report = self.cli_at_now("--check", "--text")
         json_report = self.cli_at_now("--check")
