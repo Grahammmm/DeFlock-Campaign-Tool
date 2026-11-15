@@ -72,6 +72,28 @@ class KitAskedSizeTests(unittest.TestCase):
         # the final newline counts: without it the cap would have fitted
         self.assertEqual(len(expected.rstrip(b"\n")) + 1, len(expected))
 
+    def test_outcome_fields_grow_the_output_past_a_cap_the_default_fits(self):
+        request = json.loads(self.sent_path.read_text(encoding="utf-8"))
+        request["requests"][POLICE]["steps"] = [
+            {"on": "2026-03-05", "kind": "fee_estimate", "amount_cents": 1250},
+            {"on": "2026-03-06", "kind": "denied", "withheld_basis": ["GC 7923.600"]}]
+        self.sent_path.write_text(json.dumps(request), encoding="utf-8")
+        default = len(self.candidate_bytes())
+        grown = len((json.dumps(kit_asked.propose(self.root, TODAY, outcomes=True)["document"], indent=2,
+                                ensure_ascii=False) + "\n").encode("utf-8"))
+        self.assertGreater(grown, default)
+        original = self.path.read_bytes()
+        with mock.patch.object(kit_asked, "MAX_JSON_BYTES", grown - 1):
+            self.assertEqual(run("kit-asked", "--directory", self.root, "--apply")[0], 0)  # the default still fits
+        self.path.write_bytes(original)
+        before = self.snapshot()
+        with mock.patch.object(kit_asked.kit, "_write_json", side_effect=AssertionError("written")), \
+                mock.patch.object(kit_asked, "MAX_JSON_BYTES", grown - 1):
+            code, out, err = run("kit-asked", "--directory", self.root, "--outcomes", "--apply")
+        self.assertEqual(code, 3)
+        self.assertIn(f"proposed output would exceed {grown - 1} bytes", err)
+        self.assertEqual(self.snapshot(), before)
+
     def test_compact_input_expansion_uses_full_writer_encoding(self):
         self.path.write_text(json.dumps(self.agencies, separators=(",", ":")), encoding="utf-8")
         compact = len(self.path.read_bytes())
