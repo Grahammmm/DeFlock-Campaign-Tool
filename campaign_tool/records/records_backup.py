@@ -47,7 +47,8 @@ def _evidence(path, trusted, roots):
     if trusted is not None and digest != trusted:
         raise ValueError("evidence_digest_mismatch")
     doc = json.loads(raw)
-    if (type(doc) is not dict or set(doc) != EVIDENCE_KEYS or doc["schema"] != "records-quiescence-v1" or
+    keys = EVIDENCE_KEYS | {"runtime_source"} if type(doc) is dict and doc.get("runtime_source") == "socket" else EVIDENCE_KEYS
+    if (type(doc) is not dict or set(doc) != keys or doc["schema"] != "records-quiescence-v1" or
             doc["basis"] != "independent_all_writer_audit" or doc["auditor"] != "records quiescence-audit" or
             type(doc["checks"]) is not dict or tuple(doc["roots"]) != roots or doc["all_writers_stopped"] is not True):
         raise ValueError("evidence_invalid")

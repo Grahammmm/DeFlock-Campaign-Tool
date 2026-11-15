@@ -52,7 +52,8 @@ def load_inputs(args):
     manifest = private_bytes(args.manifest, 48 * 1024 * 1024, exact_mode=True)
     require(capture.digest(manifest) == config["manifest_sha256"], "legacy_manifest_hash_mismatch")
     if bootstrap:
-        require(args.policy is None and args.write_policy_proposal and not args.apply,
+        report = getattr(args, "report_sources", False)
+        require(args.policy is None and (report or args.write_policy_proposal) and not args.apply,
                 "legacy_policy_required")
         return config, capture.digest(raw), manifest, None
     require(args.policy is not None, "legacy_policy_required")
@@ -76,10 +77,11 @@ def source_class(path, config):
     return "supplement"
 
 
-def parse_manifest(raw, config):
+def validate_manifest(raw, config):
+    """Validate the whole manifest; return every physical row in file order."""
     reader = csv.reader(io.StringIO(raw.decode("utf-8"), newline=""), delimiter="\t", strict=True)
     require(next(reader, None) == ["sha256", "size", "source_path"], "legacy_manifest_invalid")
-    selected, seen = {}, set()
+    physical, seen, sizes = [], set(), {}
     for number, values in enumerate(reader, 1):
         require(number <= 10000 and len(values) == 3, "legacy_manifest_invalid")
         subject, size, source = values
@@ -92,11 +94,100 @@ def parse_manifest(raw, config):
         seen.add((subject, source))
         row = {"sha256": subject, "size": int(size), "source_path": source}
         kind = source_class(Path(source), config)
-        prior = selected.get(subject)
-        require(prior is None or prior[0]["size"] == row["size"], "legacy_manifest_conflict")
-        if prior is None or (CLASSES.index(kind), source) < (CLASSES.index(prior[1]), prior[0]["source_path"]):
-            selected[subject] = (row, kind)
+        require(sizes.setdefault(subject, row["size"]) == row["size"], "legacy_manifest_conflict")
+        physical.append((row, kind))
+    return physical
+
+
+def parse_manifest(raw, config):
+    selected = {}
+    for row, kind in validate_manifest(raw, config):
+        prior = selected.get(row["sha256"])
+        if prior is None or (CLASSES.index(kind), row["source_path"]) < (CLASSES.index(prior[1]), prior[0]["source_path"]):
+            selected[row["sha256"]] = (row, kind)
     return [selected[key] for key in sorted(selected)]
+
+
+def _failed_open_code(name, directory, leaf):
+    """Classify a failed open without following links."""
+    try:
+        found = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except OSError:
+        return "source_missing"
+    if stat.S_ISLNK(found.st_mode):
+        return "source_symlink_component"
+    if leaf and stat.S_ISREG(found.st_mode) or not leaf and stat.S_ISDIR(found.st_mode):
+        return "source_missing"  # present but unavailable to this process
+    return "source_not_regular"
+
+
+def diagnose_source(row):
+    """First failing apply-time source rule code, or ok. Read-only; never echoes errors."""
+    path = Path(row["source_path"])
+    directory = None
+    try:
+        try:
+            directory = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            return "source_missing"
+        for part in path.parts[1:-1]:
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            except OSError:
+                return _failed_open_code(part, directory, False)
+            os.close(directory)
+            directory = child
+        try:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except OSError:
+            return _failed_open_code(path.name, directory, True)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode):
+                return "source_not_regular"
+            if before.st_uid != os.getuid():
+                return "source_not_owner"
+            if before.st_nlink != 1:
+                return "source_multi_link"
+            if stat.S_IMODE(before.st_mode) & 0o077:
+                return "source_mode_bits"
+            if not os.fstatvfs(fd).f_flag & os.ST_RDONLY:
+                return "source_not_readonly_fs"
+            if before.st_size != row["size"]:
+                return "source_size_mismatch"
+            hasher, size = hashlib.sha256(), 0
+            while True:
+                block = os.read(fd, 1024 * 1024)
+                if not block:
+                    break
+                hasher.update(block)
+                size += len(block)
+                if size > row["size"]:
+                    return "source_size_mismatch"
+            if size != row["size"]:
+                return "source_size_mismatch"
+            if hasher.hexdigest() != row["sha256"]:
+                return "source_sha256_mismatch"
+            stable = (capture.fingerprint(before) == capture.fingerprint(os.fstat(fd))
+                      == capture.fingerprint(os.stat(path.name, dir_fd=directory, follow_symlinks=False)))
+            return "ok" if stable else "source_sha256_mismatch"
+        finally:
+            os.close(fd)
+    except OSError:
+        return "source_missing"  # unavailable to this process; no error text is kept
+    finally:
+        if directory is not None:
+            os.close(directory)
+
+
+def report_sources(physical):
+    totals = {}
+    for number, (row, _kind) in enumerate(physical, 1):
+        code = diagnose_source(row)
+        totals[code] = totals.get(code, 0) + 1
+        print(json.dumps({"row": number, "sha256_prefix": row["sha256"][:12], "code": code}, sort_keys=True))
+    print(json.dumps({"totals": totals}, sort_keys=True))
+    return 0 if set(totals) <= {"ok"} else 1
 
 
 def verify_source(row, *, apply=False):
@@ -231,9 +322,13 @@ def main(argv=None):
     parser.add_argument("--policy", default=None)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--write-policy-proposal")
+    parser.add_argument("--report-sources", action="store_true")
     args = parser.parse_args(argv)
     try:
+        require(not (args.report_sources and (args.apply or args.write_policy_proposal)), "legacy_config_invalid")
         config, config_hash, raw, policy = load_inputs(args)
+        if args.report_sources:
+            return report_sources(validate_manifest(raw, config))
         rows = parse_manifest(raw, config)
         root = store.checked_path(Path(os.path.abspath(args.root)) / "ledger.sqlite").parent
         if args.apply:

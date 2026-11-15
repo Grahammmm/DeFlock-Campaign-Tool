@@ -3119,6 +3119,8 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
         raise ContentError(page_problems[0])
 
     agencies = load_campaign_agencies(root, today)
+    from .content_suspected import read_suspected
+    suspected = read_suspected(root, agencies, sources, today)
     known_agencies = {agency["agency_id"] for agency in agencies}
     from .agency_actions import by_agency, read_actions  # local: agency_actions imports this module
     actions = by_agency(read_actions(root, agencies, today=today))  # DF0237-01: None without the file
@@ -3166,6 +3168,8 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
                                    f"not in officials.json for {meeting['agency_id']}")
 
     pages = load_pages(content_dir, slugs)
+    if suspected is not None and any(page['slug'] == 'suspected' for page in pages):
+        raise ContentError('content/pages/suspected.json: collides with generated suspected.html')
     topics = load_topics(content_dir, findings, pages)
     from .supporters import load_supporters  # local: supporters imports this module
     supporters = load_supporters(root, today=today)  # DF2207-13: None without content/supporters.json
@@ -3187,6 +3191,8 @@ def load_content(root, today=None, *, _replacing_cosign_id=None):
         "local_rules": local_rules,  # DF1952-01: every validated version of law/local-rules.json, [] without one
     }
     glossary = read_glossary(root)  # DF1952-04: optional; None without the file
+    if suspected is not None:
+        model['suspected_locations'] = suspected
     if glossary is not None:
         model["glossary"] = glossary
     faq = read_faq(root, findings)  # DF0022-01: optional; None without the file

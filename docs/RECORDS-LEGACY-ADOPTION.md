@@ -120,6 +120,36 @@ only after explicit approval and rehearsal. The proposal's `approval_sha256`
 hashes the original bootstrap config bytes; pinning or enabling later changes
 those bytes and is not itself proof of approval.
 
+## Source diagnostics (`--report-sources`)
+
+`--report-sources` (with the usual `--root`, `--config`, `--manifest`) checks
+**every physical manifest row**, in file order, against the apply-time source
+rules and writes nothing: no ledger is opened (the root is not touched), no lock,
+receipt, proposal or CAS write. It cannot be combined with `--apply` or
+`--write-policy-proposal` (`legacy_config_invalid`, exit 2). A config with
+`policy_sha256` null and no `--policy` may report; a pinned config still needs its
+real `--policy`; ordinary null dry-run and every null apply still refuse with
+`legacy_policy_required`. The whole manifest is validated first; a malformed one
+refuses with the usual fixed code (exit 2) and no per-row output.
+
+Output is one JSON line per row, `{"code", "row", "sha256_prefix"}` (1-based data
+row number, first 12 hex of the manifest hash, never a path or content), then
+`{"totals": {code: count}}` with positive counts only. Exit 0 when every row is
+`ok`, 1 otherwise. Duplicate-hash rows are all reported; this is not the ranked
+adoption selection. First failing rule wins, in this order:
+
+1. `source_missing` - a component or file is absent or unavailable to this process
+   (also open, read or filesystem-status failures; no error text is printed);
+2. `source_symlink_component` - any component or the file is a symlink;
+3. `source_not_regular` - a non-directory intermediate, or a FIFO/directory/device;
+4. `source_not_owner`, 5. `source_multi_link`, 6. `source_mode_bits` (any group or
+   other bit), 7. `source_not_readonly_fs` (filesystem not read-only);
+8. `source_size_mismatch`, 9. `source_sha256_mismatch` (also unstable identity).
+
+Example: `{"code": "source_not_readonly_fs", "row": 2, "sha256_prefix": "0123456789ab"}`.
+The report is a **current observation**, not approval, policy eligibility, or proof
+that a later apply will pass; apply keeps its own refusal codes.
+
 ## Attended T8 order (operator only; not executed by T6)
 
 1. Build the real manifest from the admitted inventory, never archive hashing.

@@ -22,6 +22,7 @@ import stat
 import sys
 
 from . import native_extract as ne
+from .runtime_fds import receive_runtime_fds, RuntimeSocketError, RUNTIME_SOCKET_UNSAFE
 
 SCHEMA = "records-holds-v1"
 RUN_ID_RE = re.compile(r"^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
@@ -253,10 +254,20 @@ def candidates(snapshot, code):
     return chosen, other
 
 
-def _report(path, processing, now):
+def _report(path, processing, now, *, reports_fd=None):
     """``(run_id, sha256)`` of the newest run's report, no older than ``REPORT_MAX_AGE``."""
     try:
-        data = Path(path).read_bytes()
+        if reports_fd is None:
+            data = Path(path).read_bytes()
+        else:
+            name = os.fspath(path)
+            if not name or name in (".", "..") or any(c in name for c in ("/", "\\", "\0")):
+                raise ValueError("bare_filename_required")
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=reports_fd)
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("regular_file_required")
+                data = stream.read()
         run_id = parse_report(data)[0]
         stamp = datetime.strptime(run_id[4:19], "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
     except (OSError, TypeError, ValueError):
@@ -286,15 +297,17 @@ def _receipt_dir(value, project):
 
 
 @contextlib.contextmanager
-def _locked(processing, runtime_lock):
+def _locked(processing, runtime_lock, *, runtime_fd=None):
     """The wrapper's ``run-records.lock`` (required; opened, never created), then the extract stage's root
     lock. The wrapper holds the first across preflight and every stage, the extract stage only the second,
     so the first is what keeps an apply out of an active run; without it the apply fails closed."""
     from .run import RunError, root_lock
-    if runtime_lock is None:
+    if runtime_lock is None and runtime_fd is None:
         raise Refused(2, "RUNTIME_LOCK_REQUIRED")
     try:
-        fd = os.open(runtime_lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = (os.open(runtime_lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC) if runtime_fd is None else
+              os.open("run-records.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                      dir_fd=runtime_fd))
     except OSError:
         raise Refused(2, "RUNTIME_LOCK_UNREADABLE") from None
     try:
@@ -323,12 +336,14 @@ def _write_receipt(path, text):
         os.fsync(stream.fileno())
 
 
-def _commit(processing, selected, code, directory, report_sha, now):
+def _commit(processing, selected, code, directory, report_sha, now, *, runtime_source=None):
     """Receipt staged and fsynced before the single ledger transaction; published by rename after commit."""
     from .ledger import store
     lines = "".join(json.dumps({"schema": RELEASE_SCHEMA, "sha256_prefix": subject[:12], "code": code,
                                 "attempts_before": max(n for _, n in alerts), "released_at": now.isoformat(),
-                                "run_report_sha256": report_sha}, sort_keys=True) + "\n" for subject, alerts in selected)
+                                "run_report_sha256": report_sha,
+                                **({"runtime_source": runtime_source} if runtime_source else {})}, sort_keys=True) + "\n"
+                    for subject, alerts in selected)
     name = f"holds-release-{now:%Y%m%dT%H%M%SZ}-{os.urandom(4).hex()}.jsonl"
     staged = directory / ("." + name + ".tmp")
     try:
@@ -357,9 +372,21 @@ def _commit(processing, selected, code, directory, report_sha, now):
     return name
 
 
-def release(project, code, *, apply=False, limit=None, receipt=None, report=None, runtime_lock=None, now=None):
+@contextlib.contextmanager
+def _runtime(socket_path):
+    try:
+        with receive_runtime_fds(socket_path) if socket_path is not None else contextlib.nullcontext() as runtime:
+            yield runtime
+    except RuntimeSocketError as error:
+        raise Refused(2, error.code) from None
+
+
+def release(project, code, *, apply=False, limit=None, receipt=None, report=None, runtime_lock=None,
+            runtime_socket=None, now=None):
     """The ``records-holds-release-v1`` document. Never deletes, moves or re-extracts anything."""
     from .run_stages import LedgerBusy, snapshot_ro
+    if runtime_socket is not None and runtime_lock is not None:
+        raise Refused(2, RUNTIME_SOCKET_UNSAFE)
     if code in (ne.PRESERVE_PENDING, "EXTRACT_PRESERVE_PENDING"):
         raise Refused(2, "CODE_CUSTODIAN")
     if code not in RELEASABLE:
@@ -370,28 +397,36 @@ def release(project, code, *, apply=False, limit=None, receipt=None, report=None
     doc = {"schema": RELEASE_SCHEMA, "mode": "apply" if apply else "dry_run", "code": code, "released": 0,
            "receipt_file": None, "run_id": None, "runtime_lock": "not_checked"}
     for value, missing in ((limit, "MAX_REQUIRED"), (receipt, "RECEIPT_REQUIRED"), (report, "REPORT_REQUIRED"),
-                           (runtime_lock, "RUNTIME_LOCK_REQUIRED")):
+                           (runtime_lock if runtime_socket is None else runtime_socket, "RUNTIME_LOCK_REQUIRED")):
         if apply and value is None:
             raise Refused(2, missing)
-    # Both locks are held from the report check through the receipt's publication: no run starts in between.
-    with _locked(processing, runtime_lock) if apply else contextlib.nullcontext("not_checked") as lock:
-        if apply:
-            doc["run_id"], report_sha = _report(report, processing, now)
-            directory = _receipt_dir(receipt, project)
-        try:
-            with snapshot_ro(processing / "ledger.sqlite") as db:
-                db.row_factory = sqlite3.Row
-                chosen, other = candidates(_Snapshot(db), code)
-        except LedgerBusy:
-            raise Refused(3, "LEDGER_BUSY") from None
-        except (sqlite3.Error, OSError, ValueError, KeyError, TypeError) as error:
-            raise Refused(2, "LEDGER_UNREADABLE " + ("missing" if "database_missing" in str(error) else "error")) from None
-        selected = chosen[:limit] if limit else chosen
-        doc.update(eligible=len(chosen), held_by_other_code=other, runtime_lock=lock,
-                   items=[{"sha256_prefix": s[:12], "attempts": max(n for _, n in a)} for s, a in selected])
-        if apply and selected:
-            doc["receipt_file"] = _commit(processing, selected, code, directory, report_sha, now)
-            doc["released"] = len(selected)
+    with _runtime(runtime_socket) as runtime:
+        if runtime:
+            doc["runtime_source"] = "socket"
+        # Both locks are held from the report check through the receipt's publication: no run starts in between.
+        locks = (contextlib.nullcontext("not_checked") if not apply else
+                 _locked(processing, runtime_lock) if runtime is None else
+                 _locked(processing, None, runtime_fd=runtime.runtime_fd))
+        with locks as lock:
+            if apply:
+                doc["run_id"], report_sha = (_report(report, processing, now, reports_fd=runtime.reports_fd)
+                                              if runtime else _report(report, processing, now))
+                directory = _receipt_dir(receipt, project)
+            try:
+                with snapshot_ro(processing / "ledger.sqlite") as db:
+                    db.row_factory = sqlite3.Row
+                    chosen, other = candidates(_Snapshot(db), code)
+            except LedgerBusy:
+                raise Refused(3, "LEDGER_BUSY") from None
+            except (sqlite3.Error, OSError, ValueError, KeyError, TypeError) as error:
+                raise Refused(2, "LEDGER_UNREADABLE " + ("missing" if "database_missing" in str(error) else "error")) from None
+            selected = chosen[:limit] if limit else chosen
+            doc.update(eligible=len(chosen), held_by_other_code=other, runtime_lock=lock,
+                       items=[{"sha256_prefix": s[:12], "attempts": max(n for _, n in a)} for s, a in selected])
+            if apply and selected:
+                doc["receipt_file"] = (_commit(processing, selected, code, directory, report_sha, now, runtime_source="socket")
+                                           if runtime else _commit(processing, selected, code, directory, report_sha, now))
+                doc["released"] = len(selected)
     return doc
 
 
@@ -402,17 +437,19 @@ def release_main(argv):
     parser.add_argument("--project", required=True, help="records project (processing-v1/ledger.sqlite)")
     parser.add_argument("--code", required=True, help="EXTRACT_ERROR or EXTRACT_TIMEOUT")
     parser.add_argument("--apply", action="store_true",
-                        help="write; needs --max, --receipt, --report and --runtime-lock")
+                        help="write; needs --max, --receipt, --report and one runtime source")
     parser.add_argument("--max", type=int, help=f"release at most N documents (1..{MAX_PER_CALL})")
     parser.add_argument("--receipt", help="owner-only receipt directory outside the project")
     parser.add_argument("--report", help="the newest run's run report, younger than 24 h")
-    parser.add_argument("--runtime-lock", help="the wrapper's RUNTIME_DIR/run-records.lock (required with "
-                        "--apply; held from the report check to the receipt)")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--runtime-socket", help="one-use live host directory handoff socket")
+    source.add_argument("--runtime-lock", help="the wrapper's RUNTIME_DIR/run-records.lock (path source; "
+                        "held from the report check to the receipt)")
     parser.add_argument("--json", action="store_true", help="print one records-holds-release-v1 document")
     args = parser.parse_args(argv)
     try:
         doc = release(args.project, args.code, apply=args.apply, limit=args.max, receipt=args.receipt,
-                      report=args.report, runtime_lock=args.runtime_lock)
+                      report=args.report, runtime_lock=args.runtime_lock, runtime_socket=args.runtime_socket)
     except Refused as error:
         print(error.args[1], file=sys.stderr)
         return error.args[0]
@@ -422,6 +459,8 @@ def release_main(argv):
                  f"{doc['runtime_lock']}; the next run retries them" if args.apply else
                  "DRY_RUN nothing changed (apply: --apply --max N --receipt DIR --report RUN-REPORT "
                  "--runtime-lock RUNTIME_DIR/run-records.lock)")
+    if args.runtime_socket is not None:
+        lines.append("runtime_source socket")
     print(json.dumps(doc, indent=1, sort_keys=True) if args.json else "\n".join(lines))
     return 0
 
