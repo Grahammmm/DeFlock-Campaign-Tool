@@ -103,6 +103,13 @@ class QuiescenceAudit(unittest.TestCase):
         code, line = self.run_cli("backup", "--project", str(self.project), "--into", str(self.work / "sets"),
                                   "--quiescence", str(out), "--quiescence-sha256", digest)
         self.assertEqual((code, line["code"]), (0, "OK"))
+        from campaign_tool.records import records_backup
+        valid = json.loads(out.read_text())
+        for extra in ({"runtime_source": "capture"}, {"runtime_source": None},
+                      {"unexpected": "socket"}, {"runtime_source": "socket", "unexpected": True}):
+            out.write_text(json.dumps({**valid, **extra}))
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                records_backup._evidence(out, None, (str(self.project),))
 
     def test_active_unit(self):
         self.assert_fails("WRITER_ACTIVE", units=self.units(**{"records-console.service": "active"}))
