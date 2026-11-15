@@ -628,3 +628,126 @@ class LegacyAdoptionTests(unittest.TestCase):
                      "source_not_owner", "source_multi_link", "source_mode_bits", "source_not_readonly_fs",
                      "source_size_mismatch", "source_sha256_mismatch", "sha256_prefix", "current observation"):
             self.assertIn(code, guide)
+
+    def build(self, out=None, *, config=None):
+        out = out or self.sources / "out" / "manifest-out.tsv"
+        out.parent.mkdir(mode=0o700, exist_ok=True)
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            status = adoption.main(["manifest", "--root", str(self.base), "--config", str(config or self.config),
+                                    "--out", str(out)])
+        self.assertNotIn(str(self.base), buffer.getvalue())
+        self.assertNotIn("fictional", buffer.getvalue())
+        return status, json.loads(buffer.getvalue()), out
+
+    def tsv_rows(self, out):
+        lines = out.read_text().splitlines()
+        self.assertEqual(lines[0], "sha256\tsize\tsource_path")
+        return [tuple(line.split("\t")) for line in lines[1:]]
+
+    def test_manifest_matches_exact_pending_originals(self):
+        copy = self.supplement / "copy.txt"
+        copy.write_bytes(b"synthetic original")  # a second path for original 0
+        copy.chmod(0o400)
+        stranger = self.export / "received" / "nobody.pdf"
+        stranger.write_bytes(b"synthetic pdx")  # same size as the pdf original, other digest
+        stranger.chmod(0o400)
+        status, counts, out = self.build()
+        self.assertEqual((status, counts), (0, {"matched": 4, "duplicates": 1, "unmatched_pending": 0, "skipped_unsafe": 0}))
+        wanted = sorted((r["sha256"], str(r["size"]), r["source_path"])
+                        for i, r in enumerate(self.rows) if i not in (3, 4))
+        self.assertEqual(self.tsv_rows(out), wanted)  # json, csv left out; first sorted path wins
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+        Path(self.rows[2]["source_path"]).unlink()  # a pending original with no file is counted
+        self.assertEqual(self.build(self.sources / "out" / "again.tsv")[1],
+                         {"matched": 3, "duplicates": 1, "unmatched_pending": 1, "skipped_unsafe": 0})
+
+    def test_manifest_leaves_out_already_bound_originals(self):
+        from types import SimpleNamespace
+        with patch.object(capture.os, "fstatvfs", return_value=SimpleNamespace(f_flag=os.ST_RDONLY)):
+            self.assertEqual(self.invoke("--apply")[0], 0)
+        status, counts, out = self.build()
+        self.assertEqual((status, counts), (0, {"matched": 1, "duplicates": 0, "unmatched_pending": 0, "skipped_unsafe": 0}))
+        self.assertEqual([row[0] for row in self.tsv_rows(out)], [self.rows[5]["sha256"]])
+
+    def test_manifest_skips_and_counts_unsafe_entries(self):
+        received = self.export / "received"
+        (received / "link.txt").symlink_to(self.rows[0]["source_path"])
+        os.mkfifo(received / "pipe.bin", 0o600)
+        loose = received / "loose.pdf"
+        loose.write_bytes(b"synthetic pdf")
+        loose.chmod(0o644)
+        (self.export / "stray.txt").write_bytes(b"x")  # directly under the export root: no class
+        (self.export / "stray.txt").chmod(0o600)
+        (self.supplement / "dirlink").symlink_to(self.export, target_is_directory=True)
+        status, counts, out = self.build()
+        self.assertEqual((status, counts), (0, {"matched": 4, "duplicates": 0, "unmatched_pending": 0, "skipped_unsafe": 5}))
+        self.assertNotIn("link", out.read_text())
+
+    def test_manifest_size_limit_and_empty_result(self):
+        with patch.dict(capture.folder.LIMITS, source_bytes=5):
+            status, counts, out = self.build()
+        self.assertEqual((status, counts), (0, {"matched": 0, "duplicates": 0, "unmatched_pending": 4, "skipped_unsafe": 6}))
+        self.assertEqual(out.read_text(), "sha256\tsize\tsource_path\n")
+        self.assertEqual(adoption.parse_manifest(out.read_bytes(), json.loads(self.config.read_bytes())), [])
+
+    def test_manifest_round_trips_through_parse_and_dry_run(self):
+        status, counts, out = self.build()
+        config = json.loads(self.config.read_bytes())
+        parsed = adoption.parse_manifest(out.read_bytes(), config)
+        self.assertEqual(len(parsed), counts["matched"])
+        self.rows = [row for row, _kind in parsed]
+        self.save_inputs()
+        self.assertEqual(self.manifest.read_bytes(), out.read_bytes())
+        status, dry = self.invoke()
+        self.assertEqual((status, dry["eligible"], dry["format_unknown"]), (0, 3, 1))
+
+    def test_manifest_refuses_existing_output_and_unsafe_locations(self):
+        out = self.sources / "out" / "manifest-out.tsv"
+        out.parent.mkdir(mode=0o700)
+        out.write_text("keep")
+        self.assertEqual(self.build(out)[:2], (2, {"legacy_adoption_refused": 1}))
+        self.assertEqual(out.read_text(), "keep")
+        link = self.sources / "out" / "dangling.tsv"
+        link.symlink_to(self.sources / "out" / "nowhere")
+        self.assertEqual(self.build(link)[:2], (2, {"legacy_adoption_refused": 1}))
+        self.assertFalse((self.sources / "out" / "nowhere").exists())
+        inside = self.export / "received" / "inventory.tsv"
+        self.assertEqual(self.build(inside)[:2], (2, {"legacy_adoption_refused": 1}))
+        self.assertFalse(inside.exists())
+        with patch.object(capture.folder, "private_file", side_effect=OSError("canary-path")):
+            self.assertEqual(self.build(self.sources / "out" / "failed.tsv")[:2], (2, {"legacy_adoption_refused": 1}))
+        self.assertFalse((self.sources / "out" / "failed.tsv").exists())
+
+    def test_manifest_output_is_private_under_open_umask(self):
+        old = os.umask(0)
+        try:
+            out = self.build()[2]
+        finally:
+            os.umask(old)
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+
+    def test_manifest_opens_ledger_read_only_and_refuses_bad_inputs(self):
+        before = self.helper.database.read_bytes()
+        opened = []
+        real = store.ledger
+        def spy(path, *, readonly=False):
+            opened.append(readonly)
+            return real(path, readonly=readonly)
+        with patch.object(adoption.store, "ledger", spy):
+            self.assertEqual(self.build()[0], 0)
+        self.assertEqual(opened, [True])
+        self.assertEqual(self.helper.database.read_bytes(), before)
+        self.config.chmod(0o644)
+        out = self.sources / "out" / "bad.tsv"
+        self.assertEqual(self.build(out)[:2], (2, {"legacy_input_mode": 1}))
+        self.assertFalse(out.exists())
+        self.save_inputs()
+        self.export.rename(self.sources / "moved")
+        self.assertEqual(self.build(out)[:2], (2, {"legacy_config_invalid": 1}))
+        self.assertFalse(out.exists())
+
+    def test_guide_manifest_contract(self):
+        guide = (Path(__file__).resolve().parents[2] / "docs" / "RECORDS-LEGACY-ADOPTION.md").read_text()
+        for word in ("legacy_adoption manifest", "unmatched_pending", "skipped_unsafe", "duplicates", "0600"):
+            self.assertIn(word, guide)
