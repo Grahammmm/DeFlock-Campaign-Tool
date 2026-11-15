@@ -4,14 +4,19 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import stat
 import sys
 import tarfile
+from pathlib import Path
 
 from . import analysis_export as ae
 from . import public_packets as pp
+from .outcomes import received_items as ri
+from .run_stages import LedgerBusy, snapshot_ro
 
 SCHEMA, MEMBER, LIMIT, RECEIPT = "records-analysis-packet-v2", re.compile(r"[a-z0-9-]+-[0-9a-f]{12}\.json"), 1 << 20, "analysis-packets-imported.jsonl"
+CITE = re.compile(r"record ([0-9a-f]{12}) page ([1-9][0-9]{0,8}) \(([^()\s]+)\)", re.ASCII)  # the one shape analysis_bridge writes
 
 
 def _members(args):
@@ -55,8 +60,49 @@ def _items(project, run, cache):
     return cache[run]
 
 
+def _count(project, sha, cache):
+    """-> the page count of one received record from its read-only current extraction, or None when it cannot be established.
+
+    Pages are counted as analysis_export does (distinct usable page numbers) and bound only when they run 1..N with no gap.
+    Nothing a packet or an item claims is trusted; LedgerBusy is the caller's retry, never a count.
+    """
+    key = ("pages", sha)
+    if key not in cache:
+        processing = Path(os.path.abspath(project)) / "processing-v1"  # snapshot_ro needs an absolute path (Path.as_uri)
+        try:
+            with snapshot_ro(processing / "ledger.sqlite") as db:
+                db.row_factory = sqlite3.Row
+                units, diagnostics, _ = ri._current_units(db, processing, sha)
+            pages = {u["page"] for u in units}
+            cache[key] = len(pages) if units and not diagnostics and pages == set(range(1, len(pages) + 1)) else None
+        except LedgerBusy:
+            raise
+        except (sqlite3.Error, ValueError, OSError, KeyError, TypeError, RecursionError):
+            cache[key] = None
+    return cache[key]
+
+
+def _pages(project, packet, cache):
+    """-> PACKET_PAGE_OUT_OF_RANGE unless every generated `record <12 hex> page <n> (<fact>)` citation names a page its document has, else None."""
+    docs, cites = {d["sha256"] for d in packet["documents"]}, []
+    for cite in packet.get("citations") or []:
+        ref = cite.get("ref") if isinstance(cite, dict) else None
+        if not isinstance(ref, str) or not ref.startswith("record "):
+            continue  # a legal citation: opaque, no grammar of its own
+        match = CITE.fullmatch(ref)
+        full = {s for s in docs if match and s.startswith(match[1])}
+        if len(full) != 1:
+            return "PACKET_PAGE_OUT_OF_RANGE"
+        cites.append((full.pop(), int(match[2])))
+    for sha, page in cites:
+        count = _count(project, sha, cache)
+        if count is None or page > count:
+            return "PACKET_PAGE_OUT_OF_RANGE"
+    return None
+
+
 def _check(project, packet, provenance, agency, cache):
-    """-> an IMPORT_* code, or None when every document is one the live project received on that day for that agency."""
+    """-> an IMPORT_* or PACKET_* code, or None when every document is one the live project received on that day for that agency and every cited page exists."""
     if packet.get("agency_key") != agency or packet.get("kind") != "finding":
         return "IMPORT_IDENTITY_MISMATCH"
     for doc, prov in zip(packet["documents"], provenance["documents"]):
@@ -67,7 +113,7 @@ def _check(project, packet, provenance, agency, cache):
             return "IMPORT_DOCUMENT_UNKNOWN"
         if not any(isinstance(i.get("received_at"), str) and i["received_at"][:10] == doc.get("date_received") for i in found):
             return "IMPORT_DATE_MISMATCH"
-    return None
+    return _pages(project, packet, cache)
 
 
 def _seen(path):
@@ -97,7 +143,11 @@ def main(argv=None):
             invalid += body is None
             for entry in (body or {}).get("packets", ()):
                 packet, source = entry["packet"], entry["packet"]["source"]
-                result = "ALREADY" if (body["key"], source) in done else _check(args.project, packet, entry["provenance"], body["agency_id"], cache)
+                try:
+                    result = "ALREADY" if (body["key"], source) in done else _check(args.project, packet, entry["provenance"], body["agency_id"], cache)
+                except LedgerBusy:
+                    print("ledger_busy")
+                    return 75
                 if result is None:
                     try:
                         proposed = pp.propose(args.project, packet)

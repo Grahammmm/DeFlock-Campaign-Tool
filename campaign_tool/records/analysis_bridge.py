@@ -384,6 +384,26 @@ def _hold(row, code, ids):
     return {"finding_id": row["finding_id"], "code": code, "ids": sorted(ids)}
 
 
+def _whole(value):
+    """A positive whole number from a genuine int or a canonical ASCII decimal string; None otherwise (never coerced or repaired)."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value >= 1 else None
+    return int(value) if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{0,8}", value, re.ASCII) else None
+
+
+def _page_hold(ids, facts, sources):
+    """-> EVIDENCE_PAGE_OUT_OF_RANGE / EVIDENCE_PAGE_COUNT_UNKNOWN when a cited fact page is not a page of its record, else None.
+
+    The count comes from the one earliest-received SOURCES row the packet's provenance uses. Page syntax first, then unknown counts, then bounds.
+    """
+    pairs = [(_whole(facts[i]["page"]), _whole(_first(sources[facts[i]["source_sha256"]]).get("pages"))) for i in ids]
+    if any(page is None for page, _ in pairs):
+        return "EVIDENCE_PAGE_OUT_OF_RANGE"
+    if any(count is None for _, count in pairs):
+        return "EVIDENCE_PAGE_COUNT_UNKNOWN"
+    return "EVIDENCE_PAGE_OUT_OF_RANGE" if any(page > count for page, count in pairs if page and count) else None
+
+
 def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft):
     """-> (packet entry, None) or (None, (code, ids)); every join is frozen in the spec and nothing is invented."""
     ids = [i for i in found["fact_ids"].split(";") if i]
@@ -418,6 +438,9 @@ def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft):
         pp.clean(packet)
     except pp.PacketError as exc:
         return None, ("EVIDENCE_REFUSED " + exc.code, ids)
+    code = _page_hold(ids, facts, sources)  # after every existing check (DF2007-04); DF2007-07 and -05 holds follow this one
+    if code:
+        return None, (code, ids)
     return {"packet": packet, "provenance": {
         "finding_id": row["finding_id"], "fact_ids": ids, "rule_ids": cited, "withheld_rule_ids": [i for i in rule_ids if i not in cited],
         "withheld_policy_refs": [i for i in found["policy_refs"].split(";") if i],
