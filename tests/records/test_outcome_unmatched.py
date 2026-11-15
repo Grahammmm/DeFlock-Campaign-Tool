@@ -102,7 +102,7 @@ class UnmatchedTests(unittest.TestCase):
         status, _, page = http.send("GET", "/review?id=" + ident, headers={"Content-Length": None, "Content-Type": None})
         self.assertEqual(status, 200)
         self.assertIn("Tie this message to a request", page)
-        self.assertEqual(page.count("&choice=req-"), 2)  # one link per candidate; no signable text before a selection
+        self.assertEqual(page.count("&amp;choice=req-"), 2)  # one link per candidate; no signable text before a selection
         self.assertNotIn('id="approval-payload"', page)
         sig = self.signer.sign(aq.approval_payload(self.project, ident, choice="req-b"))
         self.assertEqual(self.post(http, server, "approve", ident, signature=sig, choice="req-b"), 303)
