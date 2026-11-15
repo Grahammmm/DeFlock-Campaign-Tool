@@ -24,6 +24,7 @@ The root must be outside the repository and must not look like a flock store (to
 optional `roster_doc_id`, `ocr_log_doc_ids`, `training_join`, `region_config`, `verify_sample`}; `rules_intake` {`law_specs`,
 `policy_specs`, `extra_specs`, `f2_law_map`, `sources`} (copied as-is); `compare_f3` {`applicability`, optional `golden`}; optional
 `not_posted_analysis_only_ids`, `log_doc_ids`. See `tests/fixtures/records/analysis-profile.json`.
+`profiles/morro-bay.json` is the candidate profile for Morro Bay, derived from the agency-review method file `agencies/morro-bay.yaml`; the operator copies it to `<root>/profiles/` (the repo changes nothing live), and `--check` (the default, so no flag is needed) prints `CONFIG_WRITTEN` for it and `PROFILE_MISSING` for a slug with no profile; `rules_intake.added_by`/`added_at` are optional and default to `review.added_by` and the run date.
 
 ## Export (DFGL-06A, container side)
 
