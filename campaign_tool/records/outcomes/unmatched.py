@@ -152,7 +152,7 @@ def append_link(project, message_sha256, agency_id, request_id, actor, *, supers
                 "agency_id": agency_id, "actor": str(actor)[:80], "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         if supersedes is not None:
             line["supersedes"] = supersedes
-        data = (_canon(line) + "\n").encode()
+        data = (b"\n" if raw and not raw.endswith(b"\n") else b"") + (_canon(line) + "\n").encode()
         _need(len(raw) + len(data) <= MAX_FILE, "message_links_file")
         view = memoryview(data)
         while view:
