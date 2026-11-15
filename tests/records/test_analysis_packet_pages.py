@@ -108,6 +108,21 @@ class PacketPageTests(unittest.TestCase):
         with fact_page("p2"):  # a malformed page with a missing count is the page failure
             self.assertIn(" %s=1" % OUT, self.packets()[3])
 
+    def test_source_row_without_a_pages_key_is_held_as_unknown_count(self):
+        facts, sources = {"F1": {"page": "1", "source_sha256": "a"}}, {"a": [{"received_at": "1"}]}  # no `pages` key at all
+        self.assertEqual(bridge._page_hold(["F1"], facts, sources), UNKNOWN)
+        fx = self.staged()
+        path = fx.out / "inputs" / "SOURCES.csv"
+        with open(path, newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        with open(path, "w", newline="") as handle:  # the column is gone from the synced file
+            writer = csv.DictWriter(handle, fieldnames=[k for k in rows[0] if k != "pages"], extrasaction="ignore", lineterminator="\n")
+            writer.writeheader()
+            writer.writerows(rows)
+        outcome, _, _, summary, write = self.packets()
+        self.assertEqual((outcome, write), ("PACKET_ALL_HELD", None))
+        self.assertIn(" %s=1" % UNKNOWN, summary)
+
     def test_existing_date_hold_keeps_priority_over_the_page_check(self):
         fx = self.staged(at="")
         self.sources("")

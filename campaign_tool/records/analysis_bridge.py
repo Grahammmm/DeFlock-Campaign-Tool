@@ -396,7 +396,7 @@ def _page_hold(ids, facts, sources):
 
     The count comes from the one earliest-received SOURCES row the packet's provenance uses. Page syntax first, then unknown counts, then bounds.
     """
-    pairs = [(_whole(facts[i]["page"]), _whole(_first(sources[facts[i]["source_sha256"]])["pages"])) for i in ids]
+    pairs = [(_whole(facts[i]["page"]), _whole(_first(sources[facts[i]["source_sha256"]]).get("pages"))) for i in ids]
     if any(page is None for page, _ in pairs):
         return "EVIDENCE_PAGE_OUT_OF_RANGE"
     if any(count is None for _, count in pairs):

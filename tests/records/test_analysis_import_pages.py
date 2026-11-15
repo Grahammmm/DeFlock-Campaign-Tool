@@ -101,6 +101,14 @@ class ImportPageTests(unittest.TestCase):
         code, out = self.run_main((name, data), (self.name, self.data))
         self.assertEqual((code, "ALREADY=2" in out, len(self.receipts())), (0, True, 2))
 
+    def test_relative_project_path_counts_pages_like_an_absolute_one(self):
+        self.assertEqual(ap._count(os.path.relpath(self.project), self.three, {}), 3)  # relative to the working directory
+        self.assertEqual(ap._count(os.path.relpath(self.project), self.three, {}), ap._count(str(self.project), self.three, {}))
+        packet = {"documents": [{"sha256": self.one}], "citations": [{"ref": ref(self.one, 1)}]}
+        self.assertIsNone(ap._pages(os.path.relpath(self.project), packet, {}))  # a valid citation is not refused
+        packet["citations"] = [{"ref": ref(self.one, 2)}]
+        self.assertEqual(ap._pages(os.path.relpath(self.project), packet, {}), CODE)  # an out-of-range one still is
+
     def test_import_resolves_full_document_and_all_citations(self):
         for cites, docs in (([LEGAL, ref(self.digest, 2), ref(self.three, 3), ref(self.three, 4)], [self.digest, self.three]),  # last citation fails
                             ([ref(self.digest, 3)], [self.digest]),  # a larger count of another document is never borrowed

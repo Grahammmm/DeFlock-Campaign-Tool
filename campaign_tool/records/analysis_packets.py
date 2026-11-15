@@ -68,7 +68,7 @@ def _count(project, sha, cache):
     """
     key = ("pages", sha)
     if key not in cache:
-        processing = Path(project) / "processing-v1"
+        processing = Path(os.path.abspath(project)) / "processing-v1"  # snapshot_ro needs an absolute path (Path.as_uri)
         try:
             with snapshot_ro(processing / "ledger.sqlite") as db:
                 db.row_factory = sqlite3.Row
