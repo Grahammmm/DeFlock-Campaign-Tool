@@ -80,6 +80,9 @@ billable usage from job wall time or claim pending/skipped checks are green test
 
 Existing workflows also run nightly at 07:17 UTC. Full source coverage runs on
 Python 3.11–3.13 through the offline owner plus the existing integration owners;
+the offline owner runs it as two disjoint `full (<python>, <shard>)` jobs per
+Python, and each `offline (<python>)` check fails unless every full shard
+succeeded (one 4-CPU job took 20–35 minutes and hit its 35-minute timeout);
 native MSG, runner and campaign installation keep their existing 3.12-only
 specialized environments. Container builds, source-bound records wheel builds,
 installed-wheel composition and reproducible example output remain full-tier
