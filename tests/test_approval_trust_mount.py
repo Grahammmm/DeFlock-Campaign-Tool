@@ -21,8 +21,8 @@ _spec.loader.exec_module(render)
 # Synthetic pin shapes as the live wrapper renders them (TRUST-MOUNT-PIN-1): the host ENGINE_DIR is a
 # records-engine/source-<full sha> tree, the container engine a work/engine-<short sha> directory.
 RELEASE = "2a23b3fa" + "5c" * 16
-ENGINE = "/workspace/flockbot/work/engine-" + RELEASE[:8]
-WORK = "/workspace/flockbot/work"
+ENGINE = "/workspace/synthetic/work/engine-" + RELEASE[:8]
+WORK = "/workspace/synthetic/work"
 OLD_SYNTHETIC = "ENGINE_DIR=/synthetic/engines/engine-" + "a" * 40 + "\n"
 
 
@@ -218,18 +218,18 @@ class WrapperEnginePinTests(RenderedWrapperMixin, unittest.TestCase):
                 self.assertIn(f"ENGINE_DIR=/srv/records-engine/source-{RELEASE}\n", text)  # host tree, not the pin
                 self.assertIn(f"PYTHONPATH={ENGINE} ", text)
                 self.assertEqual(swap.wrapper_engine(text), ENGINE)
-        full = "/workspace/flockbot/work/engine-" + RELEASE
+        full = "/workspace/synthetic/work/engine-" + RELEASE
         self.assertEqual(swap.wrapper_engine(self.wrapper(engine=full)), full)
 
     def test_two_distinct_engine_dirs_refuse(self):
         text = self.wrapper()
-        other = "/workspace/flockbot/work/engine-" + RELEASE[:12]  # also a RELEASE_COMMIT prefix
+        other = "/workspace/synthetic/work/engine-" + RELEASE[:12]  # also a RELEASE_COMMIT prefix
         self.assertEqual(text.count(f"PYTHONPATH={ENGINE} "), 2)
         self.refuses(text.replace(f"PYTHONPATH={ENGINE} ", f"PYTHONPATH={other} ", 1),
                      "2 distinct in-container PYTHONPATH values")
 
     def test_release_commit_mismatch_refuses(self):
-        self.refuses(self.wrapper(engine="/workspace/flockbot/work/engine-24a18b63"),
+        self.refuses(self.wrapper(engine="/workspace/synthetic/work/engine-24a18b63"),
                      "is not RELEASE_COMMIT 2a23b3fa5c5c")
         text = self.wrapper()
         self.refuses(text.replace(f"RELEASE_COMMIT={RELEASE}\n", ""), "no single 40-hex RELEASE_COMMIT")
@@ -245,9 +245,9 @@ class WrapperEnginePinTests(RenderedWrapperMixin, unittest.TestCase):
 
     def test_other_engine_shapes_refuse(self):
         text = self.wrapper()
-        for bad in ("/srv/flockbot/work/engine-2a23b3fa", "/workspace/flockbot/../engine-2a23b3fa",
-                    "/workspace//engine-2a23b3fa", "/workspace/flockbot/work/engine-2a23b3",
-                    f"{ENGINE}:/workspace/other", "/workspace/flockbot/work/source-2a23b3fa"):
+        for bad in ("/srv/synthetic/work/engine-2a23b3fa", "/workspace/synthetic/../engine-2a23b3fa",
+                    "/workspace//engine-2a23b3fa", "/workspace/synthetic/work/engine-2a23b3",
+                    f"{ENGINE}:/workspace/other", "/workspace/synthetic/work/source-2a23b3fa"):
             with self.subTest(bad=bad):
                 self.refuses(text.replace(f"PYTHONPATH={ENGINE} ", f"PYTHONPATH={bad} "), "is not a /workspace/")
 
@@ -278,7 +278,7 @@ class EngineMountTests(unittest.TestCase):
         tmpfs = {"type": "tmpfs", "destination": WORK, "reason": "not persistent"}
         cases = {"excluded": ([self.mount("m00", "/data")], [tmpfs]),
                  "excluded under a snapshotted mount": ([self.mount("m00", "/workspace")], [tmpfs]),
-                 "no mount": ([self.mount("m00", "/data"), self.mount("m01", "/workspace/flockbot/work2")], [])}
+                 "no mount": ([self.mount("m00", "/data"), self.mount("m01", "/workspace/synthetic/work2")], [])}
         for name, (mounts, excluded) in cases.items():
             with self.subTest(case=name):
                 with self.assertRaisesRegex(swap.StepFailed, "a recreate would lose it"):
