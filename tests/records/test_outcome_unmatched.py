@@ -102,8 +102,9 @@ class UnmatchedTests(unittest.TestCase):
         status, _, page = http.send("GET", "/review?id=" + ident, headers={"Content-Length": None, "Content-Type": None})
         self.assertEqual(status, 200)
         self.assertIn("Tie this message to a request", page)
-        self.assertEqual(page.count('name="choice"'), 2)
-        sig = self.signer.sign(aq.approval_payload(self.project, ident))
+        self.assertEqual(page.count("&choice=req-"), 2)  # one link per candidate; no signable text before a selection
+        self.assertNotIn('id="approval-payload"', page)
+        sig = self.signer.sign(aq.approval_payload(self.project, ident, choice="req-b"))
         self.assertEqual(self.post(http, server, "approve", ident, signature=sig, choice="req-b"), 303)
         links = self.project / "message-links.jsonl"
         self.assertEqual(stat.S_IMODE(links.stat().st_mode), 0o600)
@@ -114,7 +115,7 @@ class UnmatchedTests(unittest.TestCase):
         self.assertEqual(self.post(http, server, "approve", ident, signature=sig, choice="req-b"), 303)  # replay
         self.assertEqual(len(links.read_text().splitlines()), 1)
         before = self.tree()
-        self.assertEqual(self.post(http, server, "approve", ident, signature=sig, choice="req-a"), 409)
+        self.assertEqual(self.post(http, server, "approve", ident, signature=sig, choice="req-a"), 403)  # the signature names req-b
         self.assertEqual(self.tree(), before)
         self.assertEqual(links.read_text().splitlines(), [line])
         self.assertEqual(self.row()["status"], "approved")
@@ -128,7 +129,7 @@ class UnmatchedTests(unittest.TestCase):
         self.run_outputs()
         server, http = self.server()
         ident = self.row()["id"]
-        sig = self.signer.sign(aq.approval_payload(self.project, ident))
+        sig = self.signer.sign(aq.approval_payload(self.project, ident, choice="req-b"))
         with patch.object(unmatched, "append_link", side_effect=OSError("synthetic write failure")):
             self.assertEqual(self.post(http, server, "approve", ident, signature=sig, choice="req-b"), 503)
         self.assertEqual(self.row()["status"], "approved")
@@ -144,7 +145,7 @@ class UnmatchedTests(unittest.TestCase):
         self.run_outputs()
         server, http = self.server()
         ident = self.row()["id"]
-        sig = self.signer.sign(aq.approval_payload(self.project, ident))
+        sig = self.signer.sign(aq.approval_payload(self.project, ident, choice="req-a"))
         for fields in ({"choice": "req-x"}, {"choice": "nope"}, {}):
             self.assertEqual(self.post(http, server, "approve", ident, signature=sig, **fields), 400)
         self.assertEqual(self.post(http, server, "reject", ident, reason="no", choice="req-a"), 400)

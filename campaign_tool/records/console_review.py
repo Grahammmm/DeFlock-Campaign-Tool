@@ -94,8 +94,14 @@ def pending_note(row):
     return esc(" - %s" % row["pending_apply"]) if row.get("pending_apply") else ""
 
 
-def render_link(row, token, payload, refusal=None, *, read_only=False):
-    """A message_link row: the plain question, one choice per candidate, then the usual signed approve / reject."""
+def candidate_url(ident, choice):
+    return "/review?id=%s&choice=%s" % (urllib.parse.quote(ident), urllib.parse.quote(choice, safe=""))
+
+
+def render_link(row, token, payload, refusal=None, *, read_only=False, choice=None, withheld=False):
+    """A message_link row, two steps. Step 1 lists the candidates (links, no signable text). Step 2 (``choice`` selected,
+    ``payload`` the exact text for that one candidate) shows the bound ``choice:`` line and the payload, and an approve form
+    carrying that choice. A selection whose exported payload is missing (``withheld``) offers rejection only."""
     from . import admin_panel as ap
 
     pending = row["status"] == "pending"
@@ -106,24 +112,40 @@ def render_link(row, token, payload, refusal=None, *, read_only=False):
     message, field_name, typed = refusal or (None, None, None)
     if message:
         out.append('<p role="alert" class="diag">%s. Nothing was saved or decided.</p>' % esc(message.rstrip(".")))
-    if pending and read_only:
-        out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre><p>%s</p>' % (esc(payload.decode("utf-8")), READ_ONLY))
-    elif pending:
-        options = "".join('<label class="request-choice"><input type="radio" name="choice" value="%s" required> %s (agency %s)</label><br>' % (
-            esc(c["request_id"]), esc(c["request_id"]), esc(c["agency_id"])) for c in row["evidence"].get("candidates", []))
-        out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre>' % esc(payload.decode("utf-8")))
-        out.append("<p>Choose the request, sign the text above with your approval key and paste the signature. "
-                   "Approval ties this message to that request from the next run on. Nothing is sent or published.</p>")
-        if options:
-            out.append(ap._form("/approvals/approve", token, row["id"], "", options +
-                                '<label for="signature">Detached SSH signature</label>'
-                                '<textarea id="signature" name="signature" required>%s</textarea>' % esc(
-                                    typed if field_name == "signature" else ""),
-                                "Approve: tie to the chosen request", back="review"))
-        out.append(ap._form("/approvals/reject", token, row["id"], "",
-                            '<label for="reason">Why is it not a response?</label>'
-                            '<input id="reason" name="reason" required maxlength="2000" value="%s">' % esc(
-                                typed if field_name == "reason" else ""), "Not a response", back="review"))
+    candidates = row["evidence"].get("candidates", []) if pending else []
+    if pending:
+        out.append("<h2>Approve</h2>")
+        if payload is None:
+            if withheld:
+                out.append('<p role="alert" class="diag">%s</p>' % esc(
+                    "This export has no signing text for that request. Refresh the export before approving a tie."))
+            out.append("<p>Choose the request this message answers. The text to sign is shown for one request at a time.</p><ul>")
+            out.extend('<li><a class="request-choice" href="%s">%s (agency %s)</a></li>' % (
+                esc(candidate_url(row["id"], c["request_id"])), esc(c["request_id"]), esc(c["agency_id"])) for c in candidates)
+            out.append("</ul>")
+        else:
+            out.append('<p>Selected request: <strong id="selected-choice">%s</strong> '
+                       '(<a href="%s">choose another</a>)</p>' % (
+                           esc(approval_queue.message_link_choice_line(row, choice)), esc("/review?id=" + urllib.parse.quote(row["id"]))))
+            out.append('<pre id="approval-payload">%s</pre>' % esc(payload.decode("utf-8")))
+            if read_only:
+                out.append("<p>%s</p>" % READ_ONLY)
+            else:
+                out.append("<p>Sign the text above, which names this one request, with your approval key and paste the signature. "
+                           "The signature ties this message to that request only, from the next run on. Nothing is sent or published.</p>")
+                out.append(ap._form("/approvals/approve", token, row["id"], "",
+                                    '<input type="hidden" name="choice" value="%s">' % esc(choice) +
+                                    '<label for="signature">Detached SSH signature</label>'
+                                    '<textarea id="signature" name="signature" required>%s</textarea>' % esc(
+                                        typed if field_name == "signature" else ""),
+                                    "Approve: tie to the chosen request", back="review"))
+        if not read_only:
+            out.append(ap._form("/approvals/reject", token, row["id"], "",
+                                '<label for="reason">Why is it not a response?</label>'
+                                '<input id="reason" name="reason" required maxlength="2000" value="%s">' % esc(
+                                    typed if field_name == "reason" else ""), "Not a response", back="review"))
+        elif payload is None:
+            out.append("<p>%s</p>" % READ_ONLY)
     out.append('<p><a href="/">Back</a></p>')
     return console_layout.shell("Tie this message to a request", "\n".join(out), active="Approvals")
 
@@ -222,21 +244,21 @@ def serve(handler):
     if path != "/review":
         return False
     args = urllib.parse.parse_qs(query, keep_blank_values=True)
-    ids = args.get("id", [])
-    if set(args) != {"id"} or len(ids) != 1 or not ap.DRAFT_ID.fullmatch(ids[0]):
+    ids, choices = args.get("id", []), args.get("choice", [])
+    if not set(args) <= {"id", "choice"} or len(ids) != 1 or len(choices) > 1 or not ap.DRAFT_ID.fullmatch(ids[0]):
         handler._fail(400)
         return True
-    return _show(handler, ids[0], 200, None)
+    return _show(handler, ids[0], 200, None, choices[0] if choices else None)
 
 
-def refuse(handler, ident, message, typed):
+def refuse(handler, ident, message, typed, choice=None):
     """A refused review form: the review page again (400) with the reason; typed = (field, text) is echoed escaped."""
     if typed is None:
-        return _show(handler, ident, 400, (message, None, None))
-    return _show(handler, ident, 400, (message,) + typed)
+        return _show(handler, ident, 400, (message, None, None), choice)
+    return _show(handler, ident, 400, (message,) + typed, choice)
 
 
-def _show(handler, ident, status, refusal):
+def _show(handler, ident, status, refusal, choice=None):
     options = handler.options
     project, source, pin = options["project"], options["source"], handler.pin
     journal = handler.server.decisions_dir is not None
@@ -248,9 +270,27 @@ def _show(handler, ident, status, refusal):
         row = rows[ident]
         ids = [ident]
         if row["kind"] == draft_templates.MESSAGE_LINK:
-            payload = source.queue_payload(ids[0]) if row["status"] == "pending" else None
+            payload, withheld = None, False
+            if choice is not None and row["status"] == "pending":
+                try:
+                    approval_queue.message_link_choice_line(row, choice)  # exactly one candidate, else refused
+                except approval_queue.ApprovalQueueError:
+                    if status == 200:  # a hand-made link to a missing, duplicate or unknown candidate
+                        handler._fail(400)
+                        return True
+                    choice = None  # a refused form re-renders the choice list
+                if choice is not None:
+                    try:
+                        payload = source.queue_payload(ids[0], choice)
+                    except approval_queue.ApprovalQueueError as error:
+                        if error.code not in ("link_payloads_missing", "message_link_choice"):
+                            raise
+                        withheld = True  # an older export: no signable text for this candidate
             handler._send(status, render_link(row, handler.csrf_token(), payload, refusal,
-                                                   read_only=pin is not None and not journal))
+                                              read_only=pin is not None and not journal, choice=choice, withheld=withheld))
+            return True
+        if choice is not None and status == 200:  # only a tie is selected by a candidate
+            handler._fail(400)
             return True
         history = source.queue_history(ids[0])
         preview = mail_preview.preview(project, row, handler.server.mail_drafts_config)
