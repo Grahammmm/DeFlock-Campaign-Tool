@@ -42,9 +42,39 @@
       "required": ["topic", "state", "asked_on", "updated_on"],
       "properties": {
         "topic": {"type": "string", "minLength": 1},
-        "state": {"enum": ["awaiting_response", "acknowledged", "partly_answered", "answered", "declined_in_writing", "withdrawn"]},
+        "state": {"enum": ["awaiting_response", "acknowledged", "partly_answered", "answered", "declined_in_writing", "withdrawn", "no_records_stated"]},
         "asked_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
-        "updated_on": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
+        "updated_on": {"type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "fee_quoted": {"$ref": "#/$defs/fee_quoted"},
+        "extension": {"$ref": "#/$defs/extension"},
+        "withheld_sections": {
+          "description": "Government Code section numbers the agency cited when withholding, as the organizer recorded them: numbers only, in recorded order, never the agency's words and never a claim that the citation is valid or sufficient.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[0-9]{4}([.][0-9]+)?$"}
+        }
+      }
+    },
+    "fee_quoted": {
+      "description": "A fee the agency quoted, as the organizer recorded it; present only when recorded. Not a fee cap, a legal reading or a payment instruction.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount_usd", "status"],
+      "properties": {
+        "amount_usd": {"type": "string", "pattern": "^[0-9]{1,6}([.][0-9]{1,2})?$"},
+        "status": {"enum": ["unpaid", "paid", "waived"]}
+      }
+    },
+    "extension": {
+      "description": "An extension the agency noticed and the deadline it stated; present only when recorded. The build checks that both are real calendar days from 2000-01-01, that noticed_on is not after the build date and that until is not before noticed_on. until may be after the build date: a future deadline is valid. These comparisons are the loader's responsibility, not JSON Schema's. No statutory period is inferred.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["noticed_on", "until"],
+      "properties": {
+        "noticed_on": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "until": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"}
       }
     },
     "policy": {

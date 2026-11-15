@@ -273,7 +273,7 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
         if isinstance(document, list):
             for index, entry in enumerate(document):
                 if isinstance(entry, dict) and entry.get("selected", True) is True:
-                    _asked(entry, f"content/agencies.json[{index}].asked", problems=problems)
+                    _asked(entry, f"content/agencies.json[{index}].asked", today, problems=problems)  # DF2007-13: the build day, as the loader
                     profile = entry.get("profile", {})
                     if isinstance(profile, dict) and profile.get("pre_implementation_meeting") is not None:  # DF1207-07
                         _pre_meeting(profile["pre_implementation_meeting"],

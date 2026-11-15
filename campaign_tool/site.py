@@ -282,6 +282,9 @@ PUBLIC_OFFICIAL_FIELDS = ("name", "role", "profile_url", "source_url", "checked_
 OFFICIALS_CSV_COLUMNS = ("agency_id", "agency_name", "name", "role", "profile_url", "source_url", "checked_on")
 PUBLIC_AGENCY_JSON_ONLY = ("reports",)  # DF0237-02: recorded reports go to data/agencies.json only; the CSV header is unchanged
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
+# DF2007-13: optional answer details, present on an exported item only when the organizer recorded them
+PUBLIC_ASKED_OPTIONAL = ("fee_quoted", "extension", "withheld_sections")
+PUBLIC_ASKED_NESTED = {"fee_quoted": ("amount_usd", "status"), "extension": ("noticed_on", "until")}
 PUBLIC_POLICY_FIELDS = ("url", "checked_on")
 PUBLIC_CONTRACT_FIELDS = ("vendor", "start", "end", "source_url", "checked_on")  # never renewal_note
 PUBLIC_COST_FIELDS = ("amount_usd", "period", "as_stated_in")  # contract.cost (DF1103-07): exactly these, when present
@@ -445,7 +448,8 @@ def law_status(package):  # the law-package status label shown beside any readin
 
 ASKED_SENTENCES = {"awaiting_response": "No written response recorded as of{day}.", "answered": "Answered{day}.",
                    "acknowledged": "Acknowledged{day}; no records yet.", "partly_answered": "Partly answered{day}.",
-                   "declined_in_writing": "Declined in writing{on}.", "withdrawn": "We withdrew this request{day}."}
+                   "declined_in_writing": "Declined in writing{on}.", "withdrawn": "We withdrew this request{day}.",
+                   "no_records_stated": "The agency stated that it had no responsive records{on}."}
 
 
 def asked_sentence(item, today):
@@ -1482,13 +1486,33 @@ class Site:
             links.append(f'<a href="{e(agency["flock_transparency_url"])}" rel="noopener noreferrer">{self.t("agency.flock_portal")}</a>')
         return links
 
+    def asked_html(self, item):
+        """DF2007-13: the state sentence then one fixed sentence per recorded answer detail (fee, extension, sections),
+        each built from labels with escaped values and joined by one space; an old item gives exactly the old text."""
+        if item["state"] == "no_records_stated":  # the agency's own statement: dated by the recorded update only
+            when = item.get("updated_on")
+            parts = [self.t("requests.no_records_sentence_dated", date=date_label(when)) if when
+                     else self.t("requests.no_records_sentence")]
+        else:
+            parts = [e(asked_sentence(item, self.today))]
+        if "fee_quoted" in item:
+            fee = item["fee_quoted"]
+            parts.append(self.t("requests.fee_quoted", amount_usd=e(fee["amount_usd"]),
+                                status=self.t("requests.fee_status_" + fee["status"])))
+        if "extension" in item:
+            parts.append(self.t("requests.extension", noticed_on=e(item["extension"]["noticed_on"]),
+                                until=e(item["extension"]["until"])))
+        if "withheld_sections" in item:
+            parts.append(self.t("requests.withheld_sections", sections=", ".join(e(n) for n in item["withheld_sections"])))
+        return " ".join(parts)
+
     def agency_blocks(self, agency, findings):
         """Confirmed / not known / asked, from organizer content only; awaiting with no update → the build date."""
         profile, asked = agency["profile"], []
         confirmed = [e(fact) for fact in profile["facts"]] + [f"{len(findings)} published finding(s) with sources"] * bool(findings)
         unknown = [e(text) for text in [profile["open"]] * bool(profile["open"]) + profile["flags"]]
         for item in sorted(agency.get("asked", []), key=lambda row: row["asked_on"], reverse=True):
-            asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + e(asked_sentence(item, self.today))
+            asked.append(f'{e(item["topic"])} — asked {date_label(item["asked_on"])}. ' + self.asked_html(item)
                          + (f' {e(item["note"])}' if item.get("note") else ""))
         return "".join(f'<section class="agency-block"><h4{anchor}>{title}</h4>' + (
             "<ul>" + "".join(f"<li>{value}</li>" for value in values) + "</ul>" if values else f"<p>{empty}</p>") + "</section>"
@@ -1609,14 +1633,14 @@ class Site:
         filtered = self.requests_filter_enabled(rows)
         states = [item["state"] for _, item in rows]
         counts = " · ".join(self.t("requests.count", state=self.t("requests.state_" + state), count=states.count(state))
-                            for state in ASKED_STATES)
+                            for state in ASKED_STATES if state in states or state in ASKED_STATES[:6])  # DF2007-13: the seventh only when used
         lead = f'<p>{self.t("requests.lead", total=len(rows))} {counts}</p>'
         heads = [self.t("requests.col_" + key) for key in ("agency", "topic", "asked_on", "state", "updated_on")]
         body = []
         for agency, item in rows:
             page = self.agency_pages().get(agency["agency_id"], f'/agencies.html#{agency["slug"]}')
             cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>', e(item["topic"]), time_tag(item["asked_on"]),
-                     e(asked_sentence(item, self.today)),
+                     self.asked_html(item),
                      time_tag(item["updated_on"]) if item.get("updated_on") else self.t("requests.not_recorded")]
             hooks = f' data-agency="{e(agency["slug"])}" data-state="{e(item["state"])}"' if filtered else ""
             body.append(f'<tr{hooks}><th scope="row" data-label="{heads[0]}">{cells[0]}</th>'
@@ -3355,7 +3379,9 @@ class Site:
         return {"agency_id": agency["agency_id"], "name": agency["name"], "kind": agency["kind"],
                 "url": self.base + self.agency_pages()[agency["agency_id"]],
                 "asked": [{"topic": a["topic"], "state": a["state"], "asked_on": a["asked_on"],
-                           "updated_on": a.get("updated_on")} for a in asked],
+                           "updated_on": a.get("updated_on"),
+                           **{k: ({n: a[k][n] for n in PUBLIC_ASKED_NESTED[k]} if k in PUBLIC_ASKED_NESTED else list(a[k]))
+                              for k in PUBLIC_ASKED_OPTIONAL if k in a}} for a in asked],
                 "alpr_policy": {k: policy[k] for k in PUBLIC_POLICY_FIELDS + _archived(policy)} if policy else None,
                 "contract": ({**{k: contract[k] for k in PUBLIC_CONTRACT_FIELDS + _archived(contract)},
                               **({"cost": {k: contract["cost"][k] for k in PUBLIC_COST_FIELDS}} if contract.get("cost") else {})}
@@ -3385,7 +3411,8 @@ class Site:
         _assert_public(doc, "data/agencies.json", PUBLIC_AGENCY_TOP_LEVEL | set(self.license_top()),
                        {"agencies": (PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL + PUBLIC_AGENCY_ACTIONS + PUBLIC_AGENCY_JSON_ONLY,
                                      {"actions": (PUBLIC_ACTION_FIELDS, {}),
-                                                            "asked": (PUBLIC_ASKED_FIELDS, {}),
+                                                            "asked": (PUBLIC_ASKED_FIELDS + PUBLIC_ASKED_OPTIONAL,
+                                                                      {k: (names, {}) for k, names in PUBLIC_ASKED_NESTED.items()}),
                                                             "alpr_policy": (PUBLIC_POLICY_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
                                                             "contract": (PUBLIC_CONTRACT_FIELDS + PUBLIC_ARCHIVE_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
                                                             "funding": (PUBLIC_FUNDING_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
