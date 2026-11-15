@@ -33,8 +33,8 @@ NEW_LABELS = ("requests.state_no_records_stated", "requests.no_records_sentence"
               "requests.fee_quoted", "requests.fee_status_unpaid", "requests.fee_status_paid",
               "requests.fee_status_waived", "requests.extension", "requests.withheld_sections")
 # Whole-tree digests of builds on the day TODAY, taken on main before DF2007-13 (see LEGACY_ASKED below).
-MAIN_EXAMPLE_DIGEST = "4982bb17cf806741c818d045af57cbc9a5cf623c84aea46cc4f9a6b1f23866cd"
-MAIN_LEGACY_DIGEST = "77d898de7dfb50005cb00deac82211cd7929d91c909ea5a3a28eecbb163b8266"
+MAIN_EXAMPLE_DIGEST = "4982bb17cf806741c818d045af57cbc9a5cf623c84aea46cc4f9a6b1f23866cd"  # pragma: allowlist secret
+MAIN_LEGACY_DIGEST = "77d898de7dfb50005cb00deac82211cd7929d91c909ea5a3a28eecbb163b8266"  # pragma: allowlist secret
 LEGACY_ASKED = {CEDAR: [{"topic": "ALPR retention policy", "asked_on": "2026-08-01", "state": "answered", "updated_on": "2026-09-01"},
                         {"topic": "Data-sharing list", "asked_on": "2026-10-01", "state": "awaiting_response"},
                         {"topic": "Camera count", "asked_on": "2026-09-15", "state": "declined_in_writing",
