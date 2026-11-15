@@ -93,7 +93,7 @@ class LayoutTests(Base):
                         self.assertIn(BANNER, html)
                         active = {'/': '/', '/board': '/board', '/calendar': '/calendar',
                                   '/documents': '/documents', '/settings': '/settings', '/agency?agency=alpha-pd': '/board',
-                                  '/automation': '/automation'}
+                                  '/automation': '/automation', '/ocr-review': '/ocr-review'}
                         self.assertEqual(parsed.current, [active[path]] if path in active else [])
                         if path == '/':
                             self.assertTrue({'decide', 'more'} <= set(parsed.ids))

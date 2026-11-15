@@ -58,3 +58,5 @@ queue and the existing `needs_visual_review` flag. This unit does not enable
 vision, perform OCR, choose human samples, authorize live runs, or send/publish
 anything. Development and acceptance use synthetic ledgers only; existing
 live-run, acquisition, canonical-store, queue and publication holds remain.
+
+**Console page (OCR-REVIEW-ROUTE-1).** The admin console's `/ocr-review` lists the pages awaiting a person (source item, confidence, OCR text from `console-model/ocr-pages.json`) and confirms or rejects ONE page; the decision is journaled like the console's other decisions (refused without a pinned export and journal) and `records decisions-apply` hands it to `mark` with the fixed label `console-reviewer`: it publishes and sends nothing, and only G or a person G names may use it.

@@ -21,7 +21,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_board, console_calendar, console_documents, console_home, console_jobs, console_manual_events, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
+from . import approval_queue, console_board, console_calendar, console_documents, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
 from . import console_origin, console_automation
 from . import console_access, console_export, console_journal, console_layout, console_review, console_settings, console_snapshot
 from .ledger import store
@@ -841,6 +841,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if console_manual_events.serve(self):
             return
+        if console_ocr.serve(self):  # OCR page confirm / reject
+            return
         if console_documents.serve(self):  # Screen C
             return
         if console_board.serve(self):  # Screens A and B
@@ -963,6 +965,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if console_packets.post(self):
             return
         if console_oversight.post(self):  # Screen F: Undo, OFF and kill only
+            return
+        if console_ocr.post(self):  # one OCR page: confirm or reject, journaled
             return
         route = ROUTES.get(self.path) or (SEND_ROUTE if self.path == "/send" else console_manual_events.ROUTE if self.path == "/manual-event" else None)
         if route is None:
