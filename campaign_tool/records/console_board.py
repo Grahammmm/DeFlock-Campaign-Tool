@@ -421,7 +421,7 @@ def _agency_sections(model, agency):
     refusals = model.get("refusals", {"state": "unavailable", "code": "not_loaded"})
     rows = [r for r in refusals.get("entries", []) if r["agency_key"] == agency]
     if refusals["state"] != "available":
-        out.append("<p>Refusals unavailable (%s).</p>" % esc(refusals.get("code")))
+        out.append("<p>%s</p>" % esc(console_layout.unavailable_note("Refusals", refusals.get("code"))))
     elif not rows:
         out.append("<p>No refusals on our records.</p>")
     else:

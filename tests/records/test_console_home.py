@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from campaign_tool.records import approval_queue as aq, console_home as home, public_packets as pp
-from campaign_tool.records.console_layout import plain
+from campaign_tool.records.console_layout import plain, unavailable_note
 from campaign_tool.records import public_updates as pu
 from tests.records import test_admin_panel as panel
 from tests.records.test_console_board import build, put, RUN
@@ -359,6 +359,23 @@ class Week(unittest.TestCase):
         cal.build(self.project, [])
         self.assertIn('Nothing due in the next 7 days.', home.render_home(self.model(), ""))
 
+    def test_week_warns_when_open_request_has_no_parseable_due_date(self):
+        for due, closed, state, expected in (
+                ('not-a-date', False, 'running', 1),
+                ('', False, 'running', 1),
+                ('2026-12-01', False, 'running', 0),
+                ('not-a-date', True, 'running', 0),
+                ('not-a-date', False, 'determined', 0)):
+            with self.subTest(due=due, closed=closed, state=state):
+                cal.build(self.project, [cal.row('alpha-pd', 'R-invalid',
+                    cal.clock(due=due, base_due=None, extended_due=None, state=state),
+                    status='closed' if closed else 'open')])
+                model = self.model()
+                self.assertEqual(model['calendar']['no_clock'], expected)
+                page = home.render_home(model, '')
+                self.assertEqual('1 open request has no usable due date' in page, bool(expected))
+                self.assertEqual('Nothing due in the next 7 days.' in page, not expected)
+
     def test_week_cap_and_order(self):
         cal.build(self.project, [cal.row('alpha-pd', 'R-%02d' % n, cal.clock(due='2026-11-08',
             base_due='2026-11-08', extended_due=None)) for n in range(25)], links=[cal.link('2026-11-08')])
@@ -378,7 +395,7 @@ class Week(unittest.TestCase):
             with mock.patch.object(home.console_calendar, 'load', **kwargs):
                 page = home.render_home(self.model(), '')
             code = 'calendar_unreadable' if isinstance(result, Exception) else '&lt;bad&gt;'
-            self.assertIn('Calendar: unavailable (%s).' % code, page)
+            self.assertIn(unavailable_note('Calendar', code.replace('&lt;', '<').replace('&gt;', '>')).replace('<', '&lt;').replace('>', '&gt;'), page)
             self.assertIn('Needs your decision', page)
             self.assertIn('More detail', page)
             self.assertNotIn('private detail', page)
@@ -468,13 +485,13 @@ class Waiting(unittest.TestCase):
         for failure in (OSError('private detail'), ValueError('private detail')):
             with mock.patch.object(home.co, 'load', return_value=dict(base)), mock.patch.object(home.cb, 'load', side_effect=failure):
                 page = home.render_home(home.load(self.project, RUN, now=NOW), '')
-            self.assertIn('Waiting on agencies: unavailable (board_unreadable).', page)
+            self.assertIn('Waiting on agencies: unavailable. The agencies board could not be read.', page)
             self.assertIn('waiting on agencies: unknown', page)
             self.assertNotIn('private detail', page)
         for mutate, code in (({'run_id': 'stale'}, 'run_mismatch'), ({'requests': None}, 'shape_invalid')):
             put(self.path, self.doc | mutate)
             page = home.render_home(home.load(self.project, RUN, now=NOW), '')
-            self.assertIn('Waiting on agencies: unavailable (%s).' % code, page)
+            self.assertIn(unavailable_note('Waiting on agencies', code), page)
             self.assertNotIn('0 waiting on agencies', page)
         row = self.request('<request>', due='bad', agency='<Agency>', agency_key='alpha/<pd>',
             events=[{'type': 'sent', 'date': '2026-09-01', 'superseded': True},
@@ -562,15 +579,15 @@ class Waiting(unittest.TestCase):
             page = home.render_home(home.load(self.project, RUN, now=NOW), '')
             section = page.split('<section id="timeline">')[1].split('</section>')[0]
             self.assertEqual(section.count('<p'), 1)
-            self.assertIn('Timeline: unavailable (%s).' % code, section)
+            self.assertIn(unavailable_note('Timeline', code), section)
             self.assertIn('Needs your decision', page)
-            self.assertIn('Next actions: unavailable (timeline).', page)
+            self.assertIn('Next actions: unavailable until the request timeline loads.', page)
             self.assertNotIn('No next steps recorded.', page)
         model, _ = self.page([self.request('r')])
         model['queue'] = {'state': 'unavailable', 'code': '<bad>'}
         page = home.render_progress(model, NOW.date())
         self.assertIn('Full timeline</a>', page)
-        self.assertIn('Suggested drafts: unavailable (&lt;bad&gt;).', page)
+        self.assertIn('Suggested drafts: unavailable. It could not be read; ask the operator to check the file (&lt;bad&gt;).', page)
         self.assertNotIn('No next steps recorded.', page)
 
 

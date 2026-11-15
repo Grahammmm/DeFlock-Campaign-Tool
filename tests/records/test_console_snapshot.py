@@ -283,7 +283,7 @@ class SendResults(Panel):
         self.assertIn("sent-mail results: unavailable. " + wording, html.unescape(home))
         self.assertIn("unknown need your decision", home)  # never a numeric count over unreadable send state
         self.assertNotRegex(home, r"\d+ need your decision")
-        self.assertIn("follow-up planned sends: unavailable (sends_unreadable)", calendar)
+        self.assertIn(console_layout.unavailable_note("follow-up planned sends", "sends_unreadable"), calendar)
 
     def test_home_and_calendar_show_a_missing_sends_document_unavailable_without_send_config(self):
         """Export mode refuses send_config; the snapshot's own sends state still reaches Home and the calendar."""

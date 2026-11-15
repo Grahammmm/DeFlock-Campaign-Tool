@@ -9,7 +9,7 @@ import stat
 import urllib.parse
 from pathlib import Path
 
-from . import console_board as cb
+from . import console_board as cb, console_layout
 from .outcomes import timeline as _tl
 from .outcomes.reading import esc
 
@@ -109,7 +109,8 @@ def agency_rows(model, today, roster):
 def render_standing(model, today):
     out = ['<section id="standing"><h2>Where each agency stands</h2>']
     if model["timeline"]["state"] != "ok":
-        return out[0] + '<p role="status">timeline: unavailable (%s); no agency rows.</p></section>' % esc(model["timeline"].get("code"))
+        return out[0] + '<p role="status">%s No agency rows can be shown.</p></section>' % esc(
+            console_layout.unavailable_note("The request timeline", model["timeline"].get("code")))
     roster = load_roster(model["project"])
     if roster["state"] == "absent":
         out.append("<p>roster not staged; showing register agencies only</p>")
