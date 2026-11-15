@@ -408,8 +408,8 @@ class SpecialFilesAndSurfaces(ReadBoundsCase):
         pad_draft(self.social / "x" / f"{F.SLUG}.md", SC.MAX_DRAFT_BYTES + 1)
         pad_json(self.social / "meetings" / ".check.json", SC.MAX_STATE_BYTES + 1)
         before = self.tree()
-        text_report = self.cli("--check", "--text")
-        json_report = self.cli("--check")
+        text_report = self.cli_at_now("--check", "--text")
+        json_report = self.cli_at_now("--check")
         for result in (text_report, json_report):
             self.assertEqual(result.returncode, 3, result.stderr)
             self.assertNotIn("Traceback", result.stderr)

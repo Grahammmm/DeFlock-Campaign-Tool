@@ -65,6 +65,15 @@ class FolderCheckCase(unittest.TestCase):
         return subprocess.run([sys.executable, "-B", "-m", "campaign_tool", "social", "--directory", str(self.root), *extra],
                               cwd=REPO_ROOT, capture_output=True, text=True, timeout=90)
 
+    def cli_at_now(self, *extra):
+        """The real ``social`` CLI with ``check_social`` bound to the fixed clock NOW (fixtures start on fixed dates, so the wall clock goes stale)."""
+        runner = ("import sys; from datetime import datetime, timezone; from campaign_tool import cli, social; "
+                  "real = social.check_social; "
+                  "social.check_social = lambda root, now=None: real(root, now=datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)); "
+                  "sys.argv = ['campaign_tool', 'social', '--directory', sys.argv[1], *sys.argv[2:]]; cli.main()")
+        return subprocess.run([sys.executable, "-B", "-c", runner, str(self.root), *extra],
+                              cwd=REPO_ROOT, capture_output=True, text=True, timeout=90)
+
     def tree(self):
         return {str(p): (p.read_bytes() if p.is_file() else b"", p.stat().st_mtime_ns) for p in sorted(self.root.rglob("*"))}
 
@@ -564,19 +573,19 @@ class Cli(FolderCheckCase):
         build_social(self.root)
         build_meeting_social(self.root, now=NOW)
         before = self.tree()
-        result = self.cli("--check")
+        result = self.cli_at_now("--check")
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("kit/social/meetings", json.loads(result.stdout)["folders"])
-        text = self.cli("--check", "--text")
+        text = self.cli_at_now("--check", "--text")
         self.assertEqual(text.returncode, 0, text.stderr)
         self.assertIn("kit/social:\n", text.stdout)
         self.assertIn("kit/social/meetings:\n  m-one: ok\n", text.stdout)
         self.assertTrue(text.stdout.endswith("0 problem(s).\nRead-only. Nothing was posted.\n"))
         (self.social / "meetings" / "m-one.md").unlink()
-        bad = self.cli("--check", "--text")
+        bad = self.cli_at_now("--check", "--text")
         self.assertEqual(bad.returncode, 3)
         self.assertIn("  m-one: missing (missing)\n", bad.stdout)
-        self.assertEqual(self.cli("--check").returncode, 3)
+        self.assertEqual(self.cli_at_now("--check").returncode, 3)
         self.assertEqual(sorted(k for k in before if k.endswith("m-one.md")), [str(self.social / "meetings" / "m-one.md")])
 
     def test_text_needs_check_and_check_refuses_generation_selectors(self):
