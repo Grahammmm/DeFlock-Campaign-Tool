@@ -154,6 +154,46 @@ def within(child, parent):
     return child == parent or child.startswith(parent.rstrip("/") + "/")
 
 
+# TRUST-MOUNT-PIN-1: the in-container engine a rendered records wrapper runs (CONTAINER_ENGINE_DIR).
+CONTAINER_ENGINE_RE = re.compile(r"/workspace(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*/engine-([0-9a-f]{7,40})")
+RELEASE_COMMIT_LINE_RE = re.compile(r"^RELEASE_COMMIT=['\"]?([0-9a-f]{40})['\"]?$", re.M)
+PYTHONPATH_RE = re.compile(r"PYTHONPATH=(\S+)")
+
+
+def wrapper_engine(text):
+    """The single in-container engine directory of a rendered run-records.sh, or ValueError.
+
+    A rendered wrapper's ENGINE_DIR is the HOST source tree (records-engine/source-<sha>); it reaches
+    PYTHONPATH only as "$ENGINE_DIR". The engine the container runs is the literal PYTHONPATH value of
+    the wrapper's `docker exec ... env PYTHONPATH=<dir>` lines. Every literal value must be one and the
+    same /workspace/.../engine-<sha> directory, and <sha> must be a prefix of the wrapper's single
+    RELEASE_COMMIT: zero values, two distinct values, another shape or another commit refuse.
+    """
+    commits = RELEASE_COMMIT_LINE_RE.findall(text)
+    if len(commits) != 1:
+        raise ValueError("the wrapper has no single 40-hex RELEASE_COMMIT line")
+    values = set()
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for raw in PYTHONPATH_RE.findall(line):
+            value = raw.strip("'\"")
+            if not value.startswith("$"):  # "$ENGINE_DIR" is the host engine
+                values.add(value)
+    if not values:
+        raise ValueError("the wrapper names no in-container engine (no literal PYTHONPATH value)")
+    if len(values) != 1:
+        raise ValueError(f"the wrapper names {len(values)} distinct in-container PYTHONPATH values: {sorted(values)}")
+    engine = values.pop()
+    match = CONTAINER_ENGINE_RE.fullmatch(engine)
+    if not match or os.path.normpath(engine) != engine:
+        raise ValueError(f"the wrapper's in-container PYTHONPATH {engine!r} is not a /workspace/.../engine-<sha> "
+                         "directory")
+    if not commits[0].startswith(match.group(1)):
+        raise ValueError(f"the wrapper's in-container engine {engine} is not RELEASE_COMMIT {commits[0][:12]}")
+    return engine
+
+
 def overflow_owners(manifest):
     """Paths whose uid or gid is the overflow ID: unmapped in the namespace."""
     return sorted(p for p, e in manifest["entries"].items() if OVERFLOW_ID in e["owner"].split(":"))
@@ -975,13 +1015,46 @@ class Swap:
         try:
             # Force the unchanged HOST rule, not the namespace dispatcher.
             engine_approval._require_root_host(engine_approval.TRUSTED_SIGNERS)
-            text = Path(self.state["records_wrapper"]).read_text()
-            pins = re.findall(r'^ENGINE_DIR=[\'\"]?(/[A-Za-z0-9_./-]+/engine-[0-9a-f]{7,40})[\'\"]?$', text, re.M)
-            if len(pins) != 1:
-                self.fail("cannot identify the wrapper's single engine pin")
         except (OSError, engine_approval.ApprovalError):
             self.fail("host approval anchor unavailable")
-        self.check_anchor_engine(pins[0])
+        try:
+            text = Path(self.state["records_wrapper"]).read_text()
+        except (OSError, UnicodeDecodeError) as error:
+            self.fail(f"cannot read the records wrapper: {error}")
+        try:
+            engine = wrapper_engine(text)
+        except ValueError as error:
+            self.fail(f"cannot identify the wrapper's single engine pin: {error}")
+        self.state["engine_dir"] = engine
+        self.log(f"    records wrapper in-container engine: {engine}")
+        self.check_anchor_engine(engine)
+
+    def check_engine_mount(self, mounts, excluded):
+        """The recreate keeps only snapshotted mounts: the engine's whole work tree must live on them.
+
+        The work tree is the engine's parent (/workspace/<name>/work), which also holds pylib-pillow,
+        records-project and sandbox. Both the work directory and the engine must sit on a snapshotted
+        mount (the deepest mount covering each path), and no excluded mount may lie inside the work
+        tree: a retained engine submount must not mask an excluded work mount, and vice versa.
+        """
+        engine = self.state.get("engine_dir")
+        if not engine:
+            return
+        work = os.path.dirname(engine)
+        for path, what in ((work, "work tree"), (engine, "engine")):
+            holders = [(len(os.path.normpath(m["destination"])), m in mounts, m) for m in mounts + excluded
+                       if within(path, m["destination"])]
+            if not holders:
+                self.fail(f"the wrapper's {what} {path} is on no mount of the container; a recreate would lose it")
+            _, kept, holder = max(holders, key=lambda h: h[0])
+            if not kept:
+                self.fail(f"the mount holding the wrapper's {what} {path} ({holder['type']}:{holder['destination']}) "
+                          f"is not snapshotted ({holder['reason']}); a recreate would lose it")
+            self.log(f"    {what} {path} is on snapshotted mount {holder['label']}={holder['destination']}")
+        for item in excluded:
+            if within(item["destination"], work):
+                self.fail(f"excluded mount {item['type']}:{item['destination']} lies inside the wrapper's work tree "
+                          f"{work} ({item['reason']}); a recreate would lose it")
 
     def check_anchor_engine(self, engine):
         code, out, _ = self.sh(["docker", "exec", "-u", "coder", "-w", engine, self.state["container"],
@@ -1058,6 +1131,7 @@ class Swap:
             self.fail(f"image tag {args.new_tag} already exists; choose a new tag, or --reuse-image the run "
                       "that built and verified it")
         st["mounts"], st["excluded"] = self.derive_mounts(before)
+        self.check_engine_mount(st["mounts"], st["excluded"])
         st["timers_active"] = {}
         for base in st["pause_units"]:
             for unit in (f"{base}.timer", f"{base}.service"):
@@ -1836,7 +1910,9 @@ class RehearsalSwap(Swap):
     """Swap with stand-ins for the steps that need the pinned engine build.
 
     The anchor-status engine precondition is simulated; actual activation must be
-    checked independently before rehearsal. The host anchor rule is not simulated.
+    checked independently before rehearsal. So is the check that the wrapper's engine
+    and its work tree are on snapshotted mounts (the real --dry-run runs it). The host anchor rule and
+    the wrapper's engine identification are not simulated.
     [B1] writes a synthetic wheel into $RUN/build/dist, [B2] layers it onto
     the throwaway target's image with docker build, [V1] and [A4] check that
     wheel by hash in the image and in the running replacement. Every other
@@ -1857,6 +1933,13 @@ class RehearsalSwap(Swap):
         # Like B1/V1 this is an explicit stand-in: the synthetic target has no pinned engine.
         # The attended runbook must check the real engine independently before rehearsal.
         self.log("    rehearsal: anchor-status engine precondition is simulated; real activation check required separately")
+
+    def check_engine_mount(self, mounts, excluded):
+        # The throwaway target mounts only synthetic data, never the wrapper's engine tree; the
+        # --dry-run against the real target runs this check for real.
+        if self.state.get("engine_dir"):
+            self.log(f"    rehearsal: engine-mount check for {self.state['engine_dir']} is simulated; "
+                     "the real --dry-run runs it")
 
     def b1_wheel(self):
         self.require_gate()
@@ -2152,7 +2235,9 @@ def parse_args(argv):
     parser.add_argument("--new-tag", help="new image tag that does not exist yet (name:tag), or the tag "
                                           "that --reuse-image built")
     parser.add_argument("--trust-mount", choices=("add", "drop"), help="opt-in fixed read-only /etc/deflock directory bind")
-    parser.add_argument("--records-wrapper", help="existing records wrapper whose ENGINE_DIR pin must support anchor-status (required for trust-mount add)")
+    parser.add_argument("--records-wrapper", help="existing rendered records wrapper; its single in-container engine (the literal "
+                             "/workspace/.../engine-<sha> PYTHONPATH value, <sha> a prefix of RELEASE_COMMIT) must "
+                             "support anchor-status (required for trust-mount add)")
     parser.add_argument("--reuse-image", metavar="PREV_RUN_DIR",
                         help="reuse the --new-tag image that an earlier run under --private built and passed "
                              "[V1] with; [B1]/[B2] skip the rebuild, [V1] runs again (--apply/--dry-run)")
