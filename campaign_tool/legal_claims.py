@@ -106,6 +106,8 @@ ADVISORY_GUARD_ERROR = "warning: wording advisory (guard-error). Fix: Review the
 # the category, never the text, and no caller may turn it into an error, a refusal, a withholding or an exit code. The scanner is an
 # explicitly English heuristic, not named-entity recognition and not a claim that intent is unproven in fact. It has its own quote
 # matcher and clause scan so the older legal scanner's results never change.
+# Same sentence-boundary contract as SENTENCE_SPLIT (punctuation then whitespace, or a newline), compiled separately so the tiers fail independently.
+ADV_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 ADV_QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|(?<!\w)\'[^\'\n]*\'(?!\w)')
 INTENT = re.compile(r"\b(?:secretly|covertly|hid|hiding|covered\s+up|in\s+secret)\b", re.I)
 _ROLE = (r"(?:agenc(?:y|ies)|departments?|police|sheriffs?|cit(?:y|ies)|count(?:y|ies)|councils?|mayors?|chiefs?|officials?|"
@@ -113,7 +115,9 @@ _ROLE = (r"(?:agenc(?:y|ies)|departments?|police|sheriffs?|cit(?:y|ies)|count(?:
 ROLE = re.compile(r"\b" + _ROLE + r"\b", re.I)
 BY_ROLE = re.compile(r"\bby\s+(?:[\w'’.-]+\s+){0,6}?" + _ROLE + r"\b", re.I)
 _NOUN = r"(?:cameras|readers|ALPRs)"
-COUNT = re.compile(r"(?<![\w.,/-])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s+" + _NOUN + r"\b", re.I)
+COUNT = re.compile(r"(?<![\w.,/-])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s+" + _NOUN + r"(?![\w-])", re.I)
+# Same local boundary as NEGATED (three words before the match; "not only" is emphasis) but it also sees contractions: didn't, aren't.
+ADV_NEGATED = re.compile(r"(?:\b(?:not(?! only)|never|nor|no)|n['’]t)\W+(?:\w+\W+){0,3}$", re.I)
 QUALIFIER = re.compile(r"\b(?:as\s+of|documented|mapped)\b", re.I)
 URL = re.compile(r"(?:https?://|www\.)\S+", re.I)
 _MONTHS = "january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec"
@@ -165,7 +169,7 @@ def _intent(sentence):
             limit = cue.start() if cue else len(clause)
             if not (inherited or NEUTRAL.search(clause)):
                 for m in INTENT.finditer(clause):
-                    if m.start() < limit and not NEGATED.search(clause[:m.start()]) and (
+                    if m.start() < limit and not ADV_NEGATED.search(clause[:m.start()]) and (
                             ROLE.search(earlier + " " + clause[:m.start()]) or BY_ROLE.search(clause[m.end():])):
                         return True
             earlier += " " + clause
@@ -175,7 +179,7 @@ def _intent(sentence):
 
 def _undated_count(sentence):
     text = URL.sub(" ", sentence)
-    return any(not NEGATED.search(text[:m.start()]) for m in COUNT.finditer(text)) and not (QUALIFIER.search(text) or _dated(text))
+    return any(not ADV_NEGATED.search(text[:m.start()]) for m in COUNT.finditer(text)) and not (QUALIFIER.search(text) or _dated(text))
 
 
 def legal_advisories(text):
@@ -185,7 +189,7 @@ def legal_advisories(text):
         return []
     try:
         found = set()
-        for sentence in SENTENCE_SPLIT.split(_blank_quotes(text)):
+        for sentence in ADV_SENTENCE_SPLIT.split(_blank_quotes(text)):
             if _intent(sentence):
                 found.add("intent")
             if _undated_count(sentence):

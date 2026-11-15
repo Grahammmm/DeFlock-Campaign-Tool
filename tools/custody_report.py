@@ -251,6 +251,7 @@ def write(out, files):
             handle.write(text.encode("utf-8"))
 
 def main(argv=None):
+    warnings = []
     parser = _Parser(prog="custody_report.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     for flag, options in (("command", {"choices": ("build", "status")}), ("--store", {"required": True}), ("--finding", {}),
                           ("--out", {})):
@@ -283,10 +284,13 @@ def main(argv=None):
         if privacy.categories(page + body) or privacy.legal_claims(page):
             raise Refused("generated_text_failed_privacy_check")
         write(out, ((MD_NAME, page), (JSON_NAME, body)))
+        warnings = privacy.advisory_notes([("custody page", page)])  # DF2007-15: advice only; the files above are already final
     except (Refused, OSError, ValueError, TypeError, KeyError, sqlite3.Error) as error:
         print("custody refused: %s" % (error if isinstance(error, Refused) else "store_unreadable"))
         return 2
     print("custody | %s | %s" % (doc["finding_id"], doc["verdict"]["state"]))
+    for warning in warnings:
+        print(warning)
     return int(doc["verdict"]["state"] != "chain complete" or bool(doc["source_errors"]))
 
 if __name__ == "__main__":
