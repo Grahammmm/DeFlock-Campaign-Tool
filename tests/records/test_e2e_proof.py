@@ -79,6 +79,7 @@ class E2EProofTests(unittest.TestCase):
         for report in (first, second):
             self.assertEqual(report["result"], "PASS")
             self.assertEqual(report["manual_steps"], [])
+            self.assertEqual(report["unread"], [])
             self.assertIs(report["sent"], False)
             self.assertIs(report["published"], False)
             self.assertEqual([s["stage"] for s in report["stages"]], [
@@ -128,6 +129,10 @@ class E2EProofTests(unittest.TestCase):
 
         def stage(argv):
             seen.append(argv)
+            if argv[0] == "extract":  # a finished extract leaves its (here empty) per-original list
+                project, run_id = Path(argv[argv.index("--project") + 1]), argv[argv.index("--run-id") + 1]
+                (project / "processing-v1" / "runs").mkdir(parents=True, exist_ok=True)
+                native_extract.write_private_list(project / "processing-v1", run_id, [])
             return 0, {"status": "ok", "counts": {}, "outcomes": []}
         with mock.patch.object(e2e_proof, "_stage", stage):
             report = e2e_proof.replay(self.message, self.tmp / "out", self.campaign, label="o%d" % ocr, ocr=ocr)
@@ -182,6 +187,9 @@ class E2EProofTests(unittest.TestCase):
         self.assertEqual(e2e_proof._unfinished_work(extract(EXTRACTED=2, EXTRACT_TIMEOUT=1, EXTRACT_ERROR=1)),
                          ["extract:EXTRACT_ERROR", "extract:EXTRACT_TIMEOUT"])
         self.assertEqual(e2e_proof._unfinished_work(extract(EXTRACT_NOT_ACCEPTED=1)), ["extract:EXTRACT_NOT_ACCEPTED"])
+        self.assertEqual(e2e_proof._unfinished_work(extract(PARSER_MISSING=1, DECODER_NEEDED=2, WORKBOOK_POLICY_REQUIRED=1)),
+                         ["extract:PARSER_MISSING", "extract:DECODER_NEEDED", "extract:WORKBOOK_POLICY_REQUIRED"])
+        self.assertEqual(e2e_proof._unfinished_work(extract(CORRUPT_DOCUMENT=1, EXTRACT_INCOMPLETE=1, PARSER_MISSING=0)), [])
         self.assertEqual(e2e_proof._unfinished_work(extract(EXTRACTED=3, EXTRACT_ERROR=0)), [])
         outputs = {"stage": "outputs", "status": "warn", "code": "OUTPUTS_REGISTER_UNAVAILABLE", "detail": {}}
         self.assertEqual(e2e_proof._unfinished_work(outputs), ["outputs:OUTPUTS_REGISTER_UNAVAILABLE"])

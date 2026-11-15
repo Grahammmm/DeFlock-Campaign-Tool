@@ -9,7 +9,8 @@ posted or published, and no credential or environment file is read. The stages r
   console pages (Inbox, Documents, Findings, Deadlines, Drafts, Next Steps, Run health) -> deny one next step
   through the real panel POST (writes the decision to the queue journal and sends nothing).
 
-The report lists every stage's output file and every manual step the run needed (there should be none). Output is
+The report lists every stage's output file, every manual step the run needed (there should be none) and the originals
+extract did not read (``unread``: hash prefix, kind, outcome code). Output is
 metadata only: counts, codes, relative file names. The pages and queue hold the private record text, so the sandbox
 stays private on this host and is never to be committed.
 """
@@ -29,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
-from . import approval_queue, arrival, arrival_summary, notify_text, run_orchestrator, run_stages
+from . import approval_queue, arrival, arrival_summary, native_extract, notify_text, run_orchestrator, run_stages
 
 SCHEMA = "records-e2e-proof-v1"
 MARKER = run_stages.SANDBOX_MARKER
@@ -38,7 +39,17 @@ PAGES = (("inbox", "/dashboard", "Inbox: mail received"), ("documents", "/docume
          ("deadlines", "/dashboard", "Deadlines"), ("drafts", "/dashboard", "Drafts"), ("next_steps", "/next-steps", "Next steps"))
 NEXT_KINDS = ("next-social-post", "next-site-update", "next-followup-probe")
 ARRIVAL_DONE = ("sync", "delta", "adoption", "portal")  # the live mailbox-side stages; a replay starts after them
-EXTRACT_UNFINISHED = ("AWAITING_OCR", "EXTRACT_ERROR", "EXTRACT_TIMEOUT", "EXTRACT_NOT_ACCEPTED")
+# Extract outcomes that leave an original unread because of THIS host/pipeline (a missing parser, decoder or
+# workbook policy, an OCR wait, a timeout or error): each is a manual step. CORRUPT_DOCUMENT and EXTRACT_INCOMPLETE are
+# agency-side (the supplied bytes are damaged or partial): they are listed as unread but do not fail the proof.
+EXTRACT_UNFINISHED = ("AWAITING_OCR", "EXTRACT_ERROR", "EXTRACT_TIMEOUT", "EXTRACT_NOT_ACCEPTED",
+                      "PARSER_MISSING", "DECODER_NEEDED", "WORKBOOK_POLICY_REQUIRED")
+AGENCY_SIDE = ("CORRUPT_DOCUMENT", "EXTRACT_INCOMPLETE")
+EXTRACT_LIST_UNAVAILABLE = "extract:PROOF_EXTRACT_LIST_UNAVAILABLE"
+EXTRACT_LIST_SCHEMA = "records-extract-outcomes-v1"
+EXTRACT_LIST_MAX_BYTES = 16 * 1024 * 1024
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+FORM = re.compile(r"^[A-Za-z0-9_.+-]{1,32}$")
 SEED_SCHEMA = "records-e2e-seed-v1"
 SEED_MAX_BYTES = 64 * 1024
 OUTPUTS_UNFINISHED = re.compile(r"^(OUTPUTS_[A-Z_]+_UNAVAILABLE|OUTPUTS_DIGEST_UNRESOLVED)$")
@@ -345,14 +356,20 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None,
             os.environ.pop(run_orchestrator.TRIGGER_ENV, None)
         else:
             os.environ[run_orchestrator.TRIGGER_ENV] = env_old
+    unread = _unread_originals(project, run_id)
     for stage in line.stages:
         if stage["status"] in ("fail", "not_run"):
             manual.append({"stage": stage["stage"], "why": stage["code"]})
         manual.extend({"stage": stage["stage"], "why": why} for why in _unfinished_work(stage))
+        if stage["stage"] == "extract" and stage["status"] in ("ok", "warn") and unread is None:
+            # An extract that finished must have left its per-original list; never report a clean inventory without it.
+            manual.append({"stage": "extract", "why": EXTRACT_LIST_UNAVAILABLE})
     report = {"schema": SCHEMA, "run_id": run_id, "sandbox": str(base), "message_sha256": hashlib.sha256(raw).hexdigest(),
               "sent": False, "published": False, "stages": line.stages, "manual_steps": manual,
               "total_seconds": round(sum(s["seconds"] for s in line.stages), 3),
-              "result": "PASS" if not manual else "FAIL", "ocr": bool(ocr)}
+              "result": "PASS" if not manual else "FAIL", "ocr": bool(ocr),
+              # Originals extract did not read (metadata only). [] with a failed/not-run extract means coverage unknown.
+              "unread": unread or []}
     (base / "proof-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (base / "proof-report.md").write_text(render_markdown(report), encoding="utf-8")
     return report
@@ -368,6 +385,39 @@ def _unfinished_work(stage):
     if stage["stage"] == "outputs" and stage["status"] == "warn" and OUTPUTS_UNFINISHED.match(stage["code"] or ""):
         return ["outputs:" + stage["code"]]
     return []
+
+
+def _unread_originals(project, run_id):
+    """Every original this run's extract did not read, as ``{sha256_prefix, kind, outcome}`` rows (read-only).
+
+    Reads only ``processing-v1/runs/extract-<run>.json`` (``records-extract-outcomes-v1``) for this exact run. Returns
+    ``None`` when the list is missing, unreadable or malformed, so the caller never mistakes it for a clean inventory.
+    Rows carry no file name, path, subject, diagnostic or text; they are sorted by the full original hash.
+    """
+    path = Path(project) / "processing-v1" / "runs" / ("extract-%s.json" % native_extract.safe_run_name(run_id))
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > EXTRACT_LIST_MAX_BYTES:
+            return None
+        body = json.loads(path.read_bytes())
+        if type(body) is not dict or body.get("schema") != EXTRACT_LIST_SCHEMA or body.get("run_id") != run_id:
+            return None
+        documents = body.get("documents")
+        if type(documents) is not list:
+            return None
+        rows = []
+        for doc in documents:
+            if type(doc) is not dict:
+                return None
+            digest, form, outcome = doc.get("original_sha256"), doc.get("form"), doc.get("outcome")
+            if (type(digest) is not str or not SHA256.match(digest) or type(outcome) is not str
+                    or outcome not in native_extract.OUTCOMES
+                    or not (form is None or (type(form) is str and FORM.match(form)))):
+                return None
+            if outcome != native_extract.EXTRACTED:
+                rows.append((digest, {"sha256_prefix": digest[:12], "kind": form or "unknown", "outcome": outcome}))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return [row for _, row in sorted(rows, key=lambda r: (r[0], r[1]["outcome"]))]
 
 
 def _counts(stage):
@@ -387,9 +437,18 @@ def render_markdown(report):
         rows.append("| %s | %s%s | %.3f | %s |" % (s["stage"], s["status"], " (%s)" % s["code"] if s["code"] else "",
                                                  s["seconds"], ", ".join("`%s`" % o for o in s["outputs"]) or "-"))
     manual = ["- %s: %s" % (m["stage"], m["why"]) for m in report["manual_steps"]] or ["- none"]
+    unread = ["| %s | %s | %s | %s |" % (u["sha256_prefix"], u["kind"], u["outcome"],
+                                        "agency-side" if u["outcome"] in AGENCY_SIDE else "-")
+              for u in report.get("unread") or []]
+    unread = (["| Original (sha256 prefix) | Kind | Outcome | Classification |", "| --- | --- | --- | --- |", *unread]
+              if unread else ["- none"])
     return "\n".join(["# Records e2e proof %s" % report["run_id"], "", "Result: **%s**. Sent: no. Published: no." %
                       report["result"], "", *rows, "", "Total seconds: %.3f" % report["total_seconds"], "",
-                      "Manual steps needed:", *manual, ""])
+                      "Manual steps needed:", *manual, "",
+                      "Unread originals (extract outcome other than EXTRACTED; hash prefix, kind and code only):", *unread,
+                      "", "`agency-side` rows are damaged or incomplete documents the agency supplied. PASS can coexist with "
+                      "them and is not a claim that every supplied byte was read. With a failed or not-run extract an "
+                      "empty list means coverage is unknown, not that everything was read.", ""])
 
 
 def main(argv=None):
