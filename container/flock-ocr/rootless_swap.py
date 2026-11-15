@@ -1030,19 +1030,31 @@ class Swap:
         self.check_anchor_engine(engine)
 
     def check_engine_mount(self, mounts, excluded):
-        """The recreate keeps only snapshotted mounts: the pinned engine must live on one of them."""
+        """The recreate keeps only snapshotted mounts: the engine's whole work tree must live on them.
+
+        The work tree is the engine's parent (/workspace/<name>/work), which also holds pylib-pillow,
+        records-project and sandbox. Both the work directory and the engine must sit on a snapshotted
+        mount (the deepest mount covering each path), and no excluded mount may lie inside the work
+        tree: a retained engine submount must not mask an excluded work mount, and vice versa.
+        """
         engine = self.state.get("engine_dir")
         if not engine:
             return
-        holders = [(len(os.path.normpath(m["destination"])), m in mounts, m) for m in mounts + excluded
-                   if within(engine, m["destination"])]
-        if not holders:
-            self.fail(f"the wrapper's engine {engine} is on no mount of the container; a recreate would lose it")
-        _, kept, holder = max(holders, key=lambda h: h[0])
-        if not kept:
-            self.fail(f"the mount holding the wrapper's engine {engine} ({holder['type']}:{holder['destination']}) "
-                      f"is not snapshotted ({holder['reason']}); a recreate would lose it")
-        self.log(f"    engine {engine} is on snapshotted mount {holder['label']}={holder['destination']}")
+        work = os.path.dirname(engine)
+        for path, what in ((work, "work tree"), (engine, "engine")):
+            holders = [(len(os.path.normpath(m["destination"])), m in mounts, m) for m in mounts + excluded
+                       if within(path, m["destination"])]
+            if not holders:
+                self.fail(f"the wrapper's {what} {path} is on no mount of the container; a recreate would lose it")
+            _, kept, holder = max(holders, key=lambda h: h[0])
+            if not kept:
+                self.fail(f"the mount holding the wrapper's {what} {path} ({holder['type']}:{holder['destination']}) "
+                          f"is not snapshotted ({holder['reason']}); a recreate would lose it")
+            self.log(f"    {what} {path} is on snapshotted mount {holder['label']}={holder['destination']}")
+        for item in excluded:
+            if within(item["destination"], work):
+                self.fail(f"excluded mount {item['type']}:{item['destination']} lies inside the wrapper's work tree "
+                          f"{work} ({item['reason']}); a recreate would lose it")
 
     def check_anchor_engine(self, engine):
         code, out, _ = self.sh(["docker", "exec", "-u", "coder", "-w", engine, self.state["container"],
@@ -1899,7 +1911,7 @@ class RehearsalSwap(Swap):
 
     The anchor-status engine precondition is simulated; actual activation must be
     checked independently before rehearsal. So is the check that the wrapper's engine
-    is on a snapshotted mount (the real --dry-run runs it). The host anchor rule and
+    and its work tree are on snapshotted mounts (the real --dry-run runs it). The host anchor rule and
     the wrapper's engine identification are not simulated.
     [B1] writes a synthetic wheel into $RUN/build/dist, [B2] layers it onto
     the throwaway target's image with docker build, [V1] and [A4] check that

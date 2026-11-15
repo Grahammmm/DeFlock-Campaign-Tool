@@ -19,7 +19,9 @@ of disk fit). No send, publication, image/engine-pin change or key in Git.
    single `/workspace/.../engine-<sha>` value of its container `PYTHONPATH=` lines, and
    `<sha>` must be a prefix of its `RELEASE_COMMIT=`. The swap tool derives the same
    value and refuses on none, two distinct values or a mismatch, and its dry-run
-   refuses unless the mount holding `ENGINE` is among the snapshotted mounts.
+   refuses unless the mounts holding both `ENGINE` and its work directory (which also
+   holds pylib-pillow, records-project and sandbox) are snapshotted and no excluded
+   mount lies inside that work directory.
    Do not guess these values, print container Env, or commit runtime settings.
    Check activation and record its timestamp on the execution card:
    ```sh

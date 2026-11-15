@@ -266,23 +266,52 @@ class EngineMountTests(unittest.TestCase):
         return {"label": label, "type": kind, "name": None, "source": "/srv" + destination,
                 "destination": destination, "rw": True}
 
-    def test_engine_on_a_snapshotted_mount_passes_and_is_named(self):
-        for dest in (WORK, "/workspace", ENGINE):
+    def test_work_tree_on_a_snapshotted_mount_passes_and_is_named(self):
+        for dest in (WORK, "/workspace"):
             with self.subTest(dest=dest):
                 driver = self.driver()
                 driver.check_engine_mount([self.mount("m00", "/data"), self.mount("m01", dest)],
                                           [{"type": "tmpfs", "destination": "/scratch", "reason": "not persistent"}])
+                self.assertIn(f"work tree {WORK} is on snapshotted mount m01={dest}", driver.out.getvalue())
                 self.assertIn(f"engine {ENGINE} is on snapshotted mount m01={dest}", driver.out.getvalue())
+
+    def test_snapshotted_engine_submount_under_a_snapshotted_work_mount_passes(self):
+        driver = self.driver()
+        driver.check_engine_mount([self.mount("m00", WORK), self.mount("m01", ENGINE)], [])
+        self.assertIn(f"work tree {WORK} is on snapshotted mount m00={WORK}", driver.out.getvalue())
+        self.assertIn(f"engine {ENGINE} is on snapshotted mount m01={ENGINE}", driver.out.getvalue())
 
     def test_excluded_or_missing_engine_mount_refuses(self):
         tmpfs = {"type": "tmpfs", "destination": WORK, "reason": "not persistent"}
+        engine_tmpfs = {"type": "tmpfs", "destination": ENGINE, "reason": "not persistent"}
         cases = {"excluded": ([self.mount("m00", "/data")], [tmpfs]),
                  "excluded under a snapshotted mount": ([self.mount("m00", "/workspace")], [tmpfs]),
+                 "engine excluded under a snapshotted work mount": ([self.mount("m00", WORK)], [engine_tmpfs]),
                  "no mount": ([self.mount("m00", "/data"), self.mount("m01", "/workspace/synthetic/work2")], [])}
         for name, (mounts, excluded) in cases.items():
             with self.subTest(case=name):
                 with self.assertRaisesRegex(swap.StepFailed, "a recreate would lose it"):
                     self.driver().check_engine_mount(mounts, excluded)
+
+    def test_retained_engine_submount_does_not_mask_an_excluded_work_mount(self):
+        # Review return 1: an excluded work parent plus a snapshotted engine bind must refuse; the
+        # work mount holds pylib-pillow, records-project and sandbox besides the engine.
+        tmpfs = {"type": "tmpfs", "destination": WORK, "reason": "not persistent"}
+        for mounts in ([self.mount("m00", ENGINE)], [self.mount("m00", "/workspace"), self.mount("m01", ENGINE)]):
+            with self.subTest(mounts=[m["destination"] for m in mounts]):
+                with self.assertRaisesRegex(swap.StepFailed, rf"the mount holding the wrapper's work tree {WORK} "
+                                            rf"\(tmpfs:{WORK}\) is not snapshotted"):
+                    self.driver().check_engine_mount(mounts, [tmpfs])
+
+    def test_engine_only_mount_refuses_because_the_work_tree_is_on_no_mount(self):
+        with self.assertRaisesRegex(swap.StepFailed, f"the wrapper's work tree {WORK} is on no mount"):
+            self.driver().check_engine_mount([self.mount("m00", "/data"), self.mount("m01", ENGINE)], [])
+
+    def test_excluded_sibling_inside_the_work_tree_refuses(self):
+        sibling = {"type": "tmpfs", "destination": WORK + "/sandbox", "reason": "not persistent"}
+        with self.assertRaisesRegex(swap.StepFailed, f"excluded mount tmpfs:{WORK}/sandbox lies inside the "
+                                    f"wrapper's work tree {WORK}"):
+            self.driver().check_engine_mount([self.mount("m00", WORK)], [sibling])
 
     def test_without_a_trust_add_engine_the_check_is_not_applied(self):
         driver = self.driver(engine=None)
@@ -323,6 +352,20 @@ class TrustMountDryRunTests(RenderedWrapperMixin, rs.RunMixin, unittest.TestCase
         self.assertEqual(rs.lifecycle(self.fake), [])
         self.assert_live_unchanged()
 
+    def test_dry_run_refuses_an_excluded_work_mount_behind_a_snapshotted_engine_bind(self):
+        target = self.fake.find(rs.TARGET)
+        engine_src = self.work / ("engine-" + RELEASE[:8])
+        target["Mounts"][-1] = {"Type": "tmpfs", "Source": "", "Destination": WORK, "RW": True}
+        target["Mounts"].append({"Type": "bind", "Source": str(engine_src), "Destination": ENGINE, "RW": True,
+                                 "Mode": "", "Propagation": "rprivate"})
+        target["HostConfig"]["Binds"][-1] = f"{engine_src}:{ENGINE}"
+        code, out = self.dry_run()
+        self.assertEqual(code, swap.EXIT_REFUSED, out)
+        self.assertIn(f"FAIL at [R1]: the mount holding the wrapper's work tree {WORK} (tmpfs:{WORK}) is not "
+                      "snapshotted (not persistent)", out)
+        self.assertEqual(rs.lifecycle(self.fake), [])
+        self.assert_live_unchanged()
+
     def test_dry_run_and_apply_refuse_when_the_engine_mount_is_not_snapshotted(self):
         target = self.fake.find(rs.TARGET)
         target["Mounts"][-1] = {"Type": "tmpfs", "Source": "", "Destination": WORK, "RW": True}
@@ -331,7 +374,7 @@ class TrustMountDryRunTests(RenderedWrapperMixin, rs.RunMixin, unittest.TestCase
             with self.subTest(mode=mode):
                 code, out = self.dry_run(mode)
                 self.assertEqual(code, swap.EXIT_REFUSED, out)
-                self.assertIn(f"FAIL at [R1]: the mount holding the wrapper's engine {ENGINE} (tmpfs:{WORK}) is not "
+                self.assertIn(f"FAIL at [R1]: the mount holding the wrapper's work tree {WORK} (tmpfs:{WORK}) is not "
                               "snapshotted (not persistent)", out)
                 self.assertEqual(rs.lifecycle(self.fake), [])
                 self.assertEqual(self.fake.helper_runs, [])
