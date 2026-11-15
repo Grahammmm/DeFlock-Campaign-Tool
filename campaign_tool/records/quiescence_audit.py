@@ -77,6 +77,33 @@ def _open_files(root):
     return {"count": held, "proc_unreadable": unreadable}
 
 
+def _open_files_user(roots):
+    """Selected-user scan (--roots-user): every pid once; count = distinct pids holding a path under any root,
+    proc_unreadable = distinct pids with a denied read. Listing /proc failing raises OSError (AUDIT_UNAVAILABLE)."""
+    wanted = {r for root in roots for r in (root, os.path.realpath(root))}
+    held = unreadable = 0
+    for pid in os.listdir(PROC_ROOT):
+        if not pid.isdigit() or int(pid) == os.getpid():
+            continue
+        base = os.path.join(PROC_ROOT, pid)
+        targets, denied = [], False
+        try:
+            targets.append(os.readlink(os.path.join(base, "cwd")))
+        except OSError as error:
+            denied |= error.errno not in (errno.ENOENT, errno.ESRCH)
+        try:
+            for name in os.listdir(os.path.join(base, "fd")):
+                try:
+                    targets.append(os.readlink(os.path.join(base, "fd", name)))
+                except OSError as error:  # a closed descriptor is a benign race; any other error is unreadable
+                    denied |= error.errno not in (errno.ENOENT, errno.ESRCH)
+        except OSError as error:
+            denied |= error.errno not in (errno.ENOENT, errno.ESRCH)
+        held += any(t == r or t.startswith(r + "/") for t in targets for r in wanted)
+        unreadable += denied
+    return {"count": held, "proc_unreadable": unreadable}
+
+
 def _lock(runtime, *, runtime_fd=None):
     try:
         fd = (os.open(os.path.join(runtime, "run-records.lock"), os.O_RDONLY | os.O_NOFOLLOW)
@@ -111,35 +138,42 @@ def _pending(runtime_fd):
         os.close(fd)
 
 
-def audit(project, runtime, units_file, *, runtime_socket=None):
+def audit(project, runtime, units_file, *, runtime_socket=None, roots_user=None):
+    account = None
+    if roots_user is not None:  # root-only, resolved before any runtime, units, proc or output access
+        from .recovery.records_profile import named_account
+        account = named_account(roots_user)[0]
     if (runtime is None) == (runtime_socket is None):
         raise RuntimeSocketError(RUNTIME_SOCKET_UNSAFE)
     if runtime_socket is None:
-        return _audit(project, runtime, units_file)
+        return _audit(project, runtime, units_file, roots_user=account)
     with receive_runtime_fds(runtime_socket) as source:
-        doc = _audit(project, None, units_file, runtime_fd=source.runtime_fd)
+        doc = _audit(project, None, units_file, runtime_fd=source.runtime_fd, roots_user=account)
         doc["runtime_source"] = "socket"
         return doc
 
 
-def _audit(project, runtime, units_file, *, runtime_fd=None):
+def _audit(project, runtime, units_file, *, runtime_fd=None, roots_user=None):
     """Evidence for ``records backup``: ``roots`` names every root the backup reads (the project, then each declared
     off-project store root that exists), and the open-file check covers each of them."""
     from .recovery.records_profile import ProfileIncomplete, backup_roots
     unsafe = False
     try:
-        roots = list(backup_roots(project))
+        roots = list(backup_roots(project, roots_user=roots_user))
     except ProfileIncomplete as error:  # a missing project keeps today's evidence; an unsafe declared root is refused
-        roots, unsafe = [project], error.reason == "extra_root_unsafe"
+        roots, unsafe = [project], error.reason == "extra_root_unsafe" or roots_user is not None
     checks, codes = {}, []
     checks["units"], found = _units(units_file)
     codes += found
     if unsafe:
         codes.append("ROOTS_UNSAFE")
     checks["open_files"] = {"count": 0, "proc_unreadable": 0}
-    for root in roots:
-        for key, value in _open_files(root).items():
-            checks["open_files"][key] += value
+    if roots_user is not None:
+        checks["open_files"] = _open_files_user(roots)
+    else:
+        for root in roots:
+            for key, value in _open_files(root).items():
+                checks["open_files"][key] += value
     if checks["open_files"]["count"]:
         codes.append("OPEN_FILE")
     if checks["open_files"]["proc_unreadable"]:
@@ -152,9 +186,12 @@ def _audit(project, runtime, units_file, *, runtime_fd=None):
     if checks["arrival_pending"]:
         codes.append("ARRIVAL_PENDING")
     checks["codes"] = codes
-    return {"schema": "records-quiescence-v1", "basis": "independent_all_writer_audit", "roots": roots,
-            "observed_utc": datetime.now(timezone.utc).isoformat(), "all_writers_stopped": not codes,
-            "checks": checks, "auditor": "records quiescence-audit"}
+    doc = {"schema": "records-quiescence-v1", "basis": "independent_all_writer_audit", "roots": roots,
+           "observed_utc": datetime.now(timezone.utc).isoformat(), "all_writers_stopped": not codes,
+           "checks": checks, "auditor": "records quiescence-audit"}
+    if roots_user is not None:
+        doc["roots_user"] = roots_user
+    return doc
 
 
 def main(argv=None):
@@ -164,15 +201,17 @@ def main(argv=None):
     source.add_argument("--runtime")
     source.add_argument("--runtime-socket")
     parser.add_argument("--units-file", required=True, help="captured units (first line Captured=<epoch>), or - for stdin")
+    parser.add_argument("--roots-user", help="root auditor only: check the backup roots of this account")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     project, out = os.path.abspath(args.project), os.path.realpath(args.out)  # out resolved through symlinks
     if out.startswith(os.path.realpath(project) + "/"):
         print("OUT_INSIDE_PROJECT")
         return 2
+    from .recovery.records_profile import ProfileIncomplete
     try:
         doc = audit(project, os.path.abspath(args.runtime) if args.runtime is not None else None,
-                    args.units_file, runtime_socket=args.runtime_socket)
+                    args.units_file, runtime_socket=args.runtime_socket, roots_user=args.roots_user)
         raw = (json.dumps(doc, sort_keys=True) + "\n").encode()
         fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         try:
@@ -182,6 +221,9 @@ def main(argv=None):
             os.close(fd)
     except RuntimeSocketError as error:
         print(error.code)
+        return 2
+    except ProfileIncomplete as error:  # only named_account raises here: the root/identity guard
+        print("ROOTS_USER_REQUIRES_ROOT" if error.reason == "roots_user_requires_root" else "ROOTS_USER_UNKNOWN")
         return 2
     except OSError:
         print("AUDIT_UNAVAILABLE")

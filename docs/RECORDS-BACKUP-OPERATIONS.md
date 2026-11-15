@@ -161,12 +161,20 @@ The evidence is an attestation the operator makes. The library does not authenti
 2. Capture states (the same unit list as `quiescence_audit.WRITER_UNITS`) with a capture-time first line:
    `{ echo "Captured=$(date +%s)"; echo; systemctl --user show -p Id,ActiveState,SubState <units>; } > units.txt`.
    A capture without `Captured=` or older than 120 s is `UNITS_STALE`. A pipe has no file age, so the time travels in the data.
-3. Audit inside the records container, as the project owner (so every process is inspectable):
+3. Audit inside the records container (as the same user as the backup, or as root with `--roots-user`, see below):
    `docker exec -i CONTAINER records quiescence-audit --project P --runtime R --units-file - --out E < units.txt`.
    Exit 0 prints `evidence_sha256=<hex>`; exit 1 prints the failing codes (`WRITER_ACTIVE`, `UNITS_INCOMPLETE`,
    `UNITS_STALE`, `OPEN_FILE`, `PROC_UNREADABLE`, `RUN_LOCK_HELD`, `ARRIVAL_PENDING`, `ROOTS_UNSAFE`) and E records
    `false`. E's `roots` names P and every declared root that exists, and the open-file check covers each of them; run
-   the audit as the same user as the backup (the declared roots are read from that user's home). `ROOTS_UNSAFE` means
+   the audit as the same user as the backup (the declared roots are read from that user's home). Running as a
+   non-root user inside the container reports `PROC_UNREADABLE` for the root processes it cannot inspect.
+   As root, add `--roots-user NAME`: the roots are NAME's backup roots (project plus NAME's declared roots, from the
+   password database, never HOME), every readable process's cwd and open files are scanned whatever its owner, and any
+   process still unreadable keeps `PROC_UNREADABLE`. Only root may use it (`ROOTS_USER_REQUIRES_ROOT`, exit 2; unknown
+   NAME is `ROOTS_USER_UNKNOWN`, exit 2). E then carries `roots_user`, and only the backup run by that same user
+   accepts it. In this mode `open_files.count` and `proc_unreadable` count distinct processes, not targets; no pid or
+   path is printed. Run lock and arrival are the live ones of `--runtime-socket` (one-shot helper and consumer need the
+   same effective uid); no recorded state is accepted. Never skip unreadable processes or loosen permissions to pass. `ROOTS_UNSAFE` means
    a declared root failed the path-safety check. For `ARRIVAL_PENDING` drain it with one records run, then repeat from
    step 1. E must be outside P.
 4. Within 120 s: `records backup --project P --into DIR --quiescence E --quiescence-sha256 <hex>`.
