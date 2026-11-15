@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 
 from .. import approval
 from . import draft_templates
+from .outcomes import unmatched
 
 SCHEMA = "records-approval-event-v1"
 SCOPE = "records-draft-review-v1"
@@ -239,14 +240,32 @@ def _project_id(root):
     return hashlib.sha256(os.path.realpath(root).encode()).hexdigest()[:16]
 
 
-def _review_text(root, row):
-    return "\n".join([f"project: {_project_id(root)}", f"id: {row['id']}", f"agency: {row['agency_id']}",
-                      f"request: {row['request_id']}", f"item: {row['item_id']}", f"kind: {row['kind']}",
-                      "body:", row["body"], "evidence:", _canon(row["evidence"])])
+def message_link_choice_line(row, choice):
+    """The ONE place the signed tie choice line is built: ``choice: <request_id> (agency <agency_id>)``.
+
+    Taken from ``unmatched.choose`` (the chosen candidate of the row's own evidence); a choice that is not exactly one
+    candidate, or whose resolved ids are not printable identifiers, refuses with ``message_link_choice``."""
+    try:
+        agency_id, request_id = unmatched.choose(row, choice)
+    except ValueError as error:
+        raise ApprovalQueueError("message_link_choice") from error
+    _need(all(isinstance(v, str) and unmatched.ID.fullmatch(v) for v in (agency_id, request_id)), "message_link_choice")
+    return f"choice: {request_id} (agency {agency_id})"
 
 
-def _payload(root, row, revision):
-    return approval.payload(SCOPE, row["id"], _review_text(root, row), round_=revision)
+def _review_text(root, row, choice=None):
+    lines = [f"project: {_project_id(root)}", f"id: {row['id']}", f"agency: {row['agency_id']}",
+             f"request: {row['request_id']}"]
+    if row["kind"] == draft_templates.MESSAGE_LINK:
+        lines.append(message_link_choice_line(row, choice))  # the signature names the one request it ties to
+    else:
+        _need(choice is None, "invalid_choice")
+    lines += [f"item: {row['item_id']}", f"kind: {row['kind']}", "body:", row["body"], "evidence:", _canon(row["evidence"])]
+    return "\n".join(lines)
+
+
+def _payload(root, row, revision, choice=None):
+    return approval.payload(SCOPE, row["id"], _review_text(root, row, choice), round_=revision)
 
 
 def _public(row):
@@ -255,6 +274,8 @@ def _public(row):
     if row["status"] == "approved":
         out["approved_by"] = row["approved_by"]
         out["approval_evidence"] = row["approval_evidence"]
+        if row["kind"] == draft_templates.MESSAGE_LINK:
+            out["approved_choice"] = row["approved_choice"]
     if row.get("approval_unverified"):
         out["approval_unverified"] = row["approval_unverified"]
     if row.get("reason") and row["status"] == "rejected":
@@ -290,6 +311,7 @@ def _fold(root, raw, verify=True):
             row.pop("approval_unverified", None)
             row.pop("approved_by", None)
             row.pop("approval_evidence", None)
+            row.pop("approved_choice", None)
         elif kind == "reject":
             _need(isinstance(ev.get("reason"), str) and row["status"] == "pending", "queue_invalid")
             row.update(status="rejected", reason=ev["reason"], actor=ev["actor"])
@@ -301,12 +323,15 @@ def _fold(root, raw, verify=True):
             row["approval_recorded"] = True
             row["approval_unverified"] = "untrusted"
             valid = False
-            if verify:
+            tie = row["kind"] == draft_templates.MESSAGE_LINK
+            bound = ap.get("choice")  # a tie approval is valid only for the choice it recorded; a legacy one has none
+            if verify and (isinstance(bound, str) if tie else "choice" not in ap):
                 try:
-                    valid = approval.verify(_payload(root, row, row["revision"]), ap["signature"]) == ap["principal"]
+                    valid = approval.verify(_payload(root, row, row["revision"], bound if tie else None),
+                                            ap["signature"]) == ap["principal"]
                 except approval.TrustUnavailable:
                     row["approval_unverified"] = "unavailable"
-                except approval.ApprovalError:
+                except (approval.ApprovalError, ApprovalQueueError):
                     valid = False
             if valid:
                 row.pop("approval_unverified", None)
@@ -314,6 +339,8 @@ def _fold(root, raw, verify=True):
                 row.update(status="approved", actor=ap["principal"], approved_by=ap["principal"],
                            approval_evidence={"signed_revision": ap["signed_revision"], "project": ap["project"],
                                               "signature_sha256": hashlib.sha256(ap["signature"].encode()).hexdigest()})
+                if tie:
+                    row["approved_choice"] = bound
         else:
             raise ApprovalQueueError("queue_invalid")
         row["revision"] = ev["revision"]
@@ -463,10 +490,10 @@ def add_draft(root, *, item_id, kind, agency_id, request_id, body, evidence, sou
         return _public(rows[row["id"]])
 
 
-def approval_payload(root, id):
+def approval_payload(root, id, *, choice=None):
     with _Store(root, False) as store:
         row = _row(root, store, id)
-    return _payload(root, row, row["revision"])
+    return _payload(root, row, row["revision"], choice)
 
 
 def _guard_recorded(row):
@@ -475,25 +502,31 @@ def _guard_recorded(row):
                                  else "approval_unverified")
 
 
-def approve(root, id, actor):
+def approve(root, id, actor, *, choice=None):
     if not (isinstance(actor, dict) and actor.get("kind") == "ssh" and isinstance(actor.get("signature"), str)):
         raise ApprovalQueueError("approval_required")
     with _Store(root, True) as store:
         row = _row(root, store, id)
+        tie = row["kind"] == draft_templates.MESSAGE_LINK
+        _need(tie or choice is None, "invalid_choice")
         if row["status"] == "approved" and row["approval_evidence"]["signature_sha256"] == \
                 hashlib.sha256(actor["signature"].encode()).hexdigest():
+            # a replay only counts for the very choice the stored (verified) approval is bound to
+            _need(not tie or (isinstance(choice, str) and row.get("approved_choice") == choice), "approval_required")
             return _public(row)
         _guard_recorded(row)
         _need(row["status"] == "pending", "invalid_transition")
         try:
-            principal = approval.verify(_payload(root, row, row["revision"]), actor["signature"])
+            principal = approval.verify(_payload(root, row, row["revision"], choice), actor["signature"])
         except approval.TrustUnavailable as error:
             raise ApprovalQueueError("approval_unavailable") from error
         except approval.ApprovalError as error:
             raise ApprovalQueueError("approval_required") from error
-        store.append([_event("approve", id, row["revision"] + 1, principal, approval={
-            "signed_revision": row["revision"], "project": _project_id(root), "principal": principal,
-            "signature": actor["signature"]})])
+        proof = {"signed_revision": row["revision"], "project": _project_id(root), "principal": principal,
+                 "signature": actor["signature"]}
+        if tie:
+            proof["choice"] = choice
+        store.append([_event("approve", id, row["revision"] + 1, principal, approval=proof)])
         return _public(_row(root, store, id))
 
 
@@ -627,6 +660,8 @@ def main():
             p.add_argument("--id", required=True)
         else:
             p.add_argument("id")
+        if name in ("payload", "approve"):
+            p.add_argument("--choice", help="message_link rows only: the candidate request id the signature ties to")
         if name == "approve":
             p.add_argument("--signature", required=True, help="file holding the detached SSH signature text")
         if name in ("reject", "edit"):
@@ -644,11 +679,11 @@ def main():
         elif args.action == "history":
             print(json.dumps(history(args.project, args.id), indent=1, ensure_ascii=False))
         elif args.action == "payload":
-            sys.stdout.buffer.write(approval_payload(args.project, args.id))
+            sys.stdout.buffer.write(approval_payload(args.project, args.id, choice=args.choice))
             sys.stdout.buffer.flush()
         elif args.action == "approve":
-            print(json.dumps(approve(args.project, args.id, {"kind": "ssh", "signature": _file(args.signature)}),
-                             indent=1, ensure_ascii=False))
+            print(json.dumps(approve(args.project, args.id, {"kind": "ssh", "signature": _file(args.signature)},
+                                     choice=args.choice), indent=1, ensure_ascii=False))
         elif args.action == "reject":
             print(json.dumps(reject(args.project, args.id, args.actor, args.reason), indent=1, ensure_ascii=False))
         else:
