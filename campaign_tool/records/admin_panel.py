@@ -998,7 +998,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         choice = fields.pop("choice", None)  # DFGL-04: only an approve of a message_link row carries it
         if back == "review" and action in ("approve", "reject", "edit") and "csrf_token" not in fields \
                 and DRAFT_ID.fullmatch(fields.get("id", "")):
-            return console_review.refuse(self, fields["id"], MISSING_CSRF, None)
+            return console_review.refuse(self, fields["id"], MISSING_CSRF, None, choice)
         if set(fields) != set(names):
             return self._fail(400)
         if not hmac.compare_digest(fields["csrf_token"].encode("utf-8"), self.server.csrf_token.encode("ascii")):
@@ -1015,7 +1015,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         value = fields[names[2]].replace("\r\n", "\n")
         if not value.strip():
             if back == "review":
-                return console_review.refuse(self, ident, EMPTY_FIELD[action], (names[2], value))
+                return console_review.refuse(self, ident, EMPTY_FIELD[action], (names[2], value), choice)
             return self._fail(400, detail="%s. %s Go back and fill it in." % (EMPTY_FIELD[action], NOTHING))
         link = None
         try:
@@ -1038,7 +1038,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         hook = False
         try:
             if action == "approve":
-                approval_queue.approve(project, ident, {"kind": "ssh", "signature": value})
+                approval_queue.approve(project, ident, {"kind": "ssh", "signature": value}, choice=choice)
                 expected = {"approved"}
                 hook = True
             elif action == "reject":
@@ -1058,6 +1058,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if rows.get(ident, {}).get("status") not in expected:  # never claim success from a return value alone
             return self._fail(503)
         if link is not None:
+            if rows[ident].get("approved_choice") != link[1]:  # only the choice the signature names is ever linked
+                return self._fail(403)
             try:
                 unmatched.append_link(project, rows[ident]["item_id"], link[0], link[1], rows[ident]["approved_by"])
             except ValueError as error:

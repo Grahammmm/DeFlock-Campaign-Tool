@@ -140,8 +140,8 @@ class LiveSource:
     def queue_rows(self):
         return aq.load_queue(self.project)
 
-    def queue_payload(self, ident):
-        return aq.approval_payload(self.project, ident)
+    def queue_payload(self, ident, choice=None):
+        return aq.approval_payload(self.project, ident, choice=choice)
 
     def queue_history(self, ident):
         return aq.history(self.project, ident)
@@ -229,8 +229,17 @@ class SnapshotSource:
             raise aq.ApprovalQueueError("unknown_id")
         return found[ident]
 
-    def queue_payload(self, ident):
-        text = self._queue_item("payloads", ident)
+    def queue_payload(self, ident, choice=None):
+        if choice is not None:  # a tie: the exact payload exported for this one candidate, never recomputed from the copy
+            mapping = self._doc("queue.json", aq.ApprovalQueueError).get("link_payloads")
+            if type(mapping) is not dict:
+                raise aq.ApprovalQueueError("link_payloads_missing")  # an older export: refresh it before approving a tie
+            per = mapping.get(ident)
+            if type(per) is not dict or choice not in per:
+                raise aq.ApprovalQueueError("message_link_choice")
+            text = per[choice]
+        else:
+            text = self._queue_item("payloads", ident)
         if type(text) is not str:
             raise aq.ApprovalQueueError("console_model_invalid")
         return text.encode("utf-8")
