@@ -4,6 +4,7 @@ the container cases; the host-mode cases use real files.  Run:  python3 test_anc
 import os
 import stat
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -205,11 +206,18 @@ class HostMode(unittest.TestCase):
                 ac._require_root_host(p)
 
     def test_missing_host_trust_file_is_refused(self):
-        if os.path.lexists(F):
-            self.skipTest("the host trust file exists now (HOSTA-1 step 11 done)")
-        got = check(F)
-        self.assertFalse(got["ok"])
+        # Hermetic: a fresh temp directory that has no anchor file, checked in host mode; never depends on the host.
+        with tempfile.TemporaryDirectory() as tmp:
+            absent = os.path.join(tmp, "approvers.allowed_signers")
+            self.assertFalse(os.path.lexists(absent))
+            with mock.patch.object(ac, "init_userns", lambda: True):
+                got = check(absent)
+                # A missing anchor defers (TrustUnavailable: retry later), never a final refusal or acceptance.
+                with self.assertRaises(ac.TrustUnavailable):
+                    ac._require_root(absent)
+        self.assertFalse(got["ok"], got)
         self.assertIn("missing", got["reason"])
+        self.assertIn(absent, got["reason"])
 
     def test_user_owned_host_file_is_refused(self):
         got = check(str(Path(__file__).resolve()))
