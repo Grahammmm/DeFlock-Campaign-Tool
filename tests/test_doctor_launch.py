@@ -326,18 +326,17 @@ class DoctorLaunchTests(unittest.TestCase):
                                   rows['evidence']['next_action']),
                                  ('fail', self.EVIDENCE_FS, 'Fix evidence inputs and run evidence check'))
                 self.assert_private(rows)
-                with patch('campaign_tool.launch_check.stale_contacts', side_effect=exc):
+                with patch('campaign_tool.launch_check._contact_snapshot', side_effect=exc):
                     rows = self.checks()
                 self.assertEqual((rows['verified_contacts']['state'], rows['verified_contacts']['detail'],
                                   rows['verified_contacts']['next_action']),
                                  ('fail', self.CONTACT_FS, 'Fix kit/agencies.json and verify selected contacts'))
                 self.assert_private(rows)
-        # The JSON-read seam after stale_contacts returns normally: a real read error on a directory.
+        # A real read error on a directory (no injected preceding read): the one acquisition refuses it.
         path = self.root / 'kit/agencies.json'
         path.unlink()
         path.mkdir()
-        with patch('campaign_tool.launch_check.stale_contacts', return_value=[]):
-            rows = self.checks()
+        rows = self.checks()
         self.assertEqual((rows['verified_contacts']['state'], rows['verified_contacts']['detail']),
                          ('fail', self.CONTACT_FS))
         self.assert_private(rows)
@@ -392,7 +391,8 @@ class DoctorLaunchTests(unittest.TestCase):
         self.assertEqual(rows['build_check']['detail'], f'unknown source {digest[:12]}')
         with patch('campaign_tool.launch_check.evidence_report', side_effect=ValueError(f'bad {digest}')):
             self.assertEqual(self.checks()['evidence']['detail'], f'bad {digest[:12]}')
-        with patch('campaign_tool.launch_check.stale_contacts', return_value=None):
+        with patch('campaign_tool.launch_check._contact_snapshot',
+                   side_effect=ValueError('kit/agencies.json is unreadable')):
             self.assertEqual(self.checks()['verified_contacts']['detail'], 'kit/agencies.json is unreadable')
 
     def test_success_and_filesystem_refusal_leave_campaign_and_public_tree_unchanged(self):

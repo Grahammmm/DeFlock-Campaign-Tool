@@ -259,6 +259,17 @@ def render(data, rule_rows):
     return "\n".join(lines)
 
 
+def _json_text(data):
+    """The ``--json`` document as text that any UTF-8 stdout can carry.
+
+    A filesystem name the OS cannot decode reaches the report as a surrogate-escaped character, which
+    ``ensure_ascii=False`` leaves literal: a strict stdout then raises, a surrogateescape one emits the raw byte.
+    Escaping those code points in the serialized text as ``\\uXXXX`` keeps the identifier exact through
+    ``json.loads`` while healthy non-ASCII text stays literal, so ordinary output bytes do not change.
+    """
+    return json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8", "backslashreplace").decode("utf-8")
+
+
 def run_cli(old_path, new_path, directory, as_json=False):
     try:
         old, new = load_file(old_path), load_file(new_path)
@@ -272,5 +283,5 @@ def run_cli(old_path, new_path, directory, as_json=False):
     except (OSError, ValueError) as exc:
         print("Stopped: " + str(exc), file=sys.stderr)
         return 2
-    print(json.dumps(data, indent=2, ensure_ascii=False) if as_json else render(data, rule_rows))
+    print(_json_text(data) if as_json else render(data, rule_rows))
     return 3 if data["counts"]["affected"] else 0

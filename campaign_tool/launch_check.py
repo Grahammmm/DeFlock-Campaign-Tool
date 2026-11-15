@@ -6,6 +6,7 @@ rule rehearses like the real build, without re-reading or copying the campaign's
 organizations are rehearsed with only their own validated private consent records (see ``_supporter_consent_bytes``),
 re-serialized into the private scratch tree; consent is never derived from the public rows.
 """
+from datetime import date
 import json
 from pathlib import Path
 import re
@@ -16,7 +17,7 @@ from . import law
 from .content import load_content
 from .evidence import evidence_report
 from .finding_law import jurisdiction
-from .kit import stale_contacts
+from .kit import DATE
 from .law import LOCAL_RULES_FILE
 from .site import build_site
 from .site_check import check_links
@@ -30,6 +31,7 @@ LOAD_FS = "Content files could not be read (filesystem error)"
 EVIDENCE_FS = "Evidence inputs could not be read (filesystem error)"
 BUILD_FS = "Temporary build could not be checked (filesystem error)"
 CONTACTS_FS = "kit/agencies.json could not be read (filesystem error)"
+CONTACTS_UNREADABLE = "kit/agencies.json is unreadable"
 CONSENT_STAGE = "kit/supporters-consent.json: cannot stage validated consent for launch rehearsal"
 NOTE = ("Offline readiness only. This is not a launch approval; deployment "
         "(docs/CLOUDFLARE.md) and human review remain.")
@@ -77,6 +79,48 @@ def _supporter_consent_bytes(root, rows, today=None, limit=None):
     if len(data) > limit:
         raise ValueError(CONSENT_STAGE)
     return data
+
+
+def _contact_status(agencies, max_age_days, today):
+    """Pure ``(stale_count, verified_present)`` for one parsed ``kit/agencies.json`` document and one date.
+
+    Only dict rows with ``selected is True`` and ``verified is True`` qualify. A qualifying row is stale when its
+    ``verification.checked_on`` is not a full ISO date string or is strictly more than ``max_age_days`` old (the same
+    rule as ``kit.stale_contacts``); future dates are not stale. A non-list document has no contacts.
+    """
+    stale, present = 0, False
+    for entry in agencies if isinstance(agencies, list) else ():
+        if not (isinstance(entry, dict) and entry.get("selected") is True and entry.get("verified") is True):
+            continue
+        present = True
+        verification = entry.get("verification")
+        raw = verification.get("checked_on") if isinstance(verification, dict) else None
+        try:
+            checked = date.fromisoformat(raw) if isinstance(raw, str) and DATE.fullmatch(raw) else None
+        except ValueError:
+            checked = None
+        if checked is None or (today - checked).days > max_age_days:
+            stale += 1
+    return stale, present
+
+
+def _contact_snapshot(root, max_age_days, today=None):
+    """``(stale_count, verified_present)`` for the ``verified_contacts`` row from ONE read and parse of the file.
+
+    Both values are evaluated from the same parsed object and the same effective date, so a replacement between two
+    reads can never combine two individually not-ready documents into ``ok``. The guarantee is this row only: it does
+    not promise the file is unchanged afterwards, nor atomicity across the other checks. Missing file -> (0, False).
+    OSError propagates to the caller's fixed filesystem handler; undecodable or malformed JSON is one value-free refusal.
+    """
+    today = today or date.today()
+    path = Path(root) / "kit" / "agencies.json"
+    if not path.exists():
+        return 0, False
+    try:
+        agencies = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:  # JSONDecodeError and UnicodeDecodeError; OSError is not a ValueError and passes through
+        raise ValueError(CONTACTS_UNREADABLE) from None
+    return _contact_status(agencies, max_age_days, today)
 
 
 def launch_checks(root, contact_max_age_days=365, today=None):
@@ -173,15 +217,9 @@ def launch_checks(root, contact_max_age_days=365, today=None):
                     raise ValueError("Temporary launch rehearsal could not be removed (filesystem error); "
                                      "temporary files may remain") from None
     try:
-        stale = stale_contacts(root, contact_max_age_days, today)
-        path = root / "kit" / "agencies.json"
-        agencies = json.loads(path.read_text()) if path.exists() else []
-        verified = isinstance(agencies, list) and any(
-            isinstance(a, dict) and a.get("selected") is True and a.get("verified") is True for a in agencies)
-        if stale is None:
-            raise ValueError("kit/agencies.json is unreadable")
+        stale, verified = _contact_snapshot(root, contact_max_age_days, today)
         add("verified_contacts", "todo" if stale or not verified else "ok",
-            f"{len(stale)} stale; verified selected contact {'present' if verified else 'absent'}",
+            f"{stale} stale; verified selected contact {'present' if verified else 'absent'}",
             "Re-check selected agency contacts on official sites (kit-verify-agency)" if stale or not verified else None)
     except OSError:
         add("verified_contacts", "fail", CONTACTS_FS, "Fix kit/agencies.json and verify selected contacts")

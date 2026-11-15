@@ -59,7 +59,11 @@ queue) with ``immutable=1``, like ``adopt-mail``'s dry run, so counting never
 creates ``-wal``/``-shm`` sidecars. A non-empty WAL or rollback journal (an
 active or crashed writer) is reported as ``*_LEDGER_BUSY`` and not read. The
 writers (``adoption``, ``extract``) hold the records-root lock, and their last
-connection close checkpoints the WAL.
+connection close checkpoints the WAL. ``extract`` itself writes the ledger: a
+database that another connection holds locked or busy (an attended writer such as
+the holds release) is reported as ``EXTRACT_LEDGER_BUSY`` (warn, rc 0, no outcome
+list written, the next run retries). Any other ledger error stays
+``EXTRACT_LEDGER_UNREADABLE`` (fail).
 
 Every stage runs under its own container-side deadline (``--timeout``): killing
 a ``docker exec`` client does not stop work inside the container, so the
@@ -253,6 +257,12 @@ def snapshot_ro(path):
 
 def ledger_ro(processing):
     return snapshot_ro(processing / "ledger.sqlite")
+
+
+def ledger_locked(error):
+    """True when a sqlite3 error says another connection holds the database (locked or busy)."""
+    text = str(error).lower()
+    return "locked" in text or "busy" in text
 
 
 def busy(code):
@@ -839,6 +849,12 @@ def stage_extract(args):
         return result("fail", {"failed": 1}, "EXTRACT_RUN_FAILED"), 1
     except ne.ManifestWriteError:
         return result("fail", {"failed": 1}, "EXTRACT_FAILURE_MANIFEST_UNWRITABLE"), 1
+    except sqlite3.OperationalError as error:
+        if ledger_locked(error):
+            # An attended writer (holds release, an operator sqlite session) holds the ledger:
+            # no outcome list is written for this run; the next slot retries.
+            return busy("EXTRACT_LEDGER_BUSY")
+        return result("fail", {"failed": 1}, "EXTRACT_LEDGER_UNREADABLE"), 1
     except (sqlite3.Error, ValueError, OSError):
         return result("fail", {"failed": 1}, "EXTRACT_LEDGER_UNREADABLE"), 1
     stage, code = extract_result(summary)

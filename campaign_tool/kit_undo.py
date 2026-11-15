@@ -94,6 +94,20 @@ def _unique_members(pairs):  # object_pairs_hook: a repeated decoded member name
     return result
 
 
+class _IntegerRefused(Exception):  # private marker; deliberately not a ValueError so nothing else can catch it
+    pass
+
+
+def _parse_int(token):
+    """json's parse_int: the ordinary conversion under the running interpreter's own limit, never a bypass.
+
+    Only the conversion's ValueError becomes the marker, without its text (it names the limit and how to raise it)."""
+    try:
+        return int(token)
+    except ValueError:
+        raise _IntegerRefused from None
+
+
 def read_archive(kit_dir):
     """(path, receipts) of kit/sent-undone.json; no file means no receipts. A bad file is never reset.
 
@@ -102,7 +116,10 @@ def read_archive(kit_dir):
 
     A document the JSON decoder cannot finish because its nesting exhausts the interpreter (a RecursionError raised
     while decoding, object-pairs hook included) is refused with one fixed, value-free message. Only that decode/load
-    call is covered: later failures, such as re-encoding the archive, keep their own diagnostics."""
+    call is covered: later failures, such as re-encoding the archive, keep their own diagnostics.
+
+    A JSON integer the interpreter refuses to convert (its own integer-string-conversion limit, left in force) is
+    refused as ``JSON integer cannot be decoded``, without the interpreter's advice about changing that limit."""
     path = Path(kit_dir) / ARCHIVE
 
     def bad(reason):
@@ -111,7 +128,9 @@ def read_archive(kit_dir):
     if data is None:
         return path, []
     try:
-        document = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_members)
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_members, parse_int=_parse_int)
+    except _IntegerRefused:
+        raise bad("JSON integer cannot be decoded") from None
     except _DuplicateKey:
         raise bad("duplicate JSON keys") from None
     except (UnicodeDecodeError, json.JSONDecodeError):

@@ -195,7 +195,7 @@ def _citing(root, removed, today, *, folder_id):
     try:
         names, wanted = [], tuple(removed[key] for key in TRIPLE)
         for name in sorted(os.listdir(meetings_fd)):
-            if name.startswith(".") or not name.endswith(".json"):
+            if not name.endswith(".json"):  # the build loader's glob("*.json") membership: dot-prefixed names included
                 continue
             label = f"content/meetings/{name}"
             loaded = _read(meetings_fd, name, label)

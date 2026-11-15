@@ -3,10 +3,15 @@
 Reads the extract stage's own private list (processing-v1/runs/extract-<run>.json,
 schema records-extract-outcomes-v1) and writes one plain-language state per
 record to run-outputs/<run>/text-state.json and text-state.md (0700 dir, 0600
-files). Output carries the state, fixed words and the record sha256 only:
-never a path, form, written_at, an awaiting-ocr.jsonl entry or document text.
-Review-required; a state is not a review of what the text says. The extract
-list, the OCR review file and the ledger are read, never written.
+files). Records this run's extract did not list (extracted by an earlier run)
+are added from the ledger when their extract stage is done and they have a
+current extraction: their state comes from the current OCR review state, so a
+reviewed PDF is text_reviewed in every later run. An unreviewed or rejected OCR
+page is never text_reviewed. Output carries the state, fixed words and the
+record sha256 only: never a path, form, written_at, an awaiting-ocr.jsonl entry
+or document text. Review-required; a state is not a review of what the text
+says. The extract list, the OCR review file and the ledger are read, never
+written.
 """
 from __future__ import annotations
 
@@ -76,16 +81,19 @@ def load_list(path):
     return documents
 
 
-def classify(outcome, ocr_pending):
+def classify(outcome, ocr_pending, ocr_rejected=False):
     if outcome == "EXTRACTED":
-        return OCR_UNREVIEWED if ocr_pending else REVIEWED
+        if ocr_pending:
+            return OCR_UNREVIEWED
+        return STATES["EXTRACT_NOT_ACCEPTED"] if ocr_rejected else REVIEWED
     return STATES.get(outcome, UNKNOWN) if isinstance(outcome, str) else UNKNOWN
 
 
-def build(run_id, documents, pending):
+def build(run_id, documents, pending, rejected=frozenset()):
     records = sorted(({"sha256": d["original_sha256"], "state": state, "words": words}
                       for d in documents
-                      for state, words in [classify(d.get("outcome"), d["original_sha256"] in pending)]),
+                      for state, words in [classify(d.get("outcome"), d["original_sha256"] in pending,
+                                                    d["original_sha256"] in rejected)]),
                      key=lambda r: r["sha256"])
     counts = dict.fromkeys(ORDER, 0)
     for record in records:
@@ -96,7 +104,7 @@ def build(run_id, documents, pending):
 def markdown(report):
     prefixes = [r["sha256"][:12] for r in report["records"]]
     lines = [f"# Record text state: run {report['run_id']}", "",
-             "Private and review-required: one state per record this run listed; not a review of what the text says.",
+             "Private and review-required: one state per received record; not a review of what the text says.",
              "", "| State | Records |", "| --- | --- |"]
     lines += [f"| {state} | {report['counts'][state]} |" for state in ORDER]
     lines.append("")
@@ -106,11 +114,52 @@ def markdown(report):
     return "\n".join(lines) + "\n"
 
 
-def _pending_ocr(project, processing):
-    from ..ocr_review import pending
+def _extracted_earlier(db, listed):
+    """Originals whose extract stage is done, with a current extraction, that this run did not list.
+
+    Same admission as the received-items inventory (effective original, in scope, admitted role);
+    an original whose admission cannot be shown is left out, never guessed.
+    """
+    from ..ledger import store
+    from ..ledger_catalog import scope_excluded
+    from .received_items import ADMITTED_ROLES
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not {"originals", "stage_state", "extraction_adapter_current"} <= tables:
+        return set()
+    db.row_factory = sqlite3.Row
+    found = set()
+    for row in db.execute("SELECT o.sha256 AS sha256 FROM originals o "
+                          "JOIN stage_state e ON e.original_sha256=o.sha256 AND e.stage='extract' AND e.status='done' "
+                          "JOIN extraction_adapter_current c ON c.original_sha256=o.sha256 ORDER BY o.sha256").fetchall():
+        digest = row["sha256"]
+        if digest in listed or not HASH.fullmatch(digest):
+            continue
+        try:
+            original = store.effective_original(db, digest)
+        except ValueError:
+            continue
+        if original is not None and not scope_excluded(original) and original["role"] in ADMITTED_ROLES:
+            found.add(digest)
+    return found
+
+
+def _ledger_facts(project, processing, listed):
+    """-> (OCR pages pending review, OCR pages rejected, records extracted by earlier runs), by record sha256."""
+    from ..ocr_review import binding, pages, read_reviews
     from ..run_stages import ledger_ro
     with ledger_ro(processing) as db:
-        return {row["original_sha256"] for row in pending(db, project / "ocr-review-v1" / "reviews.jsonl")}
+        has_pages = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='page_state'").fetchone()
+        review_pages = pages(db) if has_pages else []  # an older ledger without page rows has nothing to review
+        decisions = ({binding(r): r["decision"] for r in read_reviews(project / "ocr-review-v1" / "reviews.jsonl")}
+                     if review_pages else {})
+        pending, rejected = set(), set()
+        for page in review_pages:
+            decision = decisions.get(binding(page))
+            if decision is None:
+                pending.add(page["original_sha256"])
+            elif decision == "rejected":
+                rejected.add(page["original_sha256"])
+        return pending, rejected, _extracted_earlier(db, listed)
 
 
 def write_run_textstate(project, run_id):
@@ -127,8 +176,9 @@ def write_run_textstate(project, run_id):
         processing = project / "processing-v1"
         name = "".join(ch for ch in run_id if ch.isalnum() or ch in "-_.") or "run"  # as write_private_list
         documents = load_list(processing / "runs" / f"extract-{name}.json")
-        need_ocr = any(d.get("outcome") == "EXTRACTED" for d in documents)
-        report = build(run_id, documents, _pending_ocr(project, processing) if need_ocr else set())
+        pending, rejected, earlier = _ledger_facts(project, processing, {d["original_sha256"] for d in documents})
+        documents = documents + [{"original_sha256": digest, "outcome": "EXTRACTED"} for digest in sorted(earlier)]
+        report = build(run_id, documents, pending, rejected)
         files = ((FILES[0], (json.dumps(report, ensure_ascii=False, sort_keys=True) + "\n").encode()),
                  (FILES[1], markdown(report).encode()))
         _need(sum(len(raw) for _, raw in files) <= MAX_OUTPUT_BYTES, "textstate_output_bound")
