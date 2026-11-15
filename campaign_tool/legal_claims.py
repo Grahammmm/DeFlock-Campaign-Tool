@@ -3,7 +3,11 @@ tools/flock_privacy.py, and the newsletter draft and site build in this package)
 
 Nothing here raises or blocks: a flag is a ``review-required`` note for the person at the publish gate. It does not judge
 whether a violation happened, only whether OUR wording asserts one.
+
+DF2007-15 adds a second, separate tier beside it: ADVISORY wording warnings (``intent``, ``undated-count``), see ``legal_advisories``.
+They are ``warning:`` notes, never errors or refusals, and never part of ``legal_claims``.
 """
+import datetime
 import re
 
 # Flags generated text that ASSERTS a legal violation. It never refuses: callers print `review-required` notes and carry on
@@ -92,14 +96,134 @@ def legal_claims(text):
         return ["guard-error"]
 
 
-def legal_notes(items):
-    """items: iterable of (where, text) -> ["review-required: <where>: legal-claim wording (<rules>)", ...] to print and carry on.
-    Names the place and the rules, never the text. These are NOTES, not errors: do not add them to an error list or exit code."""
+ADVISORY_FIX = {"intent": "Describe what the record says; do not infer intent.",
+                "undated-count": "Add a date or describe the count as documented or mapped."}
+ADVISORY_GUARD_ERROR = "warning: wording advisory (guard-error). Fix: Review the wording manually."
+# --- DF2007-15 advisory wording tier (separate from the legal-violation guard above; never refuses, never in legal_claims) --------
+# `intent` (secretly, covertly, hid, hiding, covered up, in secret, said of an agency or official) and `undated-count` (a number
+# followed by cameras, readers or ALPRs with no `as of`, `documented`, `mapped` or date in the same sentence) are the two wordings
+# that fail a correction (RESEARCH-CAMPAIGNS-1 section 6). An advisory is a WARNING with a fixed fix wording: it names the place and
+# the category, never the text, and no caller may turn it into an error, a refusal, a withholding or an exit code. The scanner is an
+# explicitly English heuristic, not named-entity recognition and not a claim that intent is unproven in fact. It has its own quote
+# matcher and clause scan so the older legal scanner's results never change.
+ADV_QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|‘[^’\n]*’|(?<!\w)\'[^\'\n]*\'(?!\w)')
+INTENT = re.compile(r"\b(?:secretly|covertly|hid|hiding|covered\s+up|in\s+secret)\b", re.I)
+_ROLE = (r"(?:agenc(?:y|ies)|departments?|police|sheriffs?|cit(?:y|ies)|count(?:y|ies)|councils?|mayors?|chiefs?|officials?|"
+         r"officers?|staff)")
+ROLE = re.compile(r"\b" + _ROLE + r"\b", re.I)
+BY_ROLE = re.compile(r"\bby\s+(?:[\w'’.-]+\s+){0,6}?" + _ROLE + r"\b", re.I)
+_NOUN = r"(?:cameras|readers|ALPRs)"
+COUNT = re.compile(r"(?<![\w.,/-])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s+" + _NOUN + r"\b", re.I)
+QUALIFIER = re.compile(r"\b(?:as\s+of|documented|mapped)\b", re.I)
+URL = re.compile(r"(?:https?://|www\.)\S+", re.I)
+_MONTHS = "january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec"
+ISO_DATE = re.compile(r"(?<![\w/.-])(\d{4})-(\d{2})-(\d{2})(?![\w/-])")
+SLASH_DATE = re.compile(r"(?<![\w/.-])(\d{1,2})/(\d{1,2})/(\d{4})(?![\w/-])")
+MONTH_DAY_YEAR = re.compile(r"\b(" + _MONTHS + r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b", re.I)
+MONTH_YEAR = re.compile(r"\b(" + _MONTHS + r")\.?,?\s+(\d{4})\b(?!\s+" + _NOUN + r"\b)", re.I)
+BARE_YEAR = re.compile(r"(?<![\w./:+-])(?<!\d,)(19\d{2}|20\d{2})(?![\w/:-]|[.,]\d)(?!\s+" + _NOUN + r"\b)", re.I)
+_MONTH_NUMBER = {m: n for n, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+
+
+def _blank_quotes(text):
+    """Blank every complete quoted span (same length, so nothing shifts); a span that ended a sentence keeps its final .!? so the
+    sentence boundary survives. Apostrophes inside words are not quotation marks."""
+    def blank(match):
+        span = match.group(0)
+        end = span[1:-1].rstrip()[-1:]
+        return " " * (len(span) - 1) + (end if end in (".", "!", "?") else " ")
+    return ADV_QUOTED.sub(blank, text)
+
+
+def _calendar_day(year, month, day):
     try:
-        return ["review-required: %s: legal-claim wording (%s)" % (where, ",".join(rules))
-                for where, text in items if (rules := legal_claims(text))]
+        datetime.date(int(year), int(month), int(day))
+        return True
+    except ValueError:
+        return False
+
+
+def _dated(sentence):
+    """True when the sentence holds a documented date shape: ISO YYYY-MM-DD, M/D/YYYY, `Month D, YYYY`, `Month YYYY` or a bare year
+    1900-2099 (not the camera count itself). Full dates must be real calendar days; a URL qualifies nothing. Not a date parser."""
+    text, ok = URL.sub(" ", sentence), False
+    for rx, valid in ((ISO_DATE, lambda m: _calendar_day(m[1], m[2], m[3])), (SLASH_DATE, lambda m: _calendar_day(m[3], m[1], m[2])),
+                      (MONTH_DAY_YEAR, lambda m: _calendar_day(m[3], _MONTH_NUMBER[m[1][:3].lower()], m[2])),
+                      (MONTH_YEAR, lambda m: 1900 <= int(m[2]) <= 2099), (BARE_YEAR, lambda m: True)):
+        ok = ok or any(valid(m) for m in rx.finditer(text))
+        text = rx.sub(" ", text)  # an invalid date is removed, so its parts cannot qualify as a bare year
+    return ok
+
+
+def _intent(sentence):
+    attributed = False
+    for segment in SEGMENT_SPLIT.split(sentence):
+        covered, earlier = bool(LEADING.match(segment)), ""
+        for n, clause in enumerate(JOINER_SPLIT.split(segment)):
+            inherited = covered or (attributed and n == 0)
+            cue = SCOPED.search(clause)
+            limit = cue.start() if cue else len(clause)
+            if not (inherited or NEUTRAL.search(clause)):
+                for m in INTENT.finditer(clause):
+                    if m.start() < limit and not NEGATED.search(clause[:m.start()]) and (
+                            ROLE.search(earlier + " " + clause[:m.start()]) or BY_ROLE.search(clause[m.end():])):
+                        return True
+            earlier += " " + clause
+        attributed = attributed or bool(ATTRIBUTION.search(segment))
+    return False
+
+
+def _undated_count(sentence):
+    text = URL.sub(" ", sentence)
+    return any(not NEGATED.search(text[:m.start()]) for m in COUNT.finditer(text)) and not (QUALIFIER.search(text) or _dated(text))
+
+
+def legal_advisories(text):
+    """-> sorted advisory categories ("intent", "undated-count") of text; [] for empty or non-string input. Advice only: never a
+    refusal. A scan fault returns ["guard-error"] (also advice) instead of raising or reporting a clean result."""
+    if not isinstance(text, str) or not text:
+        return []
+    try:
+        found = set()
+        for sentence in SENTENCE_SPLIT.split(_blank_quotes(text)):
+            if _intent(sentence):
+                found.add("intent")
+            if _undated_count(sentence):
+                found.add("undated-count")
+        return sorted(found)
+    except Exception:  # noqa: BLE001 - advice only: a broken scan asks for a human, it never stops the run
+        return ["guard-error"]
+
+
+def advisory_notes(items):
+    """items: iterable of (where, text) -> ["warning: <where>: wording advisory (<category>). Fix: <fixed wording>", ...] in item
+    order then sorted category. Names the place and the category, never the text, a number or an exception. NOT errors: never
+    add them to an error list, a refusal or an exit code, and never read them as permission to publish or send."""
+    notes = []
+    try:
+        for where, text in items:
+            for category in legal_advisories(text):
+                note = ADVISORY_GUARD_ERROR if category == "guard-error" else \
+                    "warning: %s: wording advisory (%s). Fix: %s" % (where, category, ADVISORY_FIX[category])
+                if note not in notes or category != "guard-error":
+                    notes.append(note)
+    except Exception:  # noqa: BLE001
+        if ADVISORY_GUARD_ERROR not in notes:
+            notes.append(ADVISORY_GUARD_ERROR)
+    return notes
+
+
+def legal_notes(items):
+    """items: iterable of (where, text) -> [\"review-required: <where>: legal-claim wording (<rules>)\", ...] to print and carry on.
+    Names the place and the rules, never the text. These are NOTES, not errors: do not add them to an error list or exit code.
+    The legal notes come first (unchanged); the DF2007-15 advisory warnings follow them, and only when something matched."""
+    try:
+        items = list(items)
+        legal = ["review-required: %s: legal-claim wording (%s)" % (where, ",".join(rules))
+                 for where, text in items if (rules := legal_claims(text))]
     except Exception:  # noqa: BLE001
         return ["review-required: legal-claim wording (guard-error)"]
+    return legal + advisory_notes(items)
 
 
 def faq_notes(entries):

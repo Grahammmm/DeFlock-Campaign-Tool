@@ -25,6 +25,9 @@ _spec = importlib.util.spec_from_file_location("_df4_legal_claims", Path(__file_
 _legal = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_legal)
 legal_claims, legal_notes = _legal.legal_claims, _legal.legal_notes
+# DF2007-15 advisory tier (intent, undated-count): exposed beside, not through, legal_claims/categories. legal_notes already ends with
+# these warnings; callers print them and carry on. They never refuse, withhold or change an exit code.
+legal_advisories, advisory_notes = _legal.legal_advisories, _legal.advisory_notes
 
 
 def gated_notes(items, gated):
