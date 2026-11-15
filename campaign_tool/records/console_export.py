@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .. import approval
 from . import approval_queue, console_ocr, mail_drafts, mail_send, public_packets, public_updates
 
 SCHEMA = "records-console-export-v1"
@@ -358,7 +359,7 @@ def build(project, run_id, dest):
             path = os.path.join(base, name)
             files[os.path.relpath(path, dest)] = _sha256_file(path)
     _need(sum(os.path.getsize(os.path.join(dest, rel)) for rel in files) <= MAX_BYTES, "EXPORT_TOO_LARGE")
-    manifest = {"schema": SCHEMA, "run_id": run_id, "source_project_id": approval_queue._project_id(project),
+    manifest = {"approval_anchor": approval.anchor_state(), "schema": SCHEMA, "run_id": run_id, "source_project_id": approval_queue._project_id(project),
                 "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "files": dict(sorted(files.items())), "model": model, **_applied(project)}
     Path(dest, MANIFEST).write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8")

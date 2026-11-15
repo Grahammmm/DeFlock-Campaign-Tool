@@ -1839,7 +1839,7 @@ class RehearsalModeTests(unittest.TestCase):
 
     def test_rehearsal_swap_replaces_only_the_engine_build_steps(self):
         overridden = {name for name in vars(swap.RehearsalSwap) if not name.startswith("__")}
-        self.assertEqual(overridden, {"preflight_checkout", "b1_wheel", "b2_image", "_wheel_hash_in",
+        self.assertEqual(overridden, {"preflight_checkout", "check_anchor_engine", "b1_wheel", "b2_image", "_wheel_hash_in",
                                       "v1_verify_image", "a4_reverify"})
         self.assertEqual(swap.RehearsalSwap.__mro__[1:], swap.Swap.__mro__)
 
