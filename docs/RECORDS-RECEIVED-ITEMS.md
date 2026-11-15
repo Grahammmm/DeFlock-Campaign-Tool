@@ -60,8 +60,11 @@ input (`agency-fact-sheets.json`) every row is `unknown` without evidence, so it
 
 An item whose `request_id` is null is listed in `outcomes/unmatched-messages.json`
 (`records-unmatched-v1`, 0600): message sha256, received date, sender domain only, attachment count and up to
-3 candidate requests from the ledger register (the agency's requests, open first, or requests of an agency whose
-portal host matches the sender domain). No subject, body or address is written. Each message also queues one
+3 candidate requests from the ledger register (requests whose own `external_ref`, 3 to 40 characters, appears as a
+whole token, any case, in the message Subject come first; then the agency's requests, open first, or requests of an
+agency whose portal host matches the sender domain). Each candidate carries a fixed-template reason (`reference <ref>
+in the subject`, `same agency` or `portal domain`; a request found twice keeps the strongest) that the decision text
+shows. The stored reference may appear; no subject, body or address is written. Each message also queues one
 `message_link` decision ("Tie this message to a request") in the approval queue. Approving it with one of the
 listed candidates (the `choice` form field; any other value is a 400 and changes nothing) appends one line to
 `<project>/message-links.jsonl` (0600, append-only: sha256, request id, agency id, actor, time); rejecting records

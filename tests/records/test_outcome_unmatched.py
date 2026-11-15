@@ -83,8 +83,8 @@ class UnmatchedTests(unittest.TestCase):
         (entry,) = report["messages"]
         self.assertEqual((entry["message_sha256"], entry["received_date"], entry["sender_domain"], entry["attachment_count"]),
                          (self.sha, "2041-02-03", "caltrans.example", 0))
-        self.assertEqual(entry["candidates"], [{"request_id": "req-b", "agency_id": "caltrans"},
-                                               {"request_id": "req-a", "agency_id": "caltrans"}])  # newest first
+        self.assertEqual(entry["candidates"], [{"request_id": "req-b", "agency_id": "caltrans", "why": "same agency"},
+                                               {"request_id": "req-a", "agency_id": "caltrans", "why": "same agency"}])  # newest first
         for text in (SUBJECT, SENDER, "clerk-local", "public records request"):
             self.assertNotIn(text, raw)
         self.assertEqual(stat.S_IMODE((self.outcomes() / "unmatched-messages.json").stat().st_mode), 0o600)
@@ -177,8 +177,94 @@ class UnmatchedTests(unittest.TestCase):
             con.commit()
         with run_stages.snapshot_ro(self.database) as con:
             self.assertEqual(unmatched._candidates(con, None, "mail.other.example"),
-                             [{"request_id": "req-x", "agency_id": "other"}])
+                             [{"request_id": "req-x", "agency_id": "other", "why": "portal domain"}])
             self.assertEqual(unmatched._candidates(con, None, "unknown.example"), [])
+
+    def mail(self, mid, sha, subject, **over):
+        data = {"schema": "verified-eml-headers-v1", "source_original_sha256": sha, "parser_defects": [],
+                "fields": [["From", "Clerk <a@mail.unknown.example.invalid>"], ["Subject", subject]]}
+        data.update(over)
+        with store.ledger(self.database) as con:
+            con.execute("INSERT OR IGNORE INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (sha, 1, None, None, "agency_original", "in_scope", "/x", "pending", None, "{}"))
+            con.execute("INSERT INTO mail_messages VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (mid, "acct", "INBOX", 1, 1000 + len(mid) * 100 + sum(map(ord, mid)), "<%s@example.test>" % mid, sha, json.dumps(data), "2041-02-03T10:00:00Z", "verified"))
+            con.commit()
+
+    def refs(self, **refs):
+        with store.ledger(self.database) as con:
+            for rid, ref in refs.items():
+                con.execute("UPDATE requests SET external_ref=? WHERE id=?", (ref, rid.replace("_", "-")))
+            con.commit()
+
+    def cands(self, sha, agency=None, domain=None):
+        with run_stages.snapshot_ro(self.database) as con:
+            return unmatched._candidates(con, agency, domain, sha)
+
+    def test_subject_reference_from_unknown_mail_domain_is_first(self):
+        self.refs(req_a="REF-2041-001")
+        with store.ledger(self.database) as con:
+            con.execute("UPDATE mail_messages SET headers=? WHERE id='m1'", (json.dumps(
+                {"schema": "verified-eml-headers-v1", "source_original_sha256": self.sha, "parser_defects": [],
+                 "fields": [["From", "c@unknown.example.invalid"], ["Subject", "Re: [ref-2041-001] PRIVATE-SUBJECT-SENTINEL"]]}),))
+            con.commit()
+        self.assertEqual(self.cands(self.sha, None, "unknown.example.invalid"),
+                         [{"request_id": "req-a", "agency_id": "caltrans", "why": "reference REF-2041-001 in the subject"}])
+        self.assertEqual(self.run_outputs()[0], 0)
+        raw = (self.outcomes() / "unmatched-messages.json").read_text()
+        self.assertNotIn("PRIVATE-SUBJECT-SENTINEL", raw)
+        self.assertNotIn("private-subject", raw.lower())
+        self.assertIn("reference REF-2041-001 in the subject", raw)
+        row = self.row()
+        self.assertIn("1. request req-a (agency caltrans) \u2014 reference REF-2041-001 in the subject", row["body"])
+        self.assertNotIn("PRIVATE-SUBJECT-SENTINEL", json.dumps(row))
+        self.assertFalse((self.project / unmatched.LINKS_NAME).exists())
+
+    def test_reference_token_boundaries_and_dedup_order(self):
+        self.refs(req_a="REF-1234", req_b="R.9", req_x="AB")
+        cases = {"Re: [ref-1234]": ["req-a"], "ref-1234": ["req-a"], "XREF-1234Y": [], "ref-1234_": [], "REF-12345": [],
+                 "a ref-1234, r.9": ["req-a", "req-b"], "RX9 and AB": []}
+        for n, (subject, expected) in enumerate(cases.items()):
+            sha = "%064x" % (n + 1)
+            self.mail("mx%d" % n, sha, subject)
+            got = [c["request_id"] for c in self.cands(sha, None, "none.example.invalid") if c["why"].startswith("reference")]
+            self.assertEqual(sorted(got), sorted(expected), subject)
+        # same request by reference and agency appears once with the stronger reason; cap unchanged; reference tier first
+        sha = "%064x" % 99
+        self.mail("mdup", sha, "ref-1234")
+        got = self.cands(sha, "caltrans")
+        self.assertEqual([(c["request_id"], c["why"]) for c in got],
+                         [("req-a", "reference REF-1234 in the subject"), ("req-b", "same agency")])
+
+    def test_no_reference_unknown_domain_is_unchanged(self):
+        self.refs(req_a="REF-1234")
+        sha = "%064x" % 7
+        self.mail("mnone", sha, "Your request was received")
+        self.assertEqual(self.cands(sha, None, "unknown.example.invalid"), [])
+        self.assertEqual(self.cands(sha, None, None), [])
+        item = {"message_sha256": sha, "received_date": None, "sender_domain": None, "attachment_count": 0, "candidates": [],
+                "agency_id": None}
+        self.assertIn("No candidate request was found; you can only mark it as not a response.", unmatched._draft(item)["body"])
+
+    def test_bad_subject_headers_give_no_reference_tier(self):
+        self.refs(req_a="REF-1234")
+        bad = {"dup": {"fields": [["Subject", "REF-1234"], ["subject", "x"]]}, "nonstr": {"fields": [["Subject", ["REF-1234"]]]},
+               "defects": {"parser_defects": ["x"]}, "schema": {"schema": "other"}, "mismatch": {"source_original_sha256": "0" * 64}}
+        for n, (name, over) in enumerate(bad.items()):
+            sha = "%064x" % (200 + n)
+            self.mail("mb" + name, sha, "REF-1234", **over)
+            self.assertEqual(self.cands(sha, "caltrans")[0]["why"], "same agency", name)
+        with store.ledger(self.database) as con:
+            con.execute("UPDATE mail_messages SET headers='{not json' WHERE id='m1'")
+            con.commit()
+        self.assertEqual({c["why"] for c in self.cands(self.sha, "caltrans")}, {"same agency"})
+        self.assertEqual({c["why"] for c in self.cands("%064x" % 5, "caltrans")}, {"same agency"})  # no mail row
+
+    def test_legacy_draft_candidate_without_why_still_renders(self):
+        entry = {"message_sha256": self.sha, "received_date": None, "sender_domain": None, "attachment_count": 0, "agency_id": None,
+                 "candidates": [{"request_id": "req-a", "agency_id": "caltrans"}]}
+        self.assertIn("\n1. request req-a (agency caltrans)", unmatched._draft(entry)["body"] + "\n")
+        self.assertNotIn("\u2014", unmatched._draft(entry)["body"])
 
     def item(self, report, sha):
         return next(i for i in report["items"] if i["original_sha256"] == sha)
