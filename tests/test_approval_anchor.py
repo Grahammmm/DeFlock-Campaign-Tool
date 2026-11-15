@@ -158,26 +158,40 @@ class HostMode(unittest.TestCase):
         with mock.patch("builtins.open", mock.mock_open(read_data="0 0 4294967295")):
             self.assertTrue(ac.init_userns())
 
-    @staticmethod
-    def protected_regular_file(path):
-        """True when path is a regular, non-symlink file and it and every ancestor is root-owned, not group/other writable."""
-        try:
-            if not stat.S_ISREG(os.lstat(path).st_mode):
-                return False
-            return all(os.lstat(p).st_uid == 0 and not os.lstat(p).st_mode & 0o022
-                       for p in (Path(path), *Path(path).parents))
-        except OSError:
-            return False
+    HOST_FILE = "/usr/share/deflock/host-anchor"
+
+    def host_check(self, leaf_uid=0, ancestor_uid=0):
+        """Run check() in host mode against a synthetic owner table (no real root-owned file needed)."""
+        stats = {q: st(ancestor_uid, stat.S_IFDIR | 0o755) for q in ("/", "/usr", "/usr/share", "/usr/share/deflock")}
+        stats["/"] = st(0, stat.S_IFDIR | 0o755)
+        stats[self.HOST_FILE] = st(leaf_uid, stat.S_IFREG | 0o644)
+        seen = []
+
+        def lstat(q):
+            seen.append(str(q))
+            return stats[str(q)]
+
+        with mock.patch.object(ac, "init_userns", lambda: True), mock.patch.object(ac.os, "lstat", lstat):
+            got = check(self.HOST_FILE)
+        # The fake owner table must really be what the rule read; otherwise this test proves nothing and fails.
+        self.assertIn(self.HOST_FILE, seen)
+        self.assertEqual(got.get("mode", "host"), "host", got)
+        return got
 
     def test_root_owned_host_file_passes(self):
-        # Runner images differ in which system files exist as plain root-owned files, so pick one this host really has.
-        candidates = ["/usr/share/common-licenses/Apache-2.0", "/etc/passwd", "/etc/hostname", "/etc/os-release",
-                      os.path.realpath("/bin/sh")]
-        path = next((c for c in candidates if self.protected_regular_file(c)), None)
-        if path is None:
-            self.skipTest("no protected root-owned regular file found among: " + ", ".join(candidates))
-        got = check(path)
-        self.assertTrue(got["ok"], f"{path}: {got}")
+        got = self.host_check()
+        self.assertTrue(got["ok"], got)
+
+    def test_non_root_owned_host_file_is_refused(self):
+        got = self.host_check(leaf_uid=1000)
+        self.assertFalse(got["ok"], got)
+        self.assertIn("not root-owned", got["reason"])
+        self.assertIn(self.HOST_FILE, got["reason"])
+
+    def test_non_root_owned_host_ancestor_is_refused(self):
+        got = self.host_check(ancestor_uid=1000)
+        self.assertFalse(got["ok"], got)
+        self.assertIn("not root-owned", got["reason"])
 
     def test_root_owned_protected_chain_passes_with_synthetic_stats(self):
         # Hermetic positive case: host mode accepts a root-owned regular file under root-owned, non-writable ancestors.
