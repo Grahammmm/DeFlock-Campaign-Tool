@@ -1018,8 +1018,23 @@ def main():
     mode.add_argument("--apply", action="store_true", help="write to the canonical ledger (default: dry-run)")
     mode.add_argument("--legacy-resolution-inventory", metavar="PRIVATE_OUT_PATH",
                       help="read-only private legacy census; not an approval")
+    mode.add_argument("--write-resolution-policy-proposal", metavar="OUT",
+                      help="write a private policy proposal from a census; not an approval")
+    parser.add_argument("--from-inventory", metavar="INV", help="census file (proposal mode only)")
+    parser.add_argument("--approval-record", metavar="FILE", help="opaque approval record (proposal mode only)")
     args = parser.parse_args()
+    proposal = args.write_resolution_policy_proposal is not None
+    if proposal != (args.from_inventory is not None) or proposal != (args.approval_record is not None):
+        parser.error("--from-inventory and --approval-record are required with, and only with, --write-resolution-policy-proposal")
+    if proposal and args.config is not None:
+        parser.error("--config is not used with --write-resolution-policy-proposal")
     try:
+        if proposal:
+            from .mail_resolution_proposal import write_proposal
+            summary = write_proposal(args.root, args.mail_history, args.write_resolution_policy_proposal,
+                                     inventory_path=args.from_inventory, approval_record_path=args.approval_record)
+            print(json.dumps(summary, sort_keys=True))
+            return 0
         if args.legacy_resolution_inventory is not None:
             from .mail_resolution_census import inventory
             counts = inventory(args.root, args.mail_history, args.legacy_resolution_inventory, config_path=args.config)
