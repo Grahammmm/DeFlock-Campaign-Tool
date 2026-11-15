@@ -41,13 +41,22 @@ def load_inputs(args):
     fields = {"schema", "manifest_sha256", "policy_sha256", "export_root", "supplement_root", "adoption"}
     require(type(config) is dict and set(config) == fields and config["schema"] == "legacy-adoption-v1"
             and config["adoption"] in ("enabled", "disabled"), "legacy_config_invalid")
-    for key in ("manifest_sha256", "policy_sha256"):
-        capture.sha(config[key])
+    capture.sha(config["manifest_sha256"])
+    # JSON null is the sole bootstrap exception: it may only write the first proposal.
+    bootstrap = config["policy_sha256"] is None
+    if not bootstrap:
+        capture.sha(config["policy_sha256"])
     for key in ("export_root", "supplement_root"):
         require(type(config[key]) is str and Path(config[key]).is_absolute()
                 and ".." not in Path(config[key]).parts, "legacy_config_invalid")
     manifest = private_bytes(args.manifest, 48 * 1024 * 1024, exact_mode=True)
     require(capture.digest(manifest) == config["manifest_sha256"], "legacy_manifest_hash_mismatch")
+    if bootstrap:
+        report = getattr(args, "report_sources", False)
+        require(args.policy is None and (report or args.write_policy_proposal) and not args.apply,
+                "legacy_policy_required")
+        return config, capture.digest(raw), manifest, None
+    require(args.policy is not None, "legacy_policy_required")
     policy_raw = private_bytes(args.policy, capture.MAX_POLICY_BYTES)
     require(capture.digest(policy_raw) == config["policy_sha256"], "legacy_policy_hash_mismatch")
     policy = capture.ApprovedCapturePolicy(policy_raw, expected_sha256=config["policy_sha256"])
@@ -68,10 +77,11 @@ def source_class(path, config):
     return "supplement"
 
 
-def parse_manifest(raw, config):
+def validate_manifest(raw, config):
+    """Validate the whole manifest; return every physical row in file order."""
     reader = csv.reader(io.StringIO(raw.decode("utf-8"), newline=""), delimiter="\t", strict=True)
     require(next(reader, None) == ["sha256", "size", "source_path"], "legacy_manifest_invalid")
-    selected, seen = {}, set()
+    physical, seen, sizes = [], set(), {}
     for number, values in enumerate(reader, 1):
         require(number <= 10000 and len(values) == 3, "legacy_manifest_invalid")
         subject, size, source = values
@@ -84,11 +94,100 @@ def parse_manifest(raw, config):
         seen.add((subject, source))
         row = {"sha256": subject, "size": int(size), "source_path": source}
         kind = source_class(Path(source), config)
-        prior = selected.get(subject)
-        require(prior is None or prior[0]["size"] == row["size"], "legacy_manifest_conflict")
-        if prior is None or (CLASSES.index(kind), source) < (CLASSES.index(prior[1]), prior[0]["source_path"]):
-            selected[subject] = (row, kind)
+        require(sizes.setdefault(subject, row["size"]) == row["size"], "legacy_manifest_conflict")
+        physical.append((row, kind))
+    return physical
+
+
+def parse_manifest(raw, config):
+    selected = {}
+    for row, kind in validate_manifest(raw, config):
+        prior = selected.get(row["sha256"])
+        if prior is None or (CLASSES.index(kind), row["source_path"]) < (CLASSES.index(prior[1]), prior[0]["source_path"]):
+            selected[row["sha256"]] = (row, kind)
     return [selected[key] for key in sorted(selected)]
+
+
+def _failed_open_code(name, directory, leaf):
+    """Classify a failed open without following links."""
+    try:
+        found = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except OSError:
+        return "source_missing"
+    if stat.S_ISLNK(found.st_mode):
+        return "source_symlink_component"
+    if leaf and stat.S_ISREG(found.st_mode) or not leaf and stat.S_ISDIR(found.st_mode):
+        return "source_missing"  # present but unavailable to this process
+    return "source_not_regular"
+
+
+def diagnose_source(row):
+    """First failing apply-time source rule code, or ok. Read-only; never echoes errors."""
+    path = Path(row["source_path"])
+    directory = None
+    try:
+        try:
+            directory = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError:
+            return "source_missing"
+        for part in path.parts[1:-1]:
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            except OSError:
+                return _failed_open_code(part, directory, False)
+            os.close(directory)
+            directory = child
+        try:
+            fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        except OSError:
+            return _failed_open_code(path.name, directory, True)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode):
+                return "source_not_regular"
+            if before.st_uid != os.getuid():
+                return "source_not_owner"
+            if before.st_nlink != 1:
+                return "source_multi_link"
+            if stat.S_IMODE(before.st_mode) & 0o077:
+                return "source_mode_bits"
+            if not os.fstatvfs(fd).f_flag & os.ST_RDONLY:
+                return "source_not_readonly_fs"
+            if before.st_size != row["size"]:
+                return "source_size_mismatch"
+            hasher, size = hashlib.sha256(), 0
+            while True:
+                block = os.read(fd, 1024 * 1024)
+                if not block:
+                    break
+                hasher.update(block)
+                size += len(block)
+                if size > row["size"]:
+                    return "source_size_mismatch"
+            if size != row["size"]:
+                return "source_size_mismatch"
+            if hasher.hexdigest() != row["sha256"]:
+                return "source_sha256_mismatch"
+            stable = (capture.fingerprint(before) == capture.fingerprint(os.fstat(fd))
+                      == capture.fingerprint(os.stat(path.name, dir_fd=directory, follow_symlinks=False)))
+            return "ok" if stable else "source_sha256_mismatch"
+        finally:
+            os.close(fd)
+    except OSError:
+        return "source_missing"  # unavailable to this process; no error text is kept
+    finally:
+        if directory is not None:
+            os.close(directory)
+
+
+def report_sources(physical):
+    totals = {}
+    for number, (row, _kind) in enumerate(physical, 1):
+        code = diagnose_source(row)
+        totals[code] = totals.get(code, 0) + 1
+        print(json.dumps({"row": number, "sha256_prefix": row["sha256"][:12], "code": code}, sort_keys=True))
+    print(json.dumps({"totals": totals}, sort_keys=True))
+    return 0 if set(totals) <= {"ok"} else 1
 
 
 def verify_source(row, *, apply=False):
@@ -218,13 +317,18 @@ def proposal(config, config_hash, eligible):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for key in ("root", "config", "manifest", "policy"):
+    for key in ("root", "config", "manifest"):
         parser.add_argument("--" + key, required=True)
+    parser.add_argument("--policy", default=None)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--write-policy-proposal")
+    parser.add_argument("--report-sources", action="store_true")
     args = parser.parse_args(argv)
     try:
+        require(not (args.report_sources and (args.apply or args.write_policy_proposal)), "legacy_config_invalid")
         config, config_hash, raw, policy = load_inputs(args)
+        if args.report_sources:
+            return report_sources(validate_manifest(raw, config))
         rows = parse_manifest(raw, config)
         root = store.checked_path(Path(os.path.abspath(args.root)) / "ledger.sqlite").parent
         if args.apply:
@@ -252,7 +356,8 @@ def main(argv=None):
             "legacy_source_class_unknown", "legacy_manifest_invalid", "legacy_manifest_duplicate",
             "legacy_manifest_conflict", "legacy_source_unsafe", "legacy_adoption_disabled",
             "legacy_config_changed", "legacy_source_hash_mismatch", "capture_not_in_approved_inventory",
-            "original_out_of_scope", "canonical_original_missing", "local_capture_requires_readonly_source"}
+            "original_out_of_scope", "canonical_original_missing", "local_capture_requires_readonly_source",
+            "legacy_policy_required"}
         code = str(exc) if str(exc) in codes else "legacy_adoption_refused"
         print(json.dumps({code: 1}, sort_keys=True))
         return 2
