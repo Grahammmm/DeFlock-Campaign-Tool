@@ -164,15 +164,6 @@ and prints one `<slug> PACKET_*` line (and one `kind: packet` ledger line) holdi
   The latest observation is the newest retained run whose sync outcome for the agency is `SYNCED` or `UNCHANGED`, ordered by run id (never by mail date); failed, pending or conflicting runs clear nothing, and
   evidence that is malformed or whose text differs from the analysis input beyond header annotations holds conservatively. A flag on another page of the same record does not hold the finding. Hold order:
   existing checks, then `EVIDENCE_PAGE_OUT_OF_RANGE` / `EVIDENCE_PAGE_COUNT_UNKNOWN`, then `EVIDENCE_PAGE_UNCONFIRMED`, then `FINDING_UNREVIEWED` / `FINDING_REJECTED` / `FINDING_REVIEW_DEFERRED`.
-- **Human finding review (DF2007-05).** A model's `PUBLIC-OK` is not a human decision. After the page check, the last hold is the finding review: no bound approve in
-  `.analysis/finding-reviews.jsonl` → `FINDING_UNREVIEWED`; the latest decision a reject → `FINDING_REJECTED` (its private reason rides only in the held row of the outbox file, never in a code, count or ledger line);
-  a journal or trust anchor that is unavailable → `FINDING_REVIEW_DEFERRED` (never a final refusal; the next tick re-checks). `finding_state` is set to `approved for public` only after that gate passes.
-  The journal is private (0600, parent 0700), append-only and hash-chained, keyed by agency slug, `finding_id` and a sha256 over `topic`, `claim`, `fact_ids` and `rule_ids` (in order);
-  a changed claim, topic, fact list or rule list is a different finding and needs a new review. An approve is an SSH signature (namespace `deflock-approval`, scope `finding-review-v1`) over the
-  exact finding text, checked by `campaign_tool.approval.verify` against the protected trust anchor each time it is used; the packet's own signed approval stays a separate decision.
-  `records finding-review list --root R [--agency S] [--json]` prints each finding with its exact payload to sign; `approve --signature-file F` and `reject --reason T` write the journal
-  (`--expected-hash` refuses a changed finding as `finding_stale`; exit 1 prints one fixed code, e.g. `finding_signature_refused` or `FINDING_REVIEW_DEFERRED`). Held rows are
-  `{finding_id, code, ids}` plus `reason` for a rejected finding only. The chain is tamper-evident, not externally anchored.
 - **Outbox.** `.analysis/packet-outbox/<slug>-<key[:12]>.json` (0600, atomic, schema `records-analysis-packet-v2`: `agency_id`, `slug`, `key`,
   `inputs` hashes, `packets[]` of `{packet, provenance}`, `held[]` of `{finding_id, code, ids}`), written only when `packets` is non-empty and
   the key is new. Outcomes: `PACKET_STAGED <file> n=<packets> held=<held> <code>=<n>…`, `PACKET_UNCHANGED`, `PACKET_NOTHING_OK`, `PACKET_ALL_HELD`.
