@@ -221,7 +221,8 @@ def alert_notes(sentences, texts):
     notes = ["review-required: %s: %s pattern" % (where, name) for where, text in items for name, rx in privacy.PATTERNS
              if rx.search(text)]
     flagged = [(where, len(privacy.legal_claims(text))) for where, text in items]
-    return notes + ["review-required: %s: legal-claim wording flagged (%d rule)" % (where, n) for where, n in flagged if n]
+    return notes + ["review-required: %s: legal-claim wording flagged (%d rule)" % (where, n) for where, n in flagged if n] \
+        + privacy.advisory_notes(items)  # DF2007-15: intent / undated-count warnings after the existing notes, same labels, never text
 
 
 def build(collection, name, members):
