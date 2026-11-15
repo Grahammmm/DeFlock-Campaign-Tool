@@ -17,6 +17,25 @@ KIND_LABELS = {"sheriff": "County sheriff", "police": "City police", "chp": "Sta
                "District attorney", "county_board": "County board", "city_council": "City council", "other": "Other public body"}
 DEFAULTS = {
     "nav.label": "Site", "nav.home": "Home", "nav.agencies": "Agencies", "nav.findings": "Findings",
+    "corrections_policy.request_heading": "Ask for a correction",
+    "corrections_policy.request_include": ("Include the link to the page, what is wrong, and a source if you have one. "
+                                           "Do not send personal information about anyone else."),
+    "corrections_policy.request_privacy": ("If a page shows personal information about a private person, say so in the first line; "
+                                           "that page is reviewed first."),
+    "corrections_policy.request_review": ("An organizer reviews every request against the cited records. A change is listed below "
+                                          "with its date. A request that is not accepted gets a reply saying why."),
+    "corrections_policy.email": "Send your request by email to {email}.",
+    "corrections_policy.no_address": ("This campaign has not published a contact address, so correction requests "
+                                      "cannot be made through this site yet."),
+    "corrections_policy.request_subject": "Correction request",
+    "corrections_policy.copyright_heading": "Copyright concerns",
+    "corrections_policy.copyright_include": ("Identify the copyrighted work, the link to the page containing the material, "
+                                            "your contact details, and a good-faith statement that the use is not authorized "
+                                            "by the copyright owner, its agent, or the law."),
+    "corrections_policy.copyright_review": "An organizer reviews copyright concerns. This guidance is not legal advice.",
+    "corrections_policy.copyright_subject": "Copyright notice",
+    "corrections_policy.osm": "Community-mapped camera points are corrected in {osm}.",
+    "corrections_policy.osm_link": "OpenStreetMap",
     "nav.sources": "Sources", "nav.meetings": "Meetings", "nav.about": "About", "nav.corrections": "Corrections",
     "nav.home_page": "Home page", "nav.topics": "Topics", "header.skip": "Skip to content", "header.attend": "Attend a meeting",
     "footer.credit": "{name} is an independent local initiative. Built with DeFlock Campaign Tool.",

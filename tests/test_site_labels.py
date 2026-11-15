@@ -226,6 +226,8 @@ class LabelsTest(unittest.TestCase):
 
     def test_every_fixed_string_replaced(self):
         markers = {key: f"X{key}X" for key in DEFAULTS}
+        # Keep contact anchors visible so both policy subject labels are covered here too.
+        markers["corrections_policy.email"] += " {email}"
         phrases = [chunk.strip() for text in DEFAULTS.values() for chunk in PLACEHOLDER.split(text)
                    if len(chunk.split()) >= 3]
         self.assertGreater(len(phrases), 60)
@@ -283,6 +285,9 @@ class LabelsTest(unittest.TestCase):
                   "correction_counts.caption", "correction_counts.col_accepted", "correction_counts.col_declined",
                   "correction_counts.col_open", "correction_counts.col_quarter", "correction_counts.col_received",
                   "correction_counts.empty", "correction_counts.heading", "correction_counts.lead",
+                  # A bare corrections_policy.osm marker hides its nested {osm} link;
+                  # test_site_corrections_policy's dedicated marker test observes it.
+                  "corrections_policy.osm_link",
                   "elsewhere.checked", "elsewhere.decided", "elsewhere.description",
                   "elsewhere.kind.adopted_ordinance", "elsewhere.kind.audit_ordered", "elsewhere.kind.declined",
                   "elsewhere.kind.ended_contract", "elsewhere.kind.other", "elsewhere.kind.paused",

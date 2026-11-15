@@ -2,6 +2,8 @@
 # this code). Every digest is a nonsecret sha256 of a public synthetic build file. Each annotation covers exactly
 # one such line, following tests/fixtures/comprehension/hash-anchors.py; no scanner policy is changed.
 # Read with ast.literal_eval, like hash-anchors.py.
+# DF0652-09 amendment 2026-11-15, builder base 67d04d8d: only corrections.html in bare/fictional/rich
+# at 2026-10-01 and late at 2027-01-01; all other historical digests and provenance retained.
 {
     'cases': {
         'bare': {
@@ -12,7 +14,7 @@
             'agency-cards.js': '16a46f3c0cd7663beb3fbc71cec3307d2e359d73babd60aeb3cb2e63a5720a51',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'app.js': '4425e8b882382c2249e5ac5540926e6996ed99d27e0dc7cb4ee0355e01c4b03f',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'cameras.html': '3fcd19e25948ae2c5600f8a6458aa6a4672eab831b80a6a13115080c039048b6',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-            'corrections.html': '287b3865f357455f62e15423dca5575687eef9113d059d789b10a3401afba42a',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+            'corrections.html': '6fd4f2d56efa51272dc7080bf229e9396bc50ae5ccc651de14e9788bae0f1ada',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'data.html': '6049ff3fc450adb2fc5afb7c034e8ae8f2ac3c68756e4baa8dfacfefd3df0159',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'data/agencies.csv': '69f27a2826cec7fb089cbd5e40ec38a237614e5ec20e715636da05dad8ec7e2c',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'data/agencies.json': '75e5d72aa785e7abb1e220efa0b8104e5c2f323502854020f89e23becfd4fa4c',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
@@ -50,7 +52,7 @@
             'agency-cards.js': '95d2218da220b6ec4ecd303342c0aaa090f5ea4999b0ffd05b3454c46719ca00',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'app.js': 'ab63767de14fee8703a11531e24ebcfc4a8b845f986208772f242ef8d447db9e',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'cameras.html': 'e45aed1f3d6680fe3d85af8b8ac2dac4a66ad050ddd150d35bcdd97f5f1caba3',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-            'corrections.html': 'bef03b3e16c1af4b02b023ea31da7afdf318383e6e890a584dbefd2fcbb43d38',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+            'corrections.html': 'c9d3c21cb8af057e81b35bcc1a1bedf176fb62338e4b330f88b13ab7d78aa887',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'corrections.xml': '23f51eff261d70f0837a0dcb1c463558e1420602c32b91764b3b4abef963f0ac',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'data.html': '812dc752d853d5801acfd6fcd6ad0e772a3901699a86084a620884994c3d341c',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'data/agencies.csv': 'de226f37600fdaac36bacba18473551b0a724fa89dcd3c8a743a7442cf1bb477',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
@@ -102,7 +104,7 @@
             'agency-cards.js': '95d2218da220b6ec4ecd303342c0aaa090f5ea4999b0ffd05b3454c46719ca00',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'app.js': 'ab63767de14fee8703a11531e24ebcfc4a8b845f986208772f242ef8d447db9e',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'cameras.html': '2ace8a73a84fe234e4c0b647dc9eddc2ca160a6a7973788e7b43df4567a28f14',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-            'corrections.html': '9458b78da6a15c0dbc8fca766541735dd7e519f42b03bbe8d79b57e2e2bf8783',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+            'corrections.html': 'a8f330fcc0bb1395847873138b279b0174ff7e6fe1047a515688c43a53af9d2e',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'corrections.xml': '23f51eff261d70f0837a0dcb1c463558e1420602c32b91764b3b4abef963f0ac',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'data.html': 'c17d12fb9fbe06bdc053a59f603afcb0c373842fab335023d89467e5dfe8ae8c',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'data/agencies.csv': 'b533800d44ff8d069a6912bff2b44292ab0f88ee05ec422cb0c84541fd416e84',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
@@ -169,7 +171,7 @@
             'agency-cards.js': '95d2218da220b6ec4ecd303342c0aaa090f5ea4999b0ffd05b3454c46719ca00',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'app.js': 'ab63767de14fee8703a11531e24ebcfc4a8b845f986208772f242ef8d447db9e',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'cameras.html': '2b1620a20bae3b29801b96c6598694c76b07fc243c703ebf6f30b980b90280ee',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-            'corrections.html': '1f5ebb283ddab527e5e09905f8454c3e0028cf700050a44bb8728bf0d21a1554',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+            'corrections.html': '331a80aa9a8d6001f9874b8f54b0a956f275176d4c418073862945c468a71ae2',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'corrections.xml': '23f51eff261d70f0837a0dcb1c463558e1420602c32b91764b3b4abef963f0ac',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'data.html': '7e92827915ee62847026b6d56d76dc2dcf887810a126f12b82d7bedb17ffb5a2',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'data/agencies.csv': 'b533800d44ff8d069a6912bff2b44292ab0f88ee05ec422cb0c84541fd416e84',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash

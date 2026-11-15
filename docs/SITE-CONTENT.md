@@ -1949,9 +1949,16 @@ script texts `js.search_agency`, `js.search_meeting` (tags) and `js.search_none_
 carries their defaults. Without agencies or meetings `search.js` is the same
 file for every site: it carries the English defaults and reads `LABELS` when `site-data.js` is loaded first, which
 `search.html` does only once a `js.*` label differs from its default.
+Corrections policy (`corrections_policy.*`): `request_heading`, `request_include`, `request_privacy`,
+`request_review`, `request_subject`, `copyright_heading`, `copyright_include`, `copyright_review`,
+`copyright_subject`, `email`, `no_address`, `osm` and `osm_link`. `email` allows `{email}` (the escaped
+contact anchor); `osm` allows `{osm}` (the fixed OpenStreetMap ALPR link with `osm_link` text).
+Subjects are URL-encoded from raw label text, not HTML-escaped first. All other keys have no placeholders.
+Both sections render even without contact details; the same `no_address` text appears in each.
+The structure and anchors `#request` / `#copyright` are not labels; see [CORRECTIONS-PROCESS.md](CORRECTIONS-PROCESS.md).
 Stays English by design: the starter page, `feed.xml`/agency feeds, `sitemap.xml`, `robots.txt`, `_headers`,
 `data/findings.json`, and text from shared modules: the source sentence and provenance explainer
-(`provenance_text.py`) and the corrections policy (`corrections_policy.py`). Content-supplied text is never touched.
+(`provenance_text.py`). Content-supplied text is never touched.
 
 ## Redirects (`content/redirects.json`, optional)
 Old paths an organizer lists (a migrated campaign site, a renamed finding slug) become `public/_redirects`, one sorted

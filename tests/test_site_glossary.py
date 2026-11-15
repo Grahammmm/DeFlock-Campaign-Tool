@@ -44,7 +44,8 @@ BASELINE = {
     "agency-cards.js": "95d2218da220b6ec4ecd303342c0aaa090f5ea4999b0ffd05b3454c46719ca00",  # pragma: allowlist secret -- public rendered-file SHA-256
     "app.js": "ab63767de14fee8703a11531e24ebcfc4a8b845f986208772f242ef8d447db9e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "cameras.html": "24ae04e1ace94fb13ba5c52e7b64c229056bdb527217e39ccf576d43f97709da",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "corrections.html": "39f3317e4e535872c46c53db952438d28fb06e851cee3ab407152fe52074dd88",  # pragma: allowlist secret -- public rendered-file SHA-256
+    # DF0652-09 amendment 2026-11-15, builder base 67d04d8d: corrections only, TODAY, same legacy transforms.
+    "corrections.html": "ca7e901468ffa4ba0f44ef3b0cc309c0916d777e603842af00d1611d3dafa7e1",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data.html": "c16646a7f05f745f3b3c3947bb7b818fbd90182830b7ff2fa867d7bd5e5673fc",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/agencies.csv": "de226f37600fdaac36bacba18473551b0a724fa89dcd3c8a743a7442cf1bb477",  # pragma: allowlist secret -- public rendered-file SHA-256
     "data/agencies.json": "9c3dd727cbd33c726007e50c84daab6bd9d38cffa53e4941aefdff67a707f7bb",  # pragma: allowlist secret -- public rendered-file SHA-256

@@ -1,7 +1,8 @@
 """DF1109-16: the remaining fixed page strings of site.py and timeline.py go through labels; English is unchanged.
 
 The English digests in tests/fixtures/site-label-completion/english-digests.py were captured from main before the
-sweep (see its provenance block) and are compared with the current build; they are never regenerated from this code."""
+sweep (see its provenance block), with the explicit DF0652-09 corrections-only amendment;
+all other historical digests are retained, not regenerated from this code."""
 import ast
 import hashlib
 import json
