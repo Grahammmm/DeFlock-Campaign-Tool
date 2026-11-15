@@ -14,7 +14,7 @@ import sys
 import threading
 from collections import namedtuple
 
-from . import approval_queue as aq, console_export as ce, mail_drafts, mail_send, public_packets as pp, public_updates as pu
+from . import approval_queue as aq, console_export as ce, console_ocr, mail_drafts, mail_send, public_packets as pp, public_updates as pu
 
 MAX_MODEL = 64 * 1024 * 1024
 MAX_MANIFEST = 8 * 1024 * 1024
@@ -171,6 +171,12 @@ class LiveSource:
     def send_results(self):
         return mail_send.results(self.project, strict=True)
 
+    def ocr_pages(self):
+        doc = console_ocr.model(self.project)
+        if doc.get("state") == "unavailable":
+            raise console_ocr.OcrPagesError(doc["code"])
+        return doc
+
 
 class SnapshotSource:
     """The same methods over <pin.path>/console-model/*.json; one instance serves one request."""
@@ -264,3 +270,8 @@ class SnapshotSource:
 
     def send_results(self):
         return self._doc("sends.json", mail_send.MailSendError, "rows", list)
+
+    def ocr_pages(self):
+        name, error = "ocr-pages.json", console_ocr.OcrPagesError
+        return {"rows": self._doc(name, error, "rows", list), "counts": self._doc(name, error, "counts", dict),
+                "truncated": self._doc(name, error, "truncated", bool)}

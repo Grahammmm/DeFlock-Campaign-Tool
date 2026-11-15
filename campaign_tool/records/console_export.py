@@ -24,7 +24,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import approval_queue, mail_drafts, mail_send, public_packets, public_updates
+from . import approval_queue, console_ocr, mail_drafts, mail_send, public_packets, public_updates
 
 SCHEMA = "records-console-export-v1"
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # same grammar as admin_panel.check_run_id
@@ -278,8 +278,12 @@ def _model_sends(project, now):
     return {"rows": mail_send.results(project, strict=True)}  # strict: never an empty or partial list on failure
 
 
+def _model_ocr_pages(project, now):
+    return console_ocr.model(project)  # OCR-REVIEW-ROUTE-1: pages awaiting a person, with their text; unavailable on its own
+
+
 MODEL = {"queue.json": _model_queue, "packets.json": _model_packets, "public-updates.json": _model_public_updates,
-         "mail-drafts.json": _model_mail_drafts, "sends.json": _model_sends}
+         "mail-drafts.json": _model_mail_drafts, "sends.json": _model_sends, "ocr-pages.json": _model_ocr_pages}
 MODEL_SCHEMA = "records-console-model-v1"
 MODEL_DIR = "console-model"
 
