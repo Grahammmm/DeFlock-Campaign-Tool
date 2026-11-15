@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import approval
-from . import approval_queue, console_ocr, mail_drafts, mail_send, public_packets, public_updates
+from . import approval_queue, console_ocr, draft_templates, mail_drafts, mail_send, public_packets, public_updates
 
 SCHEMA = "records-console-export-v1"
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # same grammar as admin_panel.check_run_id
@@ -241,11 +241,25 @@ def _iso(now):
     return datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _link_payloads(project, row):
+    """{request_id: exact signable payload} for each unambiguous candidate of a pending tie (a refused candidate is omitted)."""
+    found = {}
+    for candidate in (row["evidence"].get("candidates") or []):
+        try:
+            choice = candidate["request_id"]
+            found[choice] = approval_queue.approval_payload(project, row["id"], choice=choice).decode("utf-8")
+        except (approval_queue.ApprovalQueueError, KeyError, TypeError):
+            continue
+    return found
+
+
 def _model_queue(project, now):
     rows = approval_queue.load_queue(project)
+    pending = [r for r in rows if r["status"] == "pending"]
     return {"rows": rows,
             "payloads": {r["id"]: approval_queue.approval_payload(project, r["id"]).decode("utf-8")
-                         for r in rows if r["status"] == "pending"},
+                         for r in pending if r["kind"] != draft_templates.MESSAGE_LINK},
+            "link_payloads": {r["id"]: _link_payloads(project, r) for r in pending if r["kind"] == draft_templates.MESSAGE_LINK},
             "history": {r["id"]: approval_queue.history(project, r["id"]) for r in rows}}
 
 
