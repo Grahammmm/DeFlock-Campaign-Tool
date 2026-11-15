@@ -321,15 +321,26 @@ def proposal(config, config_hash, eligible):
         for row, kind in eligible}}
 
 
+def _require_not_checkout(directory):
+    """Inspect only marker metadata; never open Git directories or worktree files."""
+    try:
+        os.stat(".git", dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError:
+        return
+    raise ValueError("legacy_source_unsafe")
+
+
 def _open_root(path):
     """Open a directory by absolute path without following any link."""
     path = Path(path)
     fd = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         for part in path.parts[1:]:
+            _require_not_checkout(fd)
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = child
+        _require_not_checkout(fd)
         return fd
     except BaseException:
         os.close(fd)
@@ -370,8 +381,9 @@ def _hash_leaf(directory, name, wanted_sizes):
 
 def _walk(directory, path, config, pending, state):
     try:
+        _require_not_checkout(directory)
         names = sorted(os.listdir(directory))
-    except OSError:
+    except (OSError, ValueError):
         state["skipped"] += 1
         return
     for name in names:

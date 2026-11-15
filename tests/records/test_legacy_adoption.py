@@ -684,6 +684,69 @@ class LegacyAdoptionTests(unittest.TestCase):
         self.assertEqual((status, counts), (0, {"matched": 4, "duplicates": 0, "unmatched_pending": 0, "skipped_unsafe": 5}))
         self.assertNotIn("link", out.read_text())
 
+    def test_manifest_nested_checkouts_are_never_listed_or_read(self):
+        project = self.export / "received" / "project"
+        project.mkdir(mode=0o700)
+        original = Path(self.rows[1]["source_path"])
+        source = project / "input.pdf"
+        original.rename(source)
+        marker = project / ".git"
+        real_listdir, real_open = os.listdir, os.open
+        identity = (project.stat().st_dev, project.stat().st_ino)
+
+        def guarded_listdir(fd):
+            info = os.fstat(fd)
+            self.assertNotEqual((info.st_dev, info.st_ino), identity, "checkout listed")
+            return real_listdir(fd)
+
+        def guarded_open(name, *args, **kwargs):
+            self.assertNotIn(str(name), (".git", "input.pdf", str(source)), "checkout content opened")
+            return real_open(name, *args, **kwargs)
+
+        for kind in ("directory", "file"):
+            with self.subTest(marker=kind):
+                if kind == "directory":
+                    marker.mkdir(mode=0o700)
+                else:
+                    marker.write_text("gitdir: synthetic-unused\n")
+                try:
+                    with patch.object(adoption.os, "listdir", guarded_listdir), \
+                            patch.object(adoption.os, "open", guarded_open):
+                        status, counts, out = self.build(self.sources / "out" / (kind + ".tsv"))
+                    self.assertEqual((status, counts), (0, {"matched": 3, "duplicates": 0,
+                        "unmatched_pending": 1, "skipped_unsafe": 1}))
+                    self.assertNotIn(self.rows[1]["sha256"], [row[0] for row in self.tsv_rows(out)])
+                finally:
+                    marker.rmdir() if kind == "directory" else marker.unlink()
+
+    def test_manifest_checkout_roots_and_ancestors_refuse_before_listing(self):
+        real_listdir = os.listdir
+        forbidden = set()
+
+        def guarded_listdir(fd):
+            info = os.fstat(fd)
+            self.assertNotIn((info.st_dev, info.st_ino), forbidden, "checkout root listed")
+            return real_listdir(fd)
+
+        for parent in (self.export, self.supplement, self.sources):
+            for kind in ("directory", "file"):
+                with self.subTest(parent=parent.name, marker=kind):
+                    forbidden = {(path.stat().st_dev, path.stat().st_ino)
+                                 for path in (self.export, self.supplement)
+                                 if path.is_relative_to(parent)}
+                    marker = parent / ".git"
+                    if kind == "directory":
+                        marker.mkdir(mode=0o700)
+                    else:
+                        marker.write_text("gitdir: synthetic-unused\n")
+                    try:
+                        with patch.object(adoption.os, "listdir", guarded_listdir):
+                            status, counts, out = self.build()
+                        self.assertEqual((status, counts), (2, {"legacy_source_unsafe": 1}))
+                        self.assertFalse(out.exists())
+                    finally:
+                        marker.rmdir() if kind == "directory" else marker.unlink()
+
     def test_manifest_size_limit_and_empty_result(self):
         with patch.dict(capture.folder.LIMITS, source_bytes=5):
             status, counts, out = self.build()
