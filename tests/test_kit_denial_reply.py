@@ -96,6 +96,78 @@ class KitDenialReplyTests(unittest.TestCase):
         law.load_package("us-ca", base)
         return mock.patch.object(law, "JURISDICTIONS", base)
 
+    def test_denial_selected_bases_only(self):
+        from campaign_tool.cpra_cites import FORMER_CPRA_NOTE, CURRENT_CPRA_ASK
+        self.denied(self.a)
+        self.denied(self.b)
+        document = json.loads(self.sent_path.read_text())
+        entry = document["requests"][self.a]
+        entry["steps"] = [
+            {"kind": "denied", "on": "2026-03-10", "withheld_basis": ["§6253(c)"]},
+            {"kind": "denied", "on": "2026-03-20", "withheld_basis": ["Ordinary basis"]}]
+        document["requests"][self.b]["steps"][0]["withheld_basis"] = ["Government Code 6254"]
+        document["requests"][self.a + "#other"] = {**entry, "draft": f"requests/{self.a}--other.md",
+            "steps": [{"kind": "denied", "on": "2026-03-20", "withheld_basis": ["§6255"]}]}
+        self.sent_path.write_text(json.dumps(document))
+        report = self.reply(self.a)
+        target = self.root / report["written"]
+        self.assertNotIn(FORMER_CPRA_NOTE, target.read_text())
+        self.assertNotIn(CURRENT_CPRA_ASK, target.read_text())
+        entry["steps"].insert(0, {"kind": "produced", "on": "2026-03-09",
+                                   "withheld_basis": ["Gov. Code section 6255"]})
+        entry["steps"][-1]["withheld_basis"] = ["We withhold under Government Code 6254.", "§6253(c)"]
+        self.sent_path.write_text(json.dumps(document))
+        before = snapshot(self.root)
+        self.reply(self.a, "--replace", "--rule", SHIPPED)
+        text = target.read_text()
+        self.assertEqual(text.count(FORMER_CPRA_NOTE), 1)
+        self.assertEqual(text.count(CURRENT_CPRA_ASK), 1)
+        self.assertIn("3. Explain the denial in writing.\n4. " + CURRENT_CPRA_ASK, text)
+        self.assertLess(text.index("Gov. Code section 6255"), text.index("Government Code 6254"))
+        self.assertIn('"§6253(c)" (denied on 2026-03-20)\n\n' + FORMER_CPRA_NOTE, text)
+        self.assertNotIn("denied on 2026-03-10", text)
+        self.assertIn("1. For each record or category withheld that the reasons above do not cover", text)
+        self.assertLess(text.index(CURRENT_CPRA_ASK), text.index("Rules we noted"))
+        self.assertEqual({k: v for k, v in snapshot(self.root).items() if k != report["written"]},
+                         {k: v for k, v in before.items() if k != report["written"]})
+        self.stopped("already exists", self.a)
+        self.reply(self.a, "--replace", "--rule", SHIPPED)
+        self.assertEqual(target.read_text(), text)
+        outside = self.tmp / "former-cite-sentinel.md"
+        outside.write_text("keep synthetic organizer edit\n")
+        target.unlink()
+        target.symlink_to(outside)
+        self.stopped("must not be a symlink", self.a, "--replace")
+        self.assertEqual(outside.read_text(), "keep synthetic organizer edit\n")
+        target.unlink()
+        entry["steps"][-1]["withheld_basis"] = ["§6254\nbad history"]
+        self.sent_path.write_text(json.dumps(document))
+        self.stopped("malformed steps", self.a, "--replace")
+        self.assertFalse(target.exists())
+
+    def test_no_former_citation_is_byte_identical(self):
+        legacy = json.loads((REPO_ROOT / "tests/fixtures/cpra_reply_legacy.json").read_text())
+        self.denied(self.a)
+        for basis in (None, "Ordinary basis", "Gov. Code § 7922.535"):
+            for rule in (False, True):
+                with self.subTest(basis=basis, rule=rule):
+                    document = json.loads(self.sent_path.read_text())
+                    entry = document["requests"][self.a]
+                    entry["reference"] = "SYNTHETIC-123"
+                    entry["steps"][0].pop("withheld_basis", None)
+                    if basis:
+                        entry["steps"][0]["withheld_basis"] = [basis]
+                    self.sent_path.write_text(json.dumps(document))
+                    target = self.folder / f"{self.a}-denial-2026-03-20.md"
+                    if target.exists():
+                        target.unlink()
+                    before = snapshot(self.root)
+                    response = self.cli("kit-denial-reply", self.a, *(["--rule", SHIPPED] if rule else []))
+                    expected = legacy["denial:" + str(basis) + ":" + str(rule)]
+                    self.assertEqual(list(response), expected["response"])
+                    self.assertEqual(target.read_bytes(), expected["draft"].encode())
+                    self.assertEqual({k: v for k, v in snapshot(self.root).items() if k in before}, before)
+
     def test_shipped_rule_cited_with_package_citation_and_status_label(self):
         self.denied(self.a)
         package = law.load_package("us-ca")

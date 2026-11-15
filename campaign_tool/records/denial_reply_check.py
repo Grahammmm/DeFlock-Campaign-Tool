@@ -2,6 +2,8 @@
 
 import re
 
+from ..cpra_cites import find_former_cpra_cites
+
 # AGENCY-RUN-SKILL §1: both cores of G's privacy wording are required.
 REDACTION_CORES = ("may be redacted", "produce every other")
 # AGENCY-RUN-SKILL §5: request a per-field withholding basis.
@@ -30,6 +32,28 @@ def _find(body, phrases, *, words=False):
     return re.search(pattern, body, re.IGNORECASE)
 
 
+def _own_former_cite(body):
+    """Mask only the narrow generated quotation/blockquotes, preserving offsets.
+
+    Direct historical qualifiers exempt only their following citation. This is
+    not general attribution, truth assessment or counsel clearance; ambiguous
+    unmarked assertions may warn conservatively. Old rules see the full body.
+    """
+    masked, agency_quote = [], False
+    for line in body.splitlines(keepends=True):
+        if line.rstrip("\r\n") == "The agency stated these reasons, as written:":
+            agency_quote = True
+        if not line.strip():
+            agency_quote = False
+        hide = agency_quote or line.lstrip().startswith(">")
+        masked.append(re.sub(r"[^\r\n]", " ", line) if hide else line)
+    visible = "".join(masked)
+    for start, end in find_former_cpra_cites(visible):
+        if not re.search(r"(?<!\w)(?:former|historical|pre-2023)\s+$", visible[:start], re.IGNORECASE):
+            return start
+    return None
+
+
 def check(body, *, subject_agency, other_agency_names=()):
     """Return warnings ordered by 1-based line then code, one per rule.
 
@@ -37,6 +61,11 @@ def check(body, *, subject_agency, other_agency_names=()):
     content uses its first occurrence. These heuristics are not legal review.
     """
     warnings = []
+    former = _own_former_cite(body)
+    if former is not None:
+        warnings.append({"code": "former_cpra_citation", "message":
+                         "Former CPRA section cited as current law; ask the agency for the current section "
+                         "(renumbered 2023-01-01).", "line": body.count("\n", 0, former) + 1})
 
     def warn(code, message, match=None):
         line = body.count("\n", 0, match.start()) + 1 if match else 1

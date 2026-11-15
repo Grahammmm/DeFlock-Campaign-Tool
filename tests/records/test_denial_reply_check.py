@@ -22,6 +22,35 @@ class DenialReplyCheckTests(unittest.TestCase):
         self.assertTrue(warnings[0]["message"])
         return warnings[0]
 
+    def test_checker_own_assertion_and_attribution(self):
+        message = ("Former CPRA section cited as current law; ask the agency for the current section "
+                   "(renumbered 2023-01-01).")
+        body = LETTER + "\nCurrent law Government Code 6254 authorizes this denial.\n§6255 also."
+        warnings = self.check(body)
+        self.assertEqual(warnings, [
+            {"code": "former_cpra_citation", "message": message, "line": 3},
+            {"code": "statute_citation", "message": "needs counsel clearance", "line": 3}])
+        for quote in ("> §6254 CANARY", "  > Government Code 6254 CANARY",
+                      "former §6254 CANARY", "HISTORICAL Government Code 6254 CANARY",
+                      "pre-2023 Gov. Code section 6255 CANARY",
+                      'The agency stated these reasons, as written:\n- "§6254 CANARY" (denied)\n'):
+            with self.subTest(quote=quote):
+                quoted = LETTER + "\n" + quote
+                old = self.check(quoted)
+                self.assertEqual([w["code"] for w in old], ["statute_citation"])
+                own = quoted + "\n\nOur authority is §6253(c)."
+                warnings = self.check(own)
+                former = [w for w in warnings if w["code"] == "former_cpra_citation"]
+                self.assertEqual(former, [{"code": "former_cpra_citation", "message": message,
+                                           "line": own.count("\n") + 1}])
+                self.assertNotIn("CANARY", str(warnings))
+        for prefix in ("notformer ", "historically ", "former wording; current law ", "former §6253; now "):
+            warnings = self.check(LETTER + "\n" + prefix + "§6254")
+            self.assertIn("former_cpra_citation", [w["code"] for w in warnings])
+        warnings = self.check(LETTER + "\n> Preserve D1 under §6254")
+        self.assertEqual([w["code"] for w in warnings],
+                         ["internal_id", "preservation_demand", "statute_citation"])
+
     def test_compliant(self):
         self.assertEqual(self.check(LETTER), [])
         for basis in ("field-by-field", "field-specific", "REDACTION LOG"):
