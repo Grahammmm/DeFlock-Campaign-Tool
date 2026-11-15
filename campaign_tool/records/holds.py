@@ -22,6 +22,7 @@ import stat
 import sys
 
 from . import native_extract as ne
+from . import preserve_routes
 from .runtime_fds import receive_runtime_fds, RuntimeSocketError, RUNTIME_SOCKET_UNSAFE
 
 SCHEMA = "records-holds-v1"
@@ -98,8 +99,11 @@ def latest_run_id(processing):
     return max((name for name in names if RUN_ID_RE.fullmatch(name)), default=None)
 
 
-def collect(processing, listed):
-    """Every held extract document, coded with the run outcome list ``listed`` when given; raises ``Unreadable``."""
+def collect(processing, listed, *, router=None):
+    """Every held extract document, coded with the run outcome list ``listed`` when given; raises ``Unreadable``.
+
+    ``router`` (``preserve_routes.Classifier``, ``--routes`` only) adds ``route`` and ``clearing_command`` to
+    each PRESERVE_PENDING item inside the same snapshot."""
     from .run_stages import LedgerBusy, snapshot_ro
     items = []
     try:
@@ -115,6 +119,9 @@ def collect(processing, listed):
                                             "AND stage='preserve'", (subject,))
                     item.update(code=ne.PRESERVE_PENDING, first_run=_stamp(seen[0]["first_seen_at"]),
                                 detail_code="preserve_" + _code(state[0]["status"] if state else "missing"))
+                    if router is not None:
+                        route = router.route(snapshot, subject)
+                        item.update(route=route, clearing_command=preserve_routes.clearing_command(route))
                 else:
                     outcome, row, holds = _alert_hold(snapshot, subject)
                     run = listed.get(subject) if listed else None
@@ -171,14 +178,21 @@ def compare(counts, needs, extract_needs):
     return mismatches, {c: n for (s, c), n in sorted(needs.items()) if s == "adoption" and c in ADOPTION}
 
 
-def build(project, report_path=None, code=None):
-    """The document; baseline: ``--report``'s needs_g, else the newest run outcome list (its needs_g source)."""
+def build(project, report_path=None, code=None, *, routes=False, mail_history=None):
+    """The document; baseline: ``--report``'s needs_g, else the newest run outcome list (its needs_g source).
+
+    ``routes`` (with ``mail_history``) adds the clearing route of each PRESERVE_PENDING original and
+    ``route_counts`` over all of them, before ``code`` filters the items."""
     from .run_stages import EXTRACT_NEEDS
     processing = Path(project) / "processing-v1"
     report = load_report(report_path) if report_path else None
     run_id = report[0] if report else latest_run_id(processing)
     listed = _run_list(processing, run_id) if run_id else None
-    items = collect(processing, listed)
+    if routes:
+        with preserve_routes.Classifier(mail_history) as router:
+            items = collect(processing, listed, router=router)
+    else:
+        items = collect(processing, listed)
     counts = dict(Counter(item["code"] for item in items))
     tally = Counter(run[0] for run in (listed or {}).values())
     needs = report[1] if report else None if listed is None else {("extract", c): tally[o] for o, c, _ in EXTRACT_NEEDS}
@@ -186,9 +200,12 @@ def build(project, report_path=None, code=None):
     mismatches, gaps = compare(counts, needs, EXTRACT_NEEDS) if needs is not None else ([], {})
     baseline = dict(source=source, run_id=run_id if source else None, mismatches=mismatches, not_in_ledger=gaps,
                     report_file="none" if not report_path else "read" if report else "unreadable")
-    return {"schema": SCHEMA, "counts": counts, "items": [i for i in items if code in (None, i["code"])],
-            "report": baseline, "run_list_used": listed is not None,
-            "note": "listing only; clears nothing; review-required"}
+    doc = {"schema": SCHEMA, "counts": counts, "items": [i for i in items if code in (None, i["code"])],
+           "report": baseline, "run_list_used": listed is not None,
+           "note": "listing only; clears nothing; review-required"}
+    if routes:
+        doc["route_counts"] = preserve_routes.route_counts(i["route"] for i in items if "route" in i)
+    return doc
 
 
 def findings(doc):
@@ -213,14 +230,19 @@ def _age_days(stamp, now):
 
 def render(doc, now=None):
     now = now or datetime.now(timezone.utc)
-    lines = ["sha256_prefix code attempts age_days last_run detail_code preserved disposition internal"]
+    routed = "route_counts" in doc
+    lines = ["sha256_prefix code attempts age_days last_run detail_code preserved disposition internal"
+             + (" route clearing_command" if routed else "")]
     for i in doc["items"]:
         internal = i.get("internal")
         lines.append(" ".join(str(v) for v in (
             i["sha256_prefix"], i["code"], i["attempts"], _age_days(i["first_run"], now), i["last_run"] or "-",
             i["detail_code"] or "-", "yes" if i["preserved"] else "no", i["disposition"],
-            f"{internal['type']}@{internal['where']}" if internal else "-")))
+            f"{internal['type']}@{internal['where']}" if internal else "-")
+            + ((i.get("route", "-"), i.get("clearing_command", "-")) if routed else ())))
     lines.append("counts " + (" ".join(f"{c}={n}" for c, n in doc["counts"].items()) or "none"))
+    if routed:
+        lines.append("route_counts " + " ".join(f"{r}={doc['route_counts'][r]}" for r in preserve_routes.ROUTES))
     return lines + findings(doc) + [doc["note"]]
 
 
@@ -475,9 +497,15 @@ def main(argv=None):
     parser.add_argument("--report", help="run report: compare with its needs_g (default: newest run outcome list)")
     parser.add_argument("--code", help="list only items with this code (counts stay complete)")
     parser.add_argument("--json", action="store_true", help="print one records-holds-v1 document")
+    parser.add_argument("--routes", action="store_true", help="name the clearing route (R1, R2, R2s, R3, R4, R5 or "
+                        "unavailable) and its next step for each PRESERVE_PENDING original; needs --mail-history")
+    parser.add_argument("--mail-history", help="mail-history root whose objects/ is read (never written) for --routes")
     args = parser.parse_args(argv)
+    if args.routes != (args.mail_history is not None):
+        print("ROUTES_OPTIONS (--routes and --mail-history go together)", file=sys.stderr)
+        return 2
     try:
-        doc = build(args.project, args.report, args.code)
+        doc = build(args.project, args.report, args.code, routes=args.routes, mail_history=args.mail_history)
     except Unreadable as error:
         print(f"LEDGER_UNREADABLE {error.args[0]}", file=sys.stderr)
         return 2
