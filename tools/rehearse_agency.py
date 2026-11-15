@@ -199,7 +199,7 @@ def verify_row(run, errors):
     return row("reviewed", "done", vsrc + counts, "none", "law")
 
 
-def review_rows(folder, errors):
+def review_rows(folder, errors, warnings=None):
     """Rows detected, reviewed, published from the latest run holding FINDINGS.csv, its VERIFY.json and PUBLISH.json."""
     runs = folder / "runs"
     found = [] if runs.is_symlink() or not runs.is_dir() else sorted(
@@ -222,6 +222,8 @@ def review_rows(folder, errors):
             raise ValueError("FINDINGS.csv has %d malformed rows" % malformed)
         findings = [dict(zip(table[0], r)) for r in body]
         flagged = sum(bool(privacy.legal_claims(f["claim"] + "\n" + f["next_step"])) for f in findings)
+        if warnings is not None:  # DF2007-15: advice only, fixed ordinal labels, never the text; no state, count or guard changes
+            warnings += privacy.advisory_notes([("finding %d" % n, f["claim"] + "\n" + f["next_step"]) for n, f in enumerate(findings, 1)])
         counts = " (findings=%d legal_claim_flags=%d)" % (len(findings), flagged)
         if not findings:  # a header-only FINDINGS.csv detected nothing: never a pass
             detected = row("detected", "absent", src + counts, detect)
@@ -264,7 +266,8 @@ def rehearse(store, slug, as_of):
                                 ("response-received", "none"))]
     else:
         stages += request_rows(runs, requests)
-    stages += fact_rows(folder, slug, errors) + review_rows(folder, errors)
+    warnings = []
+    stages += fact_rows(folder, slug, errors) + review_rows(folder, errors, warnings)
     for r in stages:  # every generated sentence passes the guard after the slug is filled in
         r.update({k: guard(r[k].replace("SLUG", slug)) for k in ("source", "next")})
     assert [r["stage"] for r in stages] == list(STAGES) and all(r["state"] in STATES and r["gate"] in GATES for r in stages)
@@ -272,8 +275,11 @@ def rehearse(store, slug, as_of):
     verdict = ({"first_break": first["stage"], "state": first["state"], "next": first["next"],
                 "text": "first break: %s — %s — %s" % (first["stage"], first["state"], first["next"])} if first else
                {"first_break": None, "state": "done", "next": "none", "text": COMPLETE % slug})
-    return {"schema": SCHEMA, "review_required": True, "agency": slug, "as_of": as_of, "stages": stages,
-            "verdict": verdict, "source_errors": sorted(errors, key=lambda e: (e["source"], e["error"])), "note": NOTE}
+    doc = {"schema": SCHEMA, "review_required": True, "agency": slug, "as_of": as_of, "stages": stages,
+           "verdict": verdict, "source_errors": sorted(errors, key=lambda e: (e["source"], e["error"])), "note": NOTE}
+    if warnings:  # DF2007-15: present only when a wording advisory fired, so a clean receipt keeps its exact bytes
+        doc["wording_warnings"] = warnings
+    return doc
 
 
 def markdown(doc):
@@ -283,6 +289,8 @@ def markdown(doc):
               for r in doc["stages"]]
     lines += ["", "Verdict: " + doc["verdict"]["text"], ""]
     lines += ["Source errors: " + (", ".join("%s (%s)" % (e["source"], e["error"]) for e in doc["source_errors"]) or "none"), ""]
+    if doc.get("wording_warnings"):  # DF2007-15: advice only; never changes a stage, the verdict or the exit code
+        lines += doc["wording_warnings"] + [""]
     return "\n".join(lines)
 
 
