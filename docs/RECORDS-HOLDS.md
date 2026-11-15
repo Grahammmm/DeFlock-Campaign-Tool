@@ -144,6 +144,26 @@ re-extracting an original into another path, stop: that is a G data decision, no
 
 ## Attended host runtime handoff (DF0652-12)
 
+### Ownership amendment: backup-reader integration
+
+The COMPLETE owned-file list in the DF0652-12 build spec is extended to include
+`campaign_tool/records/records_backup.py`, solely for `_evidence` to admit the
+existing exact audit schema plus the fixed `runtime_source: "socket"` metadata.
+Authority is the explicit SCOPE-3 grant in build card `t_4f464af3`, reaffirmed in
+fix card `t_0ada8044` for PR #1624, addressing RETURN item 1 from `t_ebee560c`.
+This records the authorized file expansion in the versioned feature contract,
+not merely in the PR description; all other owned-file boundaries remain intact.
+
+The spec's named quiet-socket-audit backup acceptance requires this integration:
+main's reader requires an exact key set and therefore does not already accept
+the additive source field. The only additional admitted shape is that same key
+set plus `runtime_source` equal to `"socket"`. Unknown source values and extra
+keys remain refused. Digest binding, exact roots, audit identity, freshness and
+all-writers-stopped requirements are unchanged; this amendment authorizes no
+other admission change, runtime capture, publication or live backup action.
+
+### Attended operation
+
 When the container cannot see the host runtime and report directories, the operator
 can run this standalone Linux helper on the host. These are generic forms, not
 approval for a live release or backup:
