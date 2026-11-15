@@ -6,6 +6,7 @@ into `R/agencies/<slug>/review/inputs/` (texts, MANIFEST.csv, SOURCES.csv) and r
 writes a fact and never calls a model. See docs/RECORDS-ANALYSIS-LANE.md.
 """
 import argparse
+import collections
 import csv
 import datetime
 import importlib.util
@@ -21,6 +22,7 @@ from pathlib import Path
 from .. import law
 from . import analysis_config as ac
 from . import analysis_export as ae
+from . import finding_review as fr
 from . import public_packets as pp
 
 MEMBER = ae.RUN.pattern + r"/(analysis-ready\.json|EXPORT\.json|TEXTS\.csv|texts/[0-9a-f]{64}\.txt)"
@@ -380,8 +382,9 @@ def _first(rows):
     return min(rows, key=lambda r: r["received_at"])
 
 
-def _hold(row, code, ids):
-    return {"finding_id": row["finding_id"], "code": code, "ids": sorted(ids)}
+def _hold(row, code, ids, reason=None):
+    held = {"finding_id": row["finding_id"], "code": code, "ids": sorted(ids)}
+    return dict(held, reason=reason) if reason is not None else held  # a private reason only for a rejected finding
 
 
 def _whole(value):
@@ -404,8 +407,11 @@ def _page_hold(ids, facts, sources):
     return "EVIDENCE_PAGE_OUT_OF_RANGE" if any(page > count for page, count in pairs if page and count) else None
 
 
-def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft):
-    """-> (packet entry, None) or (None, (code, ids)); every join is frozen in the spec and nothing is invented."""
+def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft, gate=None, ambiguous=False):
+    """-> (packet entry, None) or (None, (code, ids[, private reason])); every join is frozen in the spec and nothing is invented.
+
+    `gate(finding_id, found, ambiguous)` is the human finding review (DF2007-05); without one every finding is held FINDING_UNREVIEWED.
+    """
     ids = [i for i in found["fact_ids"].split(";") if i]
     for code, bad in (("EVIDENCE_FACT_MISSING", lambda f: f is None), ("EVIDENCE_FACT_UNREVIEWED", lambda f: f["status"] == "unreviewed"),
                       ("EVIDENCE_FACT_DISPUTED", lambda f: f["status"] == "disputed"),
@@ -429,18 +435,22 @@ def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft):
     packet = {"kind": "finding", "agency_key": agency, "request_id": requests.pop() if len(requests) == 1 else "",
               "source": "fr-" + ae._sha((slug + "\x1f" + row["finding_id"]).encode())[:24], "title": found["topic"],
               "text": found["claim"] + ("\n\n" + draft + ". The %s law package is draft and unreviewed." % ref["id"] if package["status"] == "draft" else ""),
-              "documents": sorted(docs.values(), key=lambda d: d["sha256"]), "citations": cites, "finding_state": pp.PUBLIC_STATE}
+              "documents": sorted(docs.values(), key=lambda d: d["sha256"]), "citations": cites}
     if "\n" in packet["title"] or len(packet["title"]) > pp.MAX_TITLE:
         return None, ("EVIDENCE_TITLE_INVALID", ids)
     if not isinstance(agency, str) or pp.KEY.fullmatch(agency) is None:
         return None, ("EVIDENCE_AGENCY_INVALID", ids)
     try:
-        pp.clean(packet)
+        pp.clean(dict(packet, finding_state=pp.PUBLIC_STATE))  # the lint sees the state the packet gets only after the human review below
     except pp.PacketError as exc:
         return None, ("EVIDENCE_REFUSED " + exc.code, ids)
-    code = _page_hold(ids, facts, sources)  # after every existing check (DF2007-04); DF2007-07 and -05 holds follow this one
+    code = _page_hold(ids, facts, sources)  # after every existing check (DF2007-04); DF2007-07's hold goes here, then the finding review
     if code:
         return None, (code, ids)
+    held = gate(row["finding_id"], found, ambiguous) if gate else ("FINDING_UNREVIEWED", None)  # last: a human decision on the exact finding
+    if held:
+        return None, (held[0], ids) + ((held[1],) if held[1] is not None else ())
+    packet["finding_state"] = pp.PUBLIC_STATE
     return {"packet": packet, "provenance": {
         "finding_id": row["finding_id"], "fact_ids": ids, "rule_ids": cited, "withheld_rule_ids": [i for i in rule_ids if i not in cited],
         "withheld_policy_refs": [i for i in found["policy_refs"].split(";") if i],
@@ -448,9 +458,13 @@ def _packet_one(row, found, facts, sources, ref, package, agency, slug, draft):
                       for d in packet["documents"] for f in [_first(sources[d["sha256"]])]]}}, None
 
 
-def _packets(root, slug, config):
-    """-> (outcome line, ledger fields) for one DONE agency: the PUBLIC-OK findings as finding packets in the outbox (DFGL-07g)."""
-    review, facts_tool = ac._flock_review(), _tool("flock_facts")
+def _evaluate(root, slug, config, gate=None):
+    """Read-only: every PUBLIC-OK finding of one agency's configured run joined to its checked evidence and (through gate) its human review.
+
+    `gate(finding_id, found, ambiguous) -> None | (hold code, private reason or None)` is the last hold. Shared by the packet step and
+    `finding_review.list_findings`, so neither approximates the other's eligibility from a stale outbox.
+    """
+    facts_tool = _tool("flock_facts")
     out, store = Path(config["review"]["out"]), Path(config["facts_intake"]["fact_store"])
     run = Path(config["compare"]["f3"]["store"]) / "agencies" / slug / "runs" / config["review"]["run_date"]
     folder = store / "agencies" / slug
@@ -458,26 +472,39 @@ def _packets(root, slug, config):
         agency = json.loads((root / "profiles" / (slug + ".json")).read_text(encoding="utf-8")).get("records_agency_id")
     except (OSError, ValueError, AttributeError):
         agency = None
-    ok, findings = _table(run / "PUBLIC-OK.csv"), {r["finding_id"]: r for r in _table(run / "FINDINGS.csv")}
+    ok, listed = _table(run / "PUBLIC-OK.csv"), _table(run / "FINDINGS.csv")
+    findings = {r["finding_id"]: r for r in listed}
+    dups = {i for table in (ok, listed) for i, n in collections.Counter(r["finding_id"] for r in table).items() if n > 1}  # never approvable
+    draft = _tool("flock_compare").DRAFT
     rows, _, codes = facts_tool.read_reviewed(store, slug)
     facts, sources = {r["fact_id"]: r for r in rows}, {}
     for r in _table(out / "inputs" / "SOURCES.csv"):
         sources.setdefault(r["original_sha256"], []).append(r)
     ref, package, law_code = _law_package(root, agency)
-    packets, held = [], []
+    results = []
     for row in ok:
-        found = findings.get(row["finding_id"])
+        found, entry, hold = findings.get(row["finding_id"]), None, None
         if found is None:
-            held.append(_hold(row, "EVIDENCE_FINDING_MISSING", []))
+            hold = _hold(row, "EVIDENCE_FINDING_MISSING", [])
         elif codes or law_code:
-            held.append(_hold(row, "EVIDENCE_" + codes[0] if codes else law_code, found["fact_ids"].split(";")))
+            hold = _hold(row, "EVIDENCE_" + codes[0] if codes else law_code, found["fact_ids"].split(";"))
         else:
-            entry, bad = _packet_one(row, found, facts, sources, ref, package, agency, slug, _tool("flock_compare").DRAFT)
-            packets.append(entry) if entry else held.append(_hold(row, *bad))
+            entry, bad = _packet_one(row, found, facts, sources, ref, package, agency, slug, draft, gate, row["finding_id"] in dups)
+            hold = _hold(row, *bad) if bad else None
+        results.append((row, found, entry, hold))
     paths = [run / "PUBLIC-OK.csv", run / "FINDINGS.csv", folder / "FACTS.csv", folder / "FACT-REVIEWS.csv", out / "inputs" / "SOURCES.csv"]
     inputs = dict(zip(("public_ok", "findings", "facts", "fact_reviews", "sources"), map(_file_sha, paths)))
     inputs["law_package"] = _file_sha(law.package_path(ref["id"])) if ref else "missing"
-    body = {"schema": PACKET_SCHEMA, "agency_id": agency, "slug": slug, "inputs": inputs, "packets": packets, "held": held}
+    return {"agency": agency, "run": run, "ok": ok, "results": results, "dups": dups, "facts": facts, "inputs": inputs,
+            "packets": [e for _, _, e, _ in results if e], "held": [h for _, _, _, h in results if h]}
+
+
+def _packets(root, slug, config):
+    """-> (outcome line, ledger fields) for one DONE agency: the PUBLIC-OK findings as finding packets in the outbox (DFGL-07g)."""
+    review, reviews = ac._flock_review(), fr.Reviews(root)
+    ev = _evaluate(root, slug, config, lambda fid, found, dup: reviews.gate(slug, found, dup))
+    ok, packets, held = ev["ok"], ev["packets"], ev["held"]
+    body = {"schema": PACKET_SCHEMA, "agency_id": ev["agency"], "slug": slug, "inputs": ev["inputs"], "packets": packets, "held": held}
     key = ae._sha(json.dumps(body, sort_keys=True).encode())
     counts = {}
     for h in held:

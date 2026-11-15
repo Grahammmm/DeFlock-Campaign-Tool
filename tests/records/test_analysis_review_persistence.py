@@ -7,12 +7,18 @@ REVIEW-STATE.json, PUBLIC-OK, FINDINGS or a packet by hand.
 import contextlib
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from campaign_tool.records import public_packets as pp, run_stages
 from campaign_tool.records.ledger import store
+from tests.approval_signing import KEYGEN
 from tests.flock import test_review as tr
 from tests.records import test_analysis_bridge as tb, test_analysis_packet_outbox as to, test_analysis_packets as tap, test_analysis_tick as tt
 from tests.records import test_outcome_received_items as tri
@@ -25,6 +31,16 @@ class ReviewPersistenceTests(unittest.TestCase):
         self.o = to.PacketOutboxTests("test_empty_received_at_holds_the_finding_as_date_unavailable")
         self.o.start()  # real export + sync + the real DAG to DONE with unreviewed facts
         self.addCleanup(self.o.doCleanups)
+        # the real analysis-tick CLI runs in a subprocess: trust the throwaway finding approver there too (test-only sitecustomize)
+        shim = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, shim, True)
+        (shim / "sitecustomize.py").write_text(
+            "from pathlib import Path\nfrom campaign_tool import approval\n"
+            "approval.TRUSTED_SIGNERS = Path(%r)\napproval.SSH_KEYGEN = Path(%r)\napproval._require_root = lambda path: None\n"
+            % (str(self.o.signer.signers), KEYGEN))
+        env = patch.dict(os.environ, {"PYTHONPATH": os.pathsep.join([str(shim), str(REPO)])})
+        env.start()
+        self.addCleanup(env.stop)
         received = tri.ReceivedItemsTests("test_stage_artifact_modes_replay_conflict_and_no_coordinator_input")
         received.setUp()
         self.addCleanup(received.doCleanups)
@@ -92,6 +108,12 @@ class ReviewPersistenceTests(unittest.TestCase):
         run = o.out / "compare" / "store" / "agencies" / tt.SLUG / "runs" / json.loads(o.t.config().read_text())["review"]["run_date"]
         (run / "VERIFY.csv").write_bytes((tr.FIX / "verify-sample.csv").read_bytes())
         self.assertEqual(o.t.mark("f4", "openai"), 0)
+        # the claim changed, so the earlier finding approval no longer binds: held until a new signed review of the new text
+        code, text = o.t.tick(process=True)
+        self.assertEqual(code, 0, text)
+        self.assertIn(" PACKET_ALL_HELD n=0 held=4 EVIDENCE_FACT_UNREVIEWED=3 FINDING_UNREVIEWED=1", text)
+        self.assertEqual(len(o.outbox()), 1)
+        o.approve_finding("N1")
         code, text = o.t.tick(process=True)
         self.assertEqual(code, 0, text)
         self.assertIn(" PACKET_STAGED", text)
