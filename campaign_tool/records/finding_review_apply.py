@@ -125,6 +125,16 @@ def _overtaken(root, entry, value):
              and e["at"] >= entry["at"]]
     if not later:
         return None
+    # an unlanded entry is admitted like a fresh one: the finding must still hash to what the page showed, and an approval
+    # must still verify (stale -> STALE_FINDING, unavailable trust -> deferred), before any existing event can settle it
+    finding, _ = fr._target(root, agency, finding_id, entry["revision_seen"])
+    if entry["action"] == "finding_approve":
+        try:
+            fr.approval.verify(fr.finding_payload(agency, finding).encode("utf-8"), value["signature"])
+        except fr.approval.TrustUnavailable:
+            raise fr.FindingReviewError(fr.DEFERRED) from None
+        except fr.approval.ApprovalError:
+            raise fr.FindingReviewError("finding_signature_refused") from None
     latest = later[-1]
     if entry["action"] == "finding_approve":
         same = latest["decision"] == "approve" and latest.get("signature") == value["signature"]

@@ -88,6 +88,28 @@ class FindingApply(cf.FindingConsole):
         self.assertEqual([r["outcome"] for r in self.receipts()], ["STALE_FINDING"])
         self.assertEqual(self.lines_of(self.tick()[1]), ["finding_approve ALREADY"])  # receipted once
 
+    def test_an_existing_identical_event_does_not_skip_the_stale_check(self):
+        self.start()
+        signature = self.sign()
+        self.post("approve", signature=signature)
+        fr.approve(self.ar, self.slug, "N1", signature)  # same signature from the command line, without the entry id
+        self.edit_claim("A claim that changed after the page was loaded.")
+        code, out = self.tick()
+        self.assertEqual((code, self.lines_of(out)), (0, ["finding_approve STALE_FINDING"]))
+        self.assertEqual([r["outcome"] for r in self.receipts()], ["STALE_FINDING"])
+
+    def test_an_existing_identical_event_does_not_skip_the_trust_check(self):
+        self.start()
+        signature = self.sign()
+        self.post("approve", signature=signature)
+        fr.approve(self.ar, self.slug, "N1", signature)
+        with mock.patch.object(approval, "TRUSTED_SIGNERS", Path("/nonexistent/deflock-trust/approvers.allowed_signers")):
+            code, out = self.tick()
+        self.assertEqual((code, self.lines_of(out), self.receipts()), (0, ["finding_approve DEFERRED"], []))
+        code, out = self.tick()  # trust restored: the event already there settles it
+        self.assertEqual(self.lines_of(out), ["finding_approve APPLIED"])
+        self.assertEqual(len(self.review_events()), 1)
+
     def test_one_bad_entry_does_not_block_a_healthy_one(self):
         self.start()
         pin = types.SimpleNamespace(source_project_id=self.pid, run_id=RUN, name="x")
