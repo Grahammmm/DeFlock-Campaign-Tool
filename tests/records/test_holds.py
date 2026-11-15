@@ -287,6 +287,36 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(tree(self.project), before)
         self.assertFalse(self.receipts.exists())
 
+    def test_legacy_release_bytes_and_mixed_source(self):
+        expected_dry = {"schema": holds.RELEASE_SCHEMA, "mode": "dry_run", "code": "EXTRACT_ERROR",
+                        "released": 0, "receipt_file": None, "run_id": None, "runtime_lock": "not_checked",
+                        "eligible": 3, "held_by_other_code": 0,
+                        "items": [{"sha256_prefix": digest(n)[:12], "attempts": 3} for n in (1, 2, 3)]}
+        argv = ["release", "--project", str(self.project), "--code", "EXTRACT_ERROR"]
+        self.assertEqual(run_main([*argv, "--json"]),
+                         (0, json.dumps(expected_dry, indent=1, sort_keys=True) + "\n", ""))
+        expected_text = "sha256_prefix code attempts\n" + "".join(
+            f"{digest(n)[:12]} EXTRACT_ERROR 3\n" for n in (1, 2, 3)) + (
+            "eligible 3 selected 3 held_by_other_code 0\n"
+            "DRY_RUN nothing changed (apply: --apply --max N --receipt DIR --report RUN-REPORT "
+            "--runtime-lock RUNTIME_DIR/run-records.lock)\n")
+        self.assertEqual(run_main(argv), (0, expected_text, ""))
+        with mock.patch.object(holds.os, "urandom", return_value=b"\x01" * 4):
+            doc = self.apply(1)
+        name = "holds-release-20261113T160000Z-01010101.jsonl"
+        expected_apply = {**expected_dry, "mode": "apply", "released": 1, "receipt_file": name,
+                          "run_id": RUN, "runtime_lock": "held", "items": expected_dry["items"][:1]}
+        self.assertEqual(json.dumps(doc, sort_keys=True), json.dumps(expected_apply, sort_keys=True))
+        expected_row = {"schema": holds.RELEASE_SCHEMA, "sha256_prefix": digest(1)[:12],
+                        "code": "EXTRACT_ERROR", "attempts_before": 3, "released_at": NOW.isoformat(),
+                        "run_report_sha256": hashlib.sha256(self.report.read_bytes()).hexdigest()}
+        self.assertEqual((self.receipts / name).read_bytes(),
+                         (json.dumps(expected_row, sort_keys=True) + "\n").encode())
+        self.refused(2, "RUNTIME_SOCKET_UNSAFE", runtime_socket="unused")
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+            run_main([*argv, "--runtime-lock", str(self.lock), "--runtime-socket", "unused"])
+        self.assertEqual(caught.exception.code, 2)
+
     def test_apply_resets_at_most_max_with_a_receipt_then_the_rest(self):
         doc = self.apply(2)
         self.assertEqual((doc["released"], doc["eligible"]), (2, 3))

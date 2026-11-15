@@ -75,6 +75,35 @@ class QuiescenceAudit(unittest.TestCase):
                                   "--quiescence", str(self.work / "e.json"), "--quiescence-sha256", digest)
         self.assertEqual((code, line["code"]), (0, "OK"))
 
+    def test_legacy_audit_json_bytes(self):
+        from datetime import datetime, timezone
+        clock = datetime(2026, 11, 15, tzinfo=timezone.utc)
+        expected = {"schema": "records-quiescence-v1", "basis": "independent_all_writer_audit",
+                    "roots": [str(self.project)], "observed_utc": clock.isoformat(),
+                    "all_writers_stopped": True, "auditor": "records quiescence-audit",
+                    "checks": {"units": {"listed": len(qa.WRITER_UNITS), "missing": 0, "active": 0, "stale": False},
+                               "open_files": {"count": 0, "proc_unreadable": 0}, "run_lock": "free",
+                               "arrival_pending": False, "codes": []}}
+        with mock.patch.object(qa, "datetime") as date:
+            date.now.return_value = clock
+            status, _, doc = self.audit()
+        self.assertEqual((status, doc), (0, expected))
+        self.assertEqual((self.work / "e.json").read_bytes(),
+                         (json.dumps(expected, sort_keys=True) + "\n").encode())
+
+    def test_quiet_socket_audit_is_accepted_by_backup(self):
+        from tests.records.test_runtime_fds import session
+        out = self.work / "socket-audit.json"
+        with session(self.work, runtime=self.runtime) as (path, host), redirect_stdout(io.StringIO()) as stdout:
+            status = qa.main(["--project", str(self.project), "--runtime-socket", str(path),
+                              "--units-file", self.units(), "--out", str(out)])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(out.read_text())["runtime_source"], "socket")
+        digest = stdout.getvalue().strip().split("evidence_sha256=")[-1]
+        code, line = self.run_cli("backup", "--project", str(self.project), "--into", str(self.work / "sets"),
+                                  "--quiescence", str(out), "--quiescence-sha256", digest)
+        self.assertEqual((code, line["code"]), (0, "OK"))
+
     def test_active_unit(self):
         self.assert_fails("WRITER_ACTIVE", units=self.units(**{"records-console.service": "active"}))
 
