@@ -21,7 +21,9 @@ The config is an owner-owned, mode **0600**, regular, non-symlink JSON file with
 exactly these fields (no command-line trust-pin override):
 
 - `schema`: `legacy-adoption-v1`
-- `manifest_sha256`, `policy_sha256`: lowercase SHA-256 pins
+- `manifest_sha256`, `policy_sha256`: lowercase SHA-256 pins. `policy_sha256` may
+  be JSON `null` **only** for the first-proposal bootstrap below; a missing key,
+  empty string, boolean or malformed hash is never null.
 - `export_root`, `supplement_root`: absolute source roots, without traversal
 - `adoption`: `enabled` or `disabled`
 
@@ -93,15 +95,38 @@ Known refusals include `legacy_source_path_forbidden`,
 `legacy_source_root_not_admitted`, `legacy_source_class_unknown`,
 `legacy_manifest_conflict`, `legacy_manifest_duplicate`, `legacy_manifest_invalid`,
 `legacy_input_mode`, `legacy_manifest_hash_mismatch`, `legacy_policy_hash_mismatch`,
-`legacy_adoption_disabled`, and `capture_not_in_approved_inventory`.
+`legacy_adoption_disabled`, `legacy_policy_required`, and `capture_not_in_approved_inventory`.
 Other failures use `legacy_adoption_refused`; machine-valid is review-required.
+
+## Bootstrap order (first policy proposal)
+
+A config with `"policy_sha256": null` and no `--policy` may run only with
+`--write-policy-proposal` and without `--apply`. It does the same manifest,
+ledger and source preflight as any dry run and writes the proposal; it never
+writes the ledger, CAS, run rows or receipts and grants no adoption authority.
+
+```sh
+python3 -B -m campaign_tool.records.legacy_adoption \
+  --root /private/processing-v1 --config /private/bootstrap.json \
+  --manifest /private/manifest.tsv --write-policy-proposal /private/proposal.json
+```
+
+Every other mode with a null pin (no proposal flag, `--apply`, or a supplied
+`--policy`), and any pinned config without `--policy`, refuses with
+`legacy_policy_required` (exit 2). Order: (1) pin the manifest in a disabled
+config with `policy_sha256` null; (2) write the proposal; (3) G approves the exact
+policy; (4) pin its digest in the config and supply the policy file; (5) enable
+only after explicit approval and rehearsal. The proposal's `approval_sha256`
+hashes the original bootstrap config bytes; pinning or enabling later changes
+those bytes and is not itself proof of approval.
 
 ## Attended T8 order (operator only; not executed by T6)
 
 1. Build the real manifest from the admitted inventory, never archive hashing.
 2. Freeze source mounts read-only; independently review manifest and source roots.
-3. Pin the manifest and candidate policy in a private disabled config; dry-run and
-   inspect counts/proposal. Resolve discrepancies before any apply authority.
+3. Pin the manifest in a private disabled config (null policy for the first
+   proposal, see Bootstrap order); dry-run and inspect counts/proposal. Resolve
+   discrepancies before any apply authority.
 4. Review/approve the exact policy and enabled config; pin the installed engine.
 5. Rehearse against an approved scratch restore, compare counts/receipts and
    preserve evidence, and obtain any retained live approval.
