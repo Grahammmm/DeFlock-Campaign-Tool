@@ -15,9 +15,30 @@ budget 300 s, so one scanned page is not cut by the stage or document timeout. T
 Exit 0 only when every stage passed and `manual_steps` is empty. `--out/<label>` must not exist yet.
 
 A stage that reports ok or warn but left work undone is still a manual step, so the result is FAIL: `extract` with any
-item left `AWAITING_OCR`, `EXTRACT_ERROR`, `EXTRACT_TIMEOUT` or `EXTRACT_NOT_ACCEPTED` (listed as `extract:<CODE>`), and
-`outputs` ending `warn` with `OUTPUTS_*_UNAVAILABLE` or `OUTPUTS_DIGEST_UNRESOLVED` (listed as `outputs:<CODE>`).
-`NO_NEXT_STEPS_FOR_THIS_MESSAGE` stays a plain warning.
+item left `AWAITING_OCR`, `EXTRACT_ERROR`, `EXTRACT_TIMEOUT`, `EXTRACT_NOT_ACCEPTED`, `PARSER_MISSING`,
+`DECODER_NEEDED` or `WORKBOOK_POLICY_REQUIRED` (listed as `extract:<CODE>`; the last three mean this host lacks a
+parser, decoder or workbook policy), and `outputs` ending `warn` with `OUTPUTS_*_UNAVAILABLE` or
+`OUTPUTS_DIGEST_UNRESOLVED` (listed as `outputs:<CODE>`). `NO_NEXT_STEPS_FOR_THIS_MESSAGE` stays a plain warning.
+
+## Unread originals (`unread`)
+
+Both reports list every replayed original whose extract outcome is not `EXTRACTED`: `proof-report.json` has an
+`unread` array (always present, `[]` when everything was read) and `proof-report.md` an `Unread originals` section
+(`- none` when empty). Each row is exactly `{sha256_prefix, kind, outcome}`: the first 12 hex characters of the
+original's sha256, its native form (`unknown` when none), and the native extract code. The rows come from this run's
+own `processing-v1/runs/extract-<run>.json` (`records-extract-outcomes-v1`), one row per original (including the
+`.eml` itself when it is unread), sorted by full hash; two originals sharing a prefix both appear. No file name, path,
+subject, diagnostic or text is ever included.
+
+- Tool gaps (`PARSER_MISSING`, `DECODER_NEEDED`, `WORKBOOK_POLICY_REQUIRED`, plus the older four codes) fail the
+  proof with the manual step `extract:<CODE>`.
+- Agency-side gaps (`CORRUPT_DOCUMENT`, `EXTRACT_INCOMPLETE`) are listed and marked `agency-side` in the Markdown, but
+  do not fail the proof alone. PASS can therefore coexist with unread rows and is not a claim that every supplied byte
+  was read. Other outcomes (for example `PRESERVE_PENDING`, `DEFERRED_RUN_BUDGET`) are listed too without a manual step.
+- If extract finished (ok or warn) but its list is missing, unreadable or malformed, the proof fails with the manual
+  step `extract:PROOF_EXTRACT_LIST_UNAVAILABLE` rather than reporting an empty inventory.
+- If extract itself failed or did not run, its own failure stays the manual reason and `unread` is `[]`: that means
+  coverage is unknown, not that everything was read.
 
 ## Synthetic seed (`--seed FILE`)
 
@@ -41,7 +62,7 @@ In production canonical identity still comes only from the pipeline. Without `--
 | telegram_text | summary text written to a file, never sent | `telegram-summary.txt`, `project/run-report.json` |
 | console | Inbox, Documents, Findings, Deadlines, Drafts, Next steps, Run health render; a Deny POST writes the decision and sends nothing | `console/*.html` |
 
-Reports: `proof-report.json` and `proof-report.md` (stage table, seconds per stage, output files, manual steps).
+Reports: `proof-report.json` and `proof-report.md` (stage table, seconds per stage, output files, manual steps, unread originals).
 
 ## Console screens
 
