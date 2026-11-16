@@ -150,6 +150,41 @@ Example: `{"code": "source_not_readonly_fs", "row": 2, "sha256_prefix": "0123456
 The report is a **current observation**, not approval, policy eligibility, or proof
 that a later apply will pass; apply keeps its own refusal codes.
 
+## Building the manifest from the ledger
+
+```sh
+python3 -B -m campaign_tool.records.legacy_adoption manifest \
+  --root /private/processing-v1 --config /private/legacy.json --out /private/new-manifest.tsv
+```
+
+`legacy_adoption manifest` is an inventory, not authority. It reads only the
+config's roots and the ledger (opened read-only; nothing is migrated or created),
+walks `export_root` and `supplement_root` without following any link, hashes
+regular files up to the source size limit, and writes one
+`sha256<TAB>size<TAB>source_path` row for each unresolved legacy original that a
+file matches by sha256 and size. The config needs only its own fields: the pinned
+manifest and policy are not read, and the output is never pinned for you.
+
+- **Denominator**: originals with role and scope `unresolved`, no `storage_path`, a
+  non-null `legacy_format` other than `json` or `csv`, and no resolution row.
+  Unknown formats stay in; dry-run later reports them as `format_unknown`.
+- **One row per original**: the first matching path in sorted order across both
+  roots, rows sorted by sha256, at most 10000 (more refuses the whole run).
+- **Safety**: a regular, owner-owned, single-link file with no group/other bits and
+  no link in its path is hashed; anything else, or a file that changes while read,
+  is skipped and counted once. Read-only filesystems are *not* required here;
+  `--report-sources` and `--apply` still require them.
+- **Output**: `OUT` is created exclusively with mode `0600` in an existing
+  owner-only directory outside both roots; an existing entry refuses (exit 2, no
+  overwrite). The bytes are accepted unchanged by the manifest parser.
+- **stdout** is one JSON object of counts only: `matched` (rows written),
+  `duplicates` (extra matching paths), `unmatched_pending` (denominator minus
+  matched) and `skipped_unsafe`. A refusal prints one fixed code and writes no file.
+
+Order: generate the inventory, hash and deliberately pin it in the config, run
+`--report-sources`, prepare read-only sources (regenerate and re-pin if paths or
+bytes change), then the proposal and approval steps below. None is done by this command.
+
 ## Attended T8 order (operator only; not executed by T6)
 
 1. Build the real manifest from the admitted inventory, never archive hashing.

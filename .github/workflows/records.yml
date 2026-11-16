@@ -37,9 +37,32 @@ jobs:
         env:
           TMPDIR: /var/tmp
         run: python -B -W error::ResourceWarning tools/ci_affected.py --tier pr --shard ${{ matrix.shard }} --shards 5 --jobs 0
+  full:
+    # Main/nightly source coverage in two disjoint shards per Python. One 4-CPU job ran 20-35 min and hit the old
+    # 35-minute offline timeout on slow runners (main runs 43768448222, 43769348646, 43772136816: 'cancelled').
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+        shard: [0, 1]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: python -m pip install -r requirements-records-test.txt -r requirements-runner.txt
+      - name: Full source coverage minus explicitly owned integration suites (disjoint shards)
+        env:
+          TMPDIR: /var/tmp
+        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier full --shard ${{ matrix.shard }} --shards 2 --jobs 0
   offline:
     # Preserve the required check name, and fail closed on any failed shard.
-    needs: affected
+    needs: [affected, full]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -53,6 +76,11 @@ jobs:
         env:
           SHARDS: ${{ needs.affected.result }}
         run: test "$SHARDS" = success
+      - name: Require every full-tier shard
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+        env:
+          SHARDS: ${{ needs.full.result }}
+        run: test "$SHARDS" = success
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
@@ -62,11 +90,6 @@ jobs:
       - name: Full-tier dependencies
         if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
         run: python -m pip install -r requirements-records-test.txt -r requirements-runner.txt
-      - name: Full source coverage minus explicitly owned integration suites
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
-        env:
-          TMPDIR: /var/tmp
-        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier full --jobs 0
       - name: Public-tree credential and private-path scan
         run: python -B tools/check_public_tree.py
       - name: Every pin matches (main, nightly, dispatch)

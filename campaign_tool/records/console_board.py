@@ -412,8 +412,58 @@ def render_agency(model, agency):
                     esc(e.get("date") or "undated"), esc(e["type"]), esc(summary), _source(e.get("source") or {}, docs_href)))
             out.append("</tbody></table>")
         out.append("</section>")
+    out.extend(_tie_section(model, agency))
     out.extend(_agency_sections(model, agency))
     return "\n".join(out + ["</main></body></html>"]) + "\n"
+
+
+def tie_links(handler):
+    """The current message ties for the agency page: {'state': 'ok', links, token, age} or {'state': 'unavailable', code}.
+    ``token`` is None (no control) for a read-only export; ``age`` labels an exported snapshot. Read-only."""
+    from . import approval_queue
+    source = handler.options["source"]
+    try:
+        links = source.message_links()
+    except (approval_queue.ApprovalQueueError, OSError, ValueError, KeyError, TypeError) as error:
+        return {"state": "unavailable", "code": getattr(error, "code", "message_links_unavailable")}
+    pin = handler.pin
+    return {"state": "ok", "links": links, "token": handler.csrf_token(),
+            "age": None if pin is None else "export taken %s" % pin.exported_at}
+
+
+def _tie_section(model, agency):
+    """Each tied message of this agency's requests with "This tie is wrong". Nothing when the model carries no tie data."""
+    ties = model.get("message_links")
+    if ties is None:
+        return []
+    out = ["<section><h2>Message ties</h2>"]
+    if ties["state"] != "ok":
+        code = ties.get("code")
+        refresh = " Refresh the export." if code == "message_links_missing" else ""
+        out.append('<p class="diag" role="status">Message ties are unavailable (%s).%s No tie can be corrected from here.</p></section>' % (
+            esc(code), refresh))
+        return out
+    ours = {key for r in _requests(model) if r.get("agency_key") == agency for key in (r.get("ledger_request_id"), r.get("request_id"))}
+    rows = sorted((sha, link) for sha, link in ties["links"].items() if link["request_id"] in ours)
+    if ties["age"]:
+        out.append("<p>Current ties as of the %s; the timeline above is not rewritten.</p>" % esc(ties["age"]))
+    if not rows:
+        out.append("<p>No received message is tied to this agency's requests by an approved link.</p></section>")
+        return out
+    out.append("<table><caption>Messages tied by an approved link</caption><thead><tr><th scope=\"col\">Message</th>"
+               "<th scope=\"col\">Tied to request</th><th scope=\"col\">Correction</th></tr></thead><tbody>")
+    for sha, link in rows:
+        if ties["token"] is None:
+            control = "Read-only: this export cannot take a correction."
+        else:
+            control = ('<form method="post" action="/message-links/relink"><input type="hidden" name="csrf_token" value="%s">'
+                       '<input type="hidden" name="message_sha256" value="%s"><input type="hidden" name="supersedes" value="%s">'
+                       '<button type="submit">This tie is wrong</button></form>' % (esc(ties["token"]), esc(sha), esc(link["line_sha256"])))
+        out.append("<tr><td>%s</td><td>%s (agency %s)</td><td>%s</td></tr>" % (
+            esc(sha[:12]), esc(link["request_id"]), esc(link["agency_id"]), control))
+    out.append("</tbody></table><p>A correction only queues a new decision to review; nothing changes until a replacement is "
+               "signed and applied, and then only from the next run on.</p></section>")
+    return out
 
 
 def _agency_sections(model, agency):
@@ -509,5 +559,7 @@ def serve(handler):
         handler._fail(404)
         return True
     today = datetime.now(timezone.utc).date()
+    if parts.path == "/agency":
+        model["message_links"] = tie_links(handler)
     handler._send(200, render_board(model, today, which) if parts.path == "/board" else render_agency(model, agency))
     return True

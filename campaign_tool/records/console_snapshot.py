@@ -15,6 +15,7 @@ import threading
 from collections import namedtuple
 
 from . import approval_queue as aq, console_export as ce, console_ocr, mail_drafts, mail_send, public_packets as pp, public_updates as pu
+from .outcomes import unmatched
 
 MAX_MODEL = 64 * 1024 * 1024
 MAX_MANIFEST = 8 * 1024 * 1024
@@ -146,6 +147,10 @@ class LiveSource:
     def queue_history(self, ident):
         return aq.history(self.project, ident)
 
+    def message_links(self):
+        """{message_sha256: {agency_id, request_id, line_sha256}}: the current ties, read live and read-only."""
+        return unmatched.link_fingerprints(self.project)
+
     def packets_pending(self, now=None):
         return pp.pending(self.project, now)
 
@@ -246,6 +251,14 @@ class SnapshotSource:
 
     def queue_history(self, ident):
         return self._queue_item("history", ident)
+
+    def message_links(self):
+        """The exported current ties. An export without the field (older) is refused so the control asks for a refresh; an
+        empty mapping is a real empty set."""
+        links = self._doc("queue.json", aq.ApprovalQueueError).get("message_links")
+        if type(links) is not dict:
+            raise aq.ApprovalQueueError("message_links_missing")
+        return links
 
     # The exported packet rows were computed at export time; their ages are the ages then.
     def packets_pending(self, now=None):
