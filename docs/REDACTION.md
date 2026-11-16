@@ -87,6 +87,16 @@ python3 tools/flock_redact.py status STORE SLUG SHA DOCUMENT
 python3 tools/flock_redact.py apply STORE SLUG SHA DOCUMENT
 ```
 
+The console (`records panel --flock-store STORE`, `/redactions`) can take the pasted signature instead of a file: it only journals it. To verify and
+install it through the same `signoff` function, scope `flock-redaction` and trust file, run the attended replay (the console never does):
+
+```
+python3 tools/flock_redact.py signoff-apply STORE SLUG SHA DOCUMENT --decisions J
+```
+
+A journaled signature is pending until this prints APPLIED (one receipt per entry in `J/redaction-signoffs-applied.jsonl`; a changed proposal is
+STALE_PROPOSAL, a forged signature SIGNATURE_REFUSED, an unavailable trust anchor DEFERRED and retried). Apply stays a separate manual step.
+
 A scan with matches exits 3; that is evidence for review, not approval. Propose
 requires a current full-category receipt with no allow file and no scan failure.
 The receipt hash, not its text or matched values, is recorded in the proposal.

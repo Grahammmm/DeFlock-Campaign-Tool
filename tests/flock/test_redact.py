@@ -419,6 +419,7 @@ class RedactTest(unittest.TestCase):
         for name, child in sub.choices.items():
             options = {o for a in child._actions for o in a.option_strings}
             self.assertEqual(options, {'-h', '--help'} | ({'--signature'} if name == 'signoff' else
+                                                        {'--decisions'} if name == 'signoff-apply' else
                                                         {'--scan-receipt'} if name == 'propose' else set()))
         output = io.StringIO()
         with contextlib.redirect_stderr(output), self.assertRaises(SystemExit) as exc:

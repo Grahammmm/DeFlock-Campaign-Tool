@@ -325,6 +325,26 @@ changed). Apply it with `records analysis-tick --root ROOT --from-journal J/deci
 `docs/RECORDS-CONSOLE-APPROVALS.md`). `--render OUT.html --project P --run-id RUN --analysis-root ROOT` writes the same list with no form, token or
 submit URL; OUT must be outside ROOT.
 
+### Redaction sign-off (DF2007-08)
+
+`--flock-store STORE` (absolute, link-free, owner-only 0700, outside the repository and disjoint from `--export-root`, `--decisions-dir` and the
+other console directories, else `flock_store_invalid`) adds `GET /redactions`: each proposal made by `tools/flock_redact.py propose` that has no
+`SIGNOFF.json` (a dangling link counts), with the agency, the 12-hex document prefix, the full identity, the proposed categories and line/byte
+locators, the blind-spot note and the exact text `flock_redact.py payload` prints. STORE is read-only: nothing in it is created, locked, repaired or
+written, no original is opened and no derivative is built. A missing or unreadable store is said, never shown as an empty list; an unsafe proposal
+is counted and has no form. The form (a pasted signature) exists only with `--export-root` and `--decisions-dir`; a POST takes exactly
+`csrf_token`, `slug`, `sha`, `proposal_sha256`, `signature`, re-reads the proposal and refuses a changed one, a new sign-off or a pending entry
+(409), and appends a `redaction_signoff` journal entry. Nothing is verified in the console: the page then says "Sign-off submitted; awaiting
+signoff-apply" and the proposal stays unsigned. An operator replays it attended:
+
+```
+python3 tools/flock_redact.py signoff-apply STORE SLUG SHA DOCUMENT --decisions J
+```
+
+DOCUMENT stays explicit (a proposal carries no original location). Each processed entry gets one final receipt in `J/redaction-signoffs-applied.jsonl`
+(APPLIED, STALE_PROPOSAL, SIGNATURE_REFUSED, INVALID_ENTRY or SIGNOFF_CONFLICT); a second run prints ALREADY. If the trust anchor is unavailable the
+entry is DEFERRED with no receipt and a rerun retries. `records decisions-apply` skips these entries (`SIGNOFF_APPLY_REQUIRED`).
+
 ### Hosted decisions behind Access (DFB-11)
 
 `records panel --export-root DIR --run-id auto --decisions-dir J --public-origin URL --access-config C --access-keys K --actor G` is the
