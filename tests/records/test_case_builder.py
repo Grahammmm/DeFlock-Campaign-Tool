@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from campaign_tool.records import case_builder as cb, followup_drafter as fd
-from campaign_tool.records import followup_route as fr, followup_state as fs, playbook as pb
+from campaign_tool.records import followup_findings as ff, followup_route as fr, followup_state as fs, playbook as pb
 
 DAY = "2026-11-06"
 
@@ -182,3 +182,68 @@ class CaseTests(unittest.TestCase):
             (out / "response-items.json").write_text(json.dumps(ratings))
             with self.assertRaises(ValueError):
                 cb.build_for_run(root, "r1", "alpha-pd", "OLD-1")
+
+
+def contradiction(quote="The retention setting differs from the published policy"):
+    facts = [{"fact_id": "fact-1", "source_sha256": "a" * 64, "page": 2, "quote": quote},
+             {"fact_id": "fact-2", "source_sha256": "a" * 64, "page": 5, "quote": "Second cited quote"}]
+    return {"kind": "contradiction", "agency_key": "alpha-pd", "request_id": "OLD-1", "finding_id": "F1",
+            "finding_sha256": "b" * 64, "evidence_sha256": ff.evidence_digest(facts), "facts": facts,
+            "item_ids": ["i1"], "valid": True}
+
+
+class ContradictionCaseTests(unittest.TestCase):
+    def chain(self, found, data):
+        state = fs.classify(request(), data["asks"], DAY)
+        route = fr.route(state, {}, [], DAY, items=data, reviewed_findings=[found])
+        return route, cb.build(route, request(), data, finding=found)
+
+    def data(self):
+        produced = dict(ask(1, "UNRELATED-MARKER vendor agreement", "answered"), evidence=[{"item_id": "i1", "page": 1, "quote": "q"}])
+        return items(produced)
+
+    def test_questions_come_only_from_the_reviewed_facts(self):
+        found, data = contradiction(), self.data()
+        before = copy.deepcopy((found, data))
+        route, case = self.chain(found, data)
+        self.assertEqual((found, data), before)
+        self.assertEqual(route["pattern"], "records_contradict_policy")
+        self.assertEqual([(a["number"], a["rating"], a["ask_id"]) for a in case["asks"]],
+                         [(1, "missing", "finding:F1:fact-1"), (2, "missing", "finding:F1:fact-2")])
+        self.assertEqual(case["received_asks"], [{"number": 1, "text": "UNRELATED-MARKER vendor agreement"}])
+        self.assertEqual(case["finding"]["facts"], found["facts"])
+        out = fd.draft(pb.load(), case)
+        letter = out["body"].split(fd.NOTES_RULE)[0]
+        questions = letter.split("Please:")[1]
+        for fact in found["facts"]:
+            self.assertIn(fact["quote"], letter)
+        self.assertIn("record %s page 2 (fact fact-1); record %s page 5 (fact fact-2)" % ("a" * 12, "a" * 12), questions)
+        self.assertNotIn("UNRELATED-MARKER", questions)
+        self.assertEqual(case["slots"]["retention_or_sharing"], "retention")
+        self.assertFalse(out["sent"])
+
+    def test_setting_slot_is_never_inferred(self):
+        for quote in ("Neither named here", "Retention and sharing both appear", "the retentions word is not whole"):
+            with self.subTest(quote=quote):
+                _, case = self.chain(contradiction(quote), self.data())
+                self.assertNotIn("retention_or_sharing", case["slots"])
+                self.assertIn("EDIT ME: retention or sharing", fd.draft(pb.load(), case)["body"])
+
+    def test_missing_swapped_or_tampered_descriptor_refuses(self):
+        found, data = contradiction(), self.data()
+        route, _ = self.chain(found, data)
+        tampered = copy.deepcopy(found)
+        tampered["facts"][0]["quote"] = "injected quote"
+        other = dict(found, finding_id="F2")
+        wrong_agency = dict(found, agency_key="beta-pd")
+        for label, kwargs, code in (("absent", {}, "case_finding_mismatch"), ("swapped", {"finding": other}, "case_finding_mismatch"),
+                                    ("agency", {"finding": wrong_agency}, "case_finding_mismatch"),
+                                    ("digest", {"finding": tampered}, "case_finding_evidence_invalid"),
+                                    ("invalid", {"finding": dict(found, valid=False)}, "case_finding_mismatch")):
+            with self.subTest(label), self.assertRaises(cb.CaseError) as caught:
+                cb.build(route, request(), data, **kwargs)
+            self.assertEqual(caught.exception.code, code)
+        legacy = fr.route(fs.classify(request(), [ask(1, "ALPR logs", "withheld")], DAY), {}, [], DAY,
+                          items=items(ask(1, "ALPR logs", "withheld")))
+        with self.assertRaises(cb.CaseError):
+            cb.build(legacy, request(), items(ask(1, "ALPR logs", "withheld")), finding=found)  # no finding on a legacy route
