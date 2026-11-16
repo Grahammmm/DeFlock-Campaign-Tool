@@ -23,7 +23,7 @@
   ],
   "rejected": [
     {"id": "bool_true", "dimension": "bool_true_false", "kind": "json", "value": true,
-     "error": "$.schema_version: expected type integer, got bool", "new_gate": true},
+     "error": "$.schema_version: expected constant 1, got True", "new_gate": false},
     {"id": "bool_false", "dimension": "bool_true_false", "kind": "json", "value": false,
      "error": "$.schema_version: expected constant 1, got False", "new_gate": false},
     {"id": "float_one", "dimension": "float_one_fraction_nonfinite", "kind": "float_text", "value": "1.0",

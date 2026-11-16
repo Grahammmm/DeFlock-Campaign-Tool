@@ -81,7 +81,10 @@ store check passes on the result; import facts with `flock_facts.py import` and 
 `run-outputs/<run>/text-state.json`, schema `records-text-state-v1`). Each cited record that is not `text_reviewed` there is
 labelled on its bullet, its Sources line (and so in `region`) and as `text_state` in `SOURCES.json`: `(OCR text, not
 visually reviewed)`, `(text state: <words>)`, or `(text state not recorded)` when the file does not list it. A missing,
-linked, oversize or invalid file is a `config:` error and nothing is written. The label never changes which findings are
+linked, oversize or invalid file is a `config:` error and nothing is written. Invalid means: not UTF-8 JSON of the
+`records-text-state-v1` shape, any record whose `sha256` is not unique lowercase 64-hex (even if no citation uses it), a
+duplicate member name at any depth, a `NaN`/`Infinity`/`-Infinity` token, or nesting beyond the parser limit. Extra
+members (`run_id`, `counts`) stay optional and ignored; an empty `records` list is valid. The label never changes which findings are
 included. Operators should point live report configs at the latest text-state file; without the key a report makes no
 claim about text state.
 
