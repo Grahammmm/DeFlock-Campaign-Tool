@@ -69,6 +69,8 @@ def load(project, run_id, run_report_path=None, now=None, *, send_config=None, m
     except (OSError, ValueError, KeyError, TypeError):
         model["packets"] = co._unavailable("packets_unreadable")
     model["sends"] = console_calendar.sends_model(source, send_config)
+    model["review_context"] = {r["id"]: source.review_context(r["id"])
+                               for r in model["queue"].get("rows", [])}
     return model
 
 
@@ -353,6 +355,9 @@ def render_home(model, token):
             what += ' <span class="overdue">OVERDUE %d days</span> (on our records; not a legal finding)' % row["overdue_days"]
         if row["kind"] in (*followup_clock.REMINDERS, followup_clock.NOTICE):
             what += "<br>" + esc(row["why"])
+        if row["source"] == "queue":
+            from . import mail_preview
+            what += mail_preview.context_html(model.get("review_context", {}).get(row["id"]))
         agency = '<a href="/agency?agency=%s">%s</a>' % (
             esc(urllib.parse.quote(row["agency"] or "", safe="")), esc(row["agency"]))
         cells = [agency, what, esc(co._ago(row["age_hours"])),

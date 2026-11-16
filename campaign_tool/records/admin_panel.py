@@ -241,6 +241,7 @@ def _load_queue(project, source=None):
     for row in rows:
         row = dict(row)
         row["payload"] = None
+        row["review_context"] = source.review_context(row["id"])
         if row["status"] == "pending":
             try:
                 row["payload"] = source.queue_payload(row["id"]).decode("utf-8", "replace")
@@ -645,6 +646,8 @@ def _drafts_section(model, token):
             out.append("<dt>Rejection reason</dt><dd>%s</dd>" % esc(d["reason"]))
         if d.get("approved_by"):
             out.append("<dt>Approved by</dt><dd>%s</dd>" % esc(d["approved_by"]))
+        from . import mail_preview
+        out.append("</dl>" + mail_preview.context_html(d.get("review_context")) + "<dl>")
         out.append(_mailbox_cell(model, d))
         out.append(mail_send.send_cell(model, d, live))
         out.append("<dt>Text</dt><dd><pre>%s</pre></dd></dl>" % esc(d["body"]))
