@@ -110,13 +110,22 @@ def build_message(row, thread, from_addr, *, now=None):
     _need(_ADDR.fullmatch(from_addr) is not None, "from_address_unknown")
     msg = EmailMessage(policy=policy.SMTP)
     msg["From"] = from_addr
-    to = ""
-    if thread is not None:
+    imported = row.get("kind") == "correspondence-draft"
+    envelope = None
+    if imported:
+        from .draft_import import validate_envelope
+        try:
+            envelope = validate_envelope((row.get("evidence") or {}).get("envelope"))
+        except approval_queue.ApprovalQueueError as error:
+            raise MailDraftError(error.code) from None
+        _check_correspondence_thread(envelope, thread)
+    to = envelope["to"] if envelope is not None else ""
+    if not imported and thread is not None:
         to = _safe(thread.get("reply_to") or "")
         _need(not to or _ADDR.fullmatch(to) is not None, "header_unsafe")
     if to:
         msg["To"] = to
-    msg["Subject"] = _safe(_subject(thread, row))
+    msg["Subject"] = _safe(envelope["subject"] if envelope is not None else _subject(thread, row))
     msg["Date"] = format_datetime(now or _now())
     msg["Message-ID"] = message_id(row["id"], row["revision"], from_addr)
     if thread is not None:
@@ -161,6 +170,9 @@ def _eml_for(con, subject):
 
 
 def _thread_for(project, row):
+    if row["kind"] == "correspondence-draft":
+        _, thread, reason = correspondence_envelope(project, row)
+        return thread, reason
     if row["kind"] != "followup-playbook":
         return find_thread(project, row["item_id"])
     evidence = row.get("evidence") or {}
@@ -181,7 +193,30 @@ def _address(value):
     return ""
 
 
-def find_thread(project, item_id):
+def _check_correspondence_thread(envelope, thread):
+    if envelope["thread_item_id"] is None:
+        _need(thread is None, "thread_provenance_contradiction")
+    else:
+        if thread is None:
+            raise MailDraftError("thread_provenance_unresolved")
+        _need(thread.get("reply_to") == envelope["to"]
+              and _subject(thread, {"request_id": ""}) == envelope["subject"], "thread_provenance_contradiction")
+
+
+def correspondence_envelope(project, row):
+    """Read-only resolution shared by import, preview and placement; never infer headers from the body."""
+    from .draft_import import validate_envelope
+    try:
+        envelope = validate_envelope((row.get("evidence") or {}).get("envelope"))
+    except approval_queue.ApprovalQueueError as error:
+        raise MailDraftError(error.code) from None
+    ident = envelope["thread_item_id"]
+    thread, reason = find_thread(project, ident, strict=True) if ident else (None, "explicit_recipient")
+    _check_correspondence_thread(envelope, thread)
+    return envelope, thread, reason
+
+
+def find_thread(project, item_id, *, strict=False):
     """(thread, None) or (None, reason). Headers only, bounded; a thread is never guessed from subject text."""
     from .outcomes import received_items
     ledger = os.path.join(os.path.abspath(project), "processing-v1", "ledger.sqlite")
@@ -204,6 +239,22 @@ def find_thread(project, item_id):
     except OSError:
         return None, "eml_missing"
     headers = BytesParser(policy=policy.default).parsebytes(raw, headersonly=True)
+    if strict:
+        # Old kinds retain their original permissive lookup. Imported drafts may not
+        # silently pick one of multiple recipients, duplicate headers or parent ids.
+        if not (b"\r\n\r\n" in raw or b"\n\n" in raw) or headers.defects:
+            return None, "thread_provenance_invalid"
+        for key in ("Message-ID", "Subject", "From", "Reply-To", "References"):
+            values = headers.get_all(key, [])
+            if len(values) > 1 or any(getattr(v, "defects", ()) for v in values):
+                return None, "thread_provenance_invalid"
+        value = headers.get("Reply-To") or headers.get("From")
+        addresses = getaddresses([str(value or "")])
+        if len(addresses) != 1 or not _ADDR.fullmatch(addresses[0][1]):
+            return None, "thread_provenance_invalid"
+        mid = str(headers.get("Message-ID") or "").strip()
+        if not _MSGID.fullmatch(mid) or not str(headers.get("Subject") or "").strip():
+            return None, "thread_provenance_invalid"
     mids = _MSGID.findall(str(headers.get("Message-ID") or ""))
     if len(mids) != 1:
         return None, "message_id_missing"

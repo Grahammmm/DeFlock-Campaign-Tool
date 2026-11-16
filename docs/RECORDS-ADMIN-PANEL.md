@@ -69,6 +69,58 @@ not send or publish. Approved/rejected drafts have a read-only body and no forms
 checks; only the literal `return=review` adds a new success redirect. Static
 `--render` output is unchanged and includes no editor.
 
+## Import one correspondence draft (queue only)
+
+`records draft-import --project PROJECT --file INPUT.json` validates one draft and
+prints a metadata-only `would_queue`/`existing` summary. It is dry-run by default:
+no files are created and no network is contacted. Add `--apply` to queue one
+**pending** `correspondence-draft` through the existing approval journal. This
+never approves, signs, places, sends, changes settings or starts a records run.
+Use a private input outside the engine repository; never commit real drafts.
+
+The input is exactly one UTF-8 JSON object (not an array or JSONL), schema
+`records-console-draft-input-v1`, with these exact keys:
+
+- `schema`, `kind` (`correspondence-draft`), `draft_key` (stable operator key),
+  `agency_id`, `request_id`, `source_run_id`, `source_section` (safe identifiers,
+  1–128 characters: letters/digits first, then letters/digits or `_.:/-`).
+- `body`: the full instantiated letter, nonblank, at most 64 KiB in UTF-8.
+  It is retained exactly, including the tail, Unicode and line endings. The
+  console's existing edit history retains this original after operator edits.
+- `why`: a nonblank single-line reason for the operator to review.
+- `source_attachment_sha256`: lowercase 64-hex digest of the source attachment.
+- `citations`: a nonempty array of `{ "page": 1, "quote": "source words" }`
+  objects (positive integer page, nonblank quote).
+- `envelope`: exactly `{ "to": "custodian@agency.example", "subject": "Records follow-up",
+  "thread_item_id": null, "recipient_basis": "custodian-fact" }`.
+
+To/Subject must be **operator-checked custodian facts or source-header facts**,
+not editable `To:`/`Subject:` body lines or guessed tracker labels. Use one bare
+email address, not a display name or recipient list. All envelope values reject
+CR/LF and control characters. With no thread, basis must be `custodian-fact` or
+`source-header`; this deliberately remains unthreaded even if the project has
+other messages. For a proven reply, supply the received item's lowercase 64-hex
+`thread_item_id` and basis `thread`: read-only ledger/original lookup must resolve
+one unambiguous source message, and To plus reply Subject must match that source
+(`Re: ` is added only if absent). Unresolved or contradictory linkage refuses.
+The same validation and envelope feed import, console preview and later placement;
+existing draft kinds keep their current header behavior.
+
+The signed review evidence contains the envelope, citations, reason, source
+attachment/section/run, draft key and original body hash. These record supplied
+provenance, not machine verification of the custodian facts or legal acceptance.
+Identity is **section + request + draft_key**, not the body hash. Identical imports
+return the existing row without an event, including a rejected or operator-edited
+row; changed original body, attribution or evidence under that identity refuses
+`source_conflict` (exit 3) for operator resolution. Other invalid inputs exit 2
+with a content-free `draft-import: <reason>` line. Duplicate JSON keys, unknown or
+missing fields, nonregular/symlink input and input over 192 KiB are refused.
+
+Review the full draft and edit it in the console before approval. Pending rows
+cannot be placed or sent. Queue approval still only enables the existing separate
+placement step; later sending still requires G's **separate recipient/text outbox
+signature**, every send switch, kill file and cap. Import grants none of those.
+
 ## Sending an approved draft
 
 With `--send-config`, the separate `/send` review and human POST send one approved,
