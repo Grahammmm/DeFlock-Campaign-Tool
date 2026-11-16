@@ -313,14 +313,23 @@ def _model_ocr_pages(project, now):
     return console_ocr.model(project)  # OCR-REVIEW-ROUTE-1: pages awaiting a person, with their text; unavailable on its own
 
 
+def _model_followups(project, now, run_id=None):
+    from . import console_followups  # FLK-REC-8: the selected run's text-free machine reading; no run id, no reading
+    if run_id is None:
+        return console_followups.unavailable()
+    return console_followups.read(project, run_id)
+
+
+FOLLOWUPS = "followup-reading.json"
 MODEL = {"queue.json": _model_queue, "packets.json": _model_packets, "public-updates.json": _model_public_updates,
-         "mail-drafts.json": _model_mail_drafts, "sends.json": _model_sends, "ocr-pages.json": _model_ocr_pages}
+         "mail-drafts.json": _model_mail_drafts, "sends.json": _model_sends, "ocr-pages.json": _model_ocr_pages,
+         FOLLOWUPS: _model_followups}
 PLAIN = {"campaign-summary.json"}  # the count projection (campaign_summary): its own schema, written last
 MODEL_SCHEMA = "records-console-model-v1"
 MODEL_DIR = "console-model"
 
 
-def write_model(project, out_dir, now, models=None):
+def write_model(project, out_dir, now, models=None, *, run_id=None):
     """Write console-model/*.json for the live project, read by the existing readers (nothing is written to it).
 
     `models` is MODEL unless a caller writes one more file; a name in PLAIN is a self-describing document of its own schema."""
@@ -333,7 +342,7 @@ def write_model(project, out_dir, now, models=None):
             if name in PLAIN:
                 body = make(project, now)
             else:
-                body = {**head, "state": "ok", **make(project, now)}
+                body = {**head, "state": "ok", **(make(project, now, run_id) if name == FOLLOWUPS else make(project, now))}
             if body.get("state") != "ok" and name not in PLAIN:  # a source that reports its own unavailable state
                 body = {**head, "state": "unavailable", "code": body.get("code") or "model_unreadable"}
         except (approval_queue.ApprovalQueueError, public_packets.PacketError, public_updates.PublicUpdatesError,
@@ -374,7 +383,7 @@ def build(project, run_id, dest):
         finally:
             os.close(run_fd)
         now = time.time()  # one instant for the model, the count summary and the manifest
-        model = write_model(project, dest, now)
+        model = write_model(project, dest, now, run_id=run_id)
         for rel in FILES:
             parts = rel.split("/")
             parent = _open_chain(root, parts[:-1])

@@ -22,7 +22,7 @@ from . import console_documents as cd
 from .outcomes import release_links as _rl
 from .outcomes import timeline as _tl
 from .outcomes.reading import BANNER, esc
-from . import console_layout
+from . import console_layout, console_followups
 
 FILTERS = {"all": "All", "overdue": "Overdue", "waiting": "Waiting on agency", "ours": "Ball in our court",
            "closed": "Closed"}
@@ -265,6 +265,7 @@ def agency_view(model, agency):
                     "closed": bool(r.get("closed")), "clocks": clocks, "promised": promised,
                     "extension_chain": r.get("extension_chain") or {}, "overdue_marks": r["overdue_marks"],
                     "next_action": r["next_action"], "events": r["events"], "asks": asks,
+                    "ledger_request_id": r.get("ledger_request_id"),
                     "issues": r.get("issues") or []})
     return out
 
@@ -393,6 +394,8 @@ def render_agency(model, agency):
         ladder = " &rarr; ".join(("<strong>%s</strong>" % esc(s)) if s == v["stage"] else esc(s) for s in _tl.STAGES)
         out.append("<h3>Stage</h3><p>%s%s</p>" % (ladder, " (closed)" if v["closed"] else ""))
         out.append("<h3>Next action</h3><p>%s: %s</p>" % (esc(v["next_action"].get("owner")), esc(v["next_action"].get("action"))))
+        out.append(console_followups.render(model.get("followups"), agency, v["request_id"],
+                                             ledger_request_id=v.get("ledger_request_id")))
         if v["asks"]:
             out.append("<h3>Asked items</h3><ul>%s</ul>" % "".join(
                 "<li>tier %s %s &mdash; %s: %s</li>" % (esc(a["tier"] or "-"), esc(a["tier_name"] or ""), esc(a["state"]),
@@ -561,5 +564,9 @@ def serve(handler):
     today = datetime.now(timezone.utc).date()
     if parts.path == "/agency":
         model["message_links"] = tie_links(handler)
+        try:  # FLK-REC-8: read-only machine reading from the selected source (pinned export or live), contained on failure
+            model["followups"] = options["source"].followup_reading(options["run_id"])
+        except Exception:
+            model["followups"] = None
     handler._send(200, render_board(model, today, which) if parts.path == "/board" else render_agency(model, agency))
     return True
