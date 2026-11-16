@@ -6,7 +6,7 @@ import json
 import re
 import sys
 
-from . import approval_queue, followup_clock, followup_state
+from . import approval_queue, followup_clock, followup_findings, followup_state
 from .intake.folder import secure_open
 from .ledger.store import checked_path
 from .outcomes import timeline
@@ -97,7 +97,32 @@ def _coverage(needs, queue, items, table):
     return covered, unknown, "coverage_unreconciled" if unknown else None
 
 
-def route(state_row, clock_row, queue_rows, as_of, *, items=None, coverage_rows=()):
+def _route_reviewed_contradiction(out, state_row, findings, as_of, items=None):
+    """After rules 1-7 and before the residual rules: route one reviewed, signed contradiction (FLK-REC-2).
+
+    `findings` are caller-validated descriptors (followup_findings); an unreviewed, rejected or signature-refused
+    finding is never among them. Returns True when `out` was set (routed or manual), else leaves it untouched.
+    """
+    if state_row["state"] == "unknown" or not findings:
+        return False
+    if any(not f.get("valid") for f in findings):
+        out.update(handled_by="manual", reason="contradiction_evidence_unavailable")
+        return True
+    asks = (items or {}).get("asks", [])
+    eligible = [f for f in findings if any(
+        a.get("rating") == "answered" and any(e.get("item_id") in f["item_ids"] for e in a.get("evidence") or [])
+        for a in asks)]
+    if not eligible:
+        return False
+    if len(eligible) > 1:
+        out.update(handled_by="manual", reason="contradiction_findings_ambiguous")
+        return True
+    out.update(pattern="records_contradict_policy", vehicle="reply_in_thread", handled_by="engine", planned_date=as_of,
+               date_basis=READY, reason="reviewed_contradiction", finding=followup_findings.locator(eligible[0]))
+    return True
+
+
+def route(state_row, clock_row, queue_rows, as_of, *, items=None, coverage_rows=(), reviewed_findings=()):
     """Pure first-match routing. Inputs and private evidence text are never modified."""
     if timeline._day(as_of) is None:
         raise ValueError("followup_route_as_of")
@@ -111,6 +136,8 @@ def route(state_row, clock_row, queue_rows, as_of, *, items=None, coverage_rows=
     out = dict(pattern=None, extra_patterns=[], asks_for=[], covered=[], unreconciled=[],
                vehicle=None, handled_by="none", planned_date=None, date_basis=None,
                reason=f"rule {number}; records_contradict_policy and vague_answer require a reviewed finding")
+    if number in (8, 9) and _route_reviewed_contradiction(out, state_row, reviewed_findings, as_of, items):
+        return out
     if number == 1:
         out.update(pattern="closed_new_request", vehicle="new_request", handled_by="engine", planned_date=as_of)
         if needs.get("audit_no_records"):
@@ -170,7 +197,10 @@ def _table(project, agency):
     return rows
 
 
-def route_run(project, run_id):
+def route_run(project, run_id, *, analysis_root=None, findings=None):
+    """`findings` (already loaded by the caller) wins over `analysis_root`; neither means the legacy routes."""
+    if findings is None and analysis_root is not None:
+        findings = followup_findings.load_reviewed_contradictions(project, run_id, analysis_root)
     states = followup_state.classify_run(project, run_id)
     project = followup_state.received_items._safe_dir(project)
     root = project / "run-outputs" / run_id
@@ -195,7 +225,8 @@ def route_run(project, run_id):
         table = [r for r in tables[key[0]] if r["queue_id"] not in other_ids]
         rows.append({"agency_key": key[0], "request_id": key[1], "review_required": True,
                      **route(state, clocks.get(key, {}), matching, states["as_of"],
-                             items=by_items.get(key), coverage_rows=table)})
+                             items=by_items.get(key), coverage_rows=table,
+                             reviewed_findings=followup_findings.for_request(findings, *key))})
     return rows
 
 
@@ -203,9 +234,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", required=True)
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--analysis-root", help="explicit analysis root holding signed finding reviews (default: none)")
     args = parser.parse_args()
     try:
-        rows = route_run(args.project, args.run_id)
+        rows = route_run(args.project, args.run_id, analysis_root=args.analysis_root)
+    except followup_findings.FindingsUnavailable as exc:
+        print(exc.args[0], file=sys.stderr)
+        return 2
     except (OSError, ValueError, KeyError, TypeError, AttributeError, approval_queue.ApprovalQueueError):
         print("followup_route_invalid_input", file=sys.stderr)
         return 2
