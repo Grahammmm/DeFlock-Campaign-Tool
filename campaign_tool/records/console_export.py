@@ -266,7 +266,9 @@ def _message_links(project):
 def _model_queue(project, now):
     rows = approval_queue.load_queue(project)
     pending = [r for r in rows if r["status"] == "pending"]
+    from . import mail_preview
     model = {"rows": rows,
+             "review_context": {r["id"]: mail_preview.review_context(project, r) for r in rows},
              "payloads": {r["id"]: approval_queue.approval_payload(project, r["id"]).decode("utf-8")
                           for r in pending if r["kind"] != draft_templates.MESSAGE_LINK},
              "link_payloads": {r["id"]: _link_payloads(project, r) for r in pending if r["kind"] == draft_templates.MESSAGE_LINK},

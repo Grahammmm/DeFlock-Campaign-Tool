@@ -161,7 +161,7 @@ def render_link(row, token, payload, refusal=None, *, read_only=False, choice=No
 
 
 def render(project, row, history, preview, token, payload, send_config=None, *, run_id=None, refusal=None, source=None,
-           export=None, journal=False):
+           export=None, journal=False, context=None, pending_rows=()):
     from . import admin_panel as ap
 
     title = "Review: %s for %s / %s" % (row["kind"].replace("-", " "), row["agency_id"], row["request_id"])
@@ -180,9 +180,11 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
                                                   esc(str(proof.get("signature_sha256"))[:12])))
     if message:
         out.append('<p role="alert" class="diag">%s. Nothing was saved or decided.</p>' % esc(message.rstrip(".")))
+    out.append(mail_preview.context_html(context))
+    out.append(navigation(row, pending_rows))
     out.append("<dl>")
     copy = row["kind"] in draft_templates.REVIEW_COPY_KINDS
-    for label, value in [] if copy else (("To", preview["to"] or "Unknown"), ("To note", preview["to_note"]),
+    for label, value in [] if copy or (export is not None and context is None) else (("To", preview["to"] or "Unknown"), ("To note", preview["to_note"]),
                          ("From", preview["from"] or "Unknown"), ("From note", preview["from_note"]),
                          ("Subject", preview["subject"]),
                          ("Reply in the agency's thread", "yes" if preview["threaded"] else "no"),
@@ -264,6 +266,16 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
     return console_layout.shell(title, "\n".join(out), active="Approvals")
 
 
+def navigation(row, rows):
+    ids = sorted({r["id"] for r in rows if r["status"] == "pending" and r["id"] != row["id"]})
+    if not ids:
+        return '<nav aria-label="Draft navigation"><a href="/">Queue index</a> · No other pending drafts.</nav>'
+    ident = next((i for i in ids if i > row["id"]), ids[0])
+    url = esc("/review?id=" + urllib.parse.quote(ident, safe=""))
+    leave = '<a href="%s">Leave pending</a> · ' % url if row["status"] == "pending" else ""
+    return '<nav aria-label="Draft navigation">%s<a href="%s">Next</a> · <a href="/">Queue index</a></nav>' % (leave, url)
+
+
 def serve(handler):
     from . import admin_panel as ap
 
@@ -320,11 +332,18 @@ def _show(handler, ident, status, refusal, choice=None):
             handler._fail(400)
             return True
         history = source.queue_history(ids[0])
-        preview = mail_preview.preview(project, row, handler.server.mail_drafts_config)
+        context = source.review_context(ident)
+        if source.snapshot:
+            preview = context["preview"] if context is not None else {
+                "to": None, "to_note": mail_preview.REFRESH, "from": None, "from_note": "Not exported",
+                "subject": None, "threaded": False, "attachments": [], "residue": [], "body_header_lines": []}
+        else:
+            preview = (mail_preview.preview(project, row, handler.server.mail_drafts_config)
+                       if handler.server.mail_drafts_config is not None else context["preview"])
         payload = source.queue_payload(ids[0]) if row["status"] == "pending" else None
         page = render(project, row, history, preview, handler.csrf_token(), payload,
                       options.get("send_config"), run_id=options["run_id"], refusal=refusal, source=source, export=pin,
-                      journal=journal)
+                      journal=journal, context=context, pending_rows=rows.values())
     except (approval_queue.ApprovalQueueError, mail_send.MailSendError, mail_drafts.MailDraftError,
             OSError, ValueError, KeyError, TypeError):
         handler._fail(503)

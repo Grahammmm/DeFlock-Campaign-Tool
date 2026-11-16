@@ -17,6 +17,7 @@ stays private on this host and is never to be committed.
 """
 import argparse
 import contextlib
+import csv
 import hashlib
 import http.client
 import io
@@ -32,7 +33,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
-from . import approval_queue, arrival, arrival_summary, native_extract, notify_text, run_orchestrator, run_stages
+from . import approval_queue, arrival, arrival_summary, draft_templates, followup_clock, followup_route, native_extract
+from . import notify_text, run_orchestrator, run_stages
+from .outcomes import received_items
 
 SCHEMA = "records-e2e-proof-v1"
 MARKER = run_stages.SANDBOX_MARKER
@@ -54,6 +57,14 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 FORM = re.compile(r"^[A-Za-z0-9_.+-]{1,32}$")
 SEED_SCHEMA = "records-e2e-seed-v1"
 SEED_MAX_BYTES = 64 * 1024
+# Optional seed block {asked, autonomy, source_sha256}: proves which owner queued the follow-up for a seeded reply.
+FOLLOWUP_ASKED_MAX = 16 * 1024
+TRACKER_NAME = "MASTER-REQUEST-TRACKER.csv"
+FOLLOWUP_FAILURES = ("FOLLOWUP_DRAFT_MISSING", "FOLLOWUP_DRAFT_COUNT_INVALID", "FOLLOWUP_PROOF_UNAVAILABLE")
+FOLLOWUP_OWNERS = ("received_items", "engine", "followup_clock", "manual", "none")
+FOLLOWUP_STATUSES = ("queued", "drafting_off", "manual", "no_route", "missing_draft")
+RECEIVED_DRAFT_KINDS = ("fee-reply", "appeal-denial", "reply-extension")
+DRAFTING_OFF = "route found, drafting off"
 OUTPUTS_UNFINISHED = re.compile(r"^(OUTPUTS_[A-Z_]+_UNAVAILABLE|OUTPUTS_DIGEST_UNRESOLVED)$")
 # --with-adoption: fixed fictional identity of the synthetic export (never read from a message, setting or mailbox)
 ADOPTION_ACCOUNT, ADOPTION_FOLDER = "owner@adoption.example.invalid", "Sandbox.example.invalid/INBOX"
@@ -187,20 +198,58 @@ def _seed_rows(seed):
                 or not all(text(r[0]) and text(r[1]) and text(r[4]) for r in reqs)
                 or any(r[1] not in ids for r in reqs) or owner.get(join["request_id"]) != join["agency_id"]):
             raise ValueError
-        return rows, reqs, (join["agency_id"], join["request_id"]), facts
+        return rows, reqs, (join["agency_id"], join["request_id"]), facts, _followup_block(doc.get("followup"))
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         raise ProofError("SEED_INVALID") from None
 
 
-def _apply_seed(project, seed):
+def _followup_block(block):
+    """Validated optional ``followup`` seed block ``{asked, autonomy, source_sha256}`` or None when absent."""
+    if block is None:
+        return None
+    if (type(block) is not dict or set(block) != {"asked", "autonomy", "source_sha256"}
+            or type(block["asked"]) is not str or not block["asked"].strip() or "\0" in block["asked"]
+            or len(block["asked"].encode("utf-8")) > FOLLOWUP_ASKED_MAX or block["autonomy"] not in ("off", "draft")
+            or type(block["source_sha256"]) is not str or not SHA256.match(block["source_sha256"])):
+        raise ValueError
+    return dict(block)
+
+
+def _seed_file(path, data):
+    """New 0600 file inside the replay sandbox; an existing path is refused, never replaced."""
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+    except OSError:
+        raise ProofError("SEED_SETUP_REFUSED") from None
+
+
+def _followup_files(agency_id, request_id, external_ref, followup):
+    """(tracker csv bytes, followup-settings bytes) for the seeded request; only the target agency may draft."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(["agency_id", "request_id", "what was asked"])
+    writer.writerow([agency_id, external_ref or request_id, followup["asked"]])
+    settings = {"schema": followup_clock.SETTINGS_SCHEMA, "default": {"autonomy": "off"},
+                "agencies": {agency_id: {"autonomy": followup["autonomy"]}}}
+    return out.getvalue().encode("utf-8"), (json.dumps(settings, indent=2, sort_keys=True) + "\n").encode("utf-8")
+
+
+def _apply_seed(project, seed, state=None):
     """Sandbox-only: write canonical agencies, requests and typed joins for every admitted original, plus the
-    comparison input file. In production canonical identity comes only from the pipeline."""
+    comparison input file. In production canonical identity comes only from the pipeline. With the optional
+    ``followup`` block only the one named attachment is joined and a one-row tracker and a settings file are
+    written (all inside this sandbox), so the proof can check what the reply's follow-up owner queued."""
     project = Path(project)
     marker = project / MARKER
     if (project.is_symlink() or project.name != "project" or marker.is_symlink() or not marker.is_file()
             or marker.read_text(encoding="utf-8") != "e2e-proof sandbox\n"):
         raise ProofError("SEED_NOT_SANDBOX")
-    agencies, requests, (agency_id, request_id), facts = _seed_rows(seed)
+    agencies, requests, (agency_id, request_id), facts, followup = _seed_rows(seed)
+    tracker_path, settings_path = project / TRACKER_NAME, project / followup_clock.SETTINGS_FILE
+    if followup and (os.path.lexists(tracker_path) or os.path.lexists(settings_path)):
+        raise ProofError("SEED_SETUP_REFUSED")
     db = sqlite3.connect(str(project / "processing-v1" / "ledger.sqlite"), isolation_level=None)
     try:
         db.execute("BEGIN IMMEDIATE")
@@ -208,6 +257,10 @@ def _apply_seed(project, seed):
         message = [r[0] for r in db.execute("SELECT eml_sha256 FROM mail_messages")]
         if len(message) != 1 or not originals:
             raise ProofError("SEED_NO_MESSAGE")
+        if followup:
+            if followup["source_sha256"] == message[0] or followup["source_sha256"] not in originals:
+                raise ProofError("SEED_FOLLOWUP_SOURCE_INVALID")
+            originals = [followup["source_sha256"]]
         db.executemany("INSERT INTO agencies(id, name, jurisdiction) VALUES(?,?,?)", agencies)
         db.executemany("INSERT INTO requests(id, agency_id, external_ref, submitted_at, status) VALUES(?,?,?,?,?)", requests)
         evidence = json.dumps({"locator": "e2e-proof seed", "source_sha256": message[0]}, sort_keys=True,
@@ -221,6 +274,14 @@ def _apply_seed(project, seed):
         raise ProofError("SEED_LEDGER_REFUSED") from None
     finally:
         db.close()
+    if followup:
+        external_ref = next(r[2] for r in requests if r[0] == request_id)
+        tracker, settings = _followup_files(agency_id, request_id, external_ref, followup)
+        _seed_file(tracker_path, tracker)
+        _seed_file(settings_path, settings)
+        if state is not None:
+            state["followup"] = {"agency_id": agency_id, "request_id": external_ref or request_id,
+                                 "autonomy": followup["autonomy"]}
     if facts is not None:
         tmp = project / ".agency-fact-sheets.json.tmp"
         fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -361,6 +422,63 @@ def _rehearse_adoption(project, run_id, config, timeline):
         return run
     return (timeline.run("delta", stage("delta"), []),
             timeline.run("adoption", stage("adoption", "--config", str(config)), ["project/processing-v1/ledger.sqlite"]))
+
+
+def _followup_check(project, run_id, target):
+    """Read-only proof of what the seeded reply's follow-up owner actually queued (nothing is queued here).
+
+    Reports the real ``followup_route`` result for the one seeded request, its ``handled_by`` owner and the pending
+    draft kinds that owner queued in this run. Metadata only: no ids, reason text, body or exception text."""
+    try:
+        routes = followup_route.route_run(str(project), run_id)
+        queue = approval_queue.load_queue(str(project))
+        path = Path(project) / "run-outputs" / run_id / "outcomes" / "received-items.json"
+        doc = json.loads(path.read_bytes())
+        if doc.get("schema") != received_items.SCHEMA or doc.get("run_id") != run_id:
+            raise ValueError
+        items = [i for i in doc["items"] if (i.get("agency_id"), i.get("request_id")) == (target["agency_id"], target["request_id"])]
+        expected = {approval_queue.draft_id(i["item_id"], kind): kind for i in items
+                    if (kind := draft_templates.select(i)) in RECEIVED_DRAFT_KINDS}
+        mine = [r for r in routes if (r["agency_key"], r["request_id"]) == (target["agency_id"], target["request_id"])]
+        if len(mine) != 1 or mine[0]["handled_by"] not in FOLLOWUP_OWNERS:
+            raise ValueError
+        route = mine[0]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError, approval_queue.ApprovalQueueError):
+        return "warn", "FOLLOWUP_PROOF_UNAVAILABLE", {"requests": []}
+    owner, draft = route["handled_by"], target["autonomy"] == "draft"
+    pending = [q for q in queue if q["status"] == "pending" and q["source_run_id"] == run_id
+               and (q["agency_id"], q["request_id"]) == (target["agency_id"], target["request_id"])]
+    owned = {
+        "received_items": [q for q in pending if q["id"] in expected],
+        "engine": [q for q in pending if q["kind"] == "followup-playbook"
+                   and (q.get("evidence") or {}).get("source") == "followup_engine"
+                   and (q.get("evidence") or {}).get("pattern") == route["pattern"]
+                   and (q.get("evidence") or {}).get("asks_for") == route["asks_for"]],
+        "followup_clock": [q for q in pending if q["kind"] in followup_clock.REMINDERS],
+    }.get(owner, [])
+    kinds = {}
+    for row in owned:
+        kinds[row["kind"]] = kinds.get(row["kind"], 0) + 1
+    missing_received = [i for i in expected if i not in {q["id"] for q in pending}]
+    code = None
+    if owner == "none":
+        status = "no_route"
+    elif owner == "manual":
+        status, code = "manual", "FOLLOWUP_MANUAL_REVIEW_REQUIRED"
+    elif len(owned) > 1 or (owner == "received_items" and len(owned) != len(expected)):
+        status, code = "missing_draft", "FOLLOWUP_DRAFT_COUNT_INVALID"
+    elif not owned and (owner == "received_items" or draft):
+        status, code = "missing_draft", "FOLLOWUP_DRAFT_MISSING"
+    elif not owned:
+        status, code = "drafting_off", "FOLLOWUP_DRAFTING_OFF"
+    else:
+        status = "queued"
+    if missing_received:  # the route may have shifted because a received-item draft is absent: still a failure
+        status, code = "missing_draft", "FOLLOWUP_DRAFT_MISSING"
+    row = {"handled_by": owner, "pattern": route["pattern"], "extra_patterns": list(route["extra_patterns"]),
+           "asks_for": list(route["asks_for"]), "queued_by_kind": kinds, "status": status}
+    detail = {"autonomy": target["autonomy"], "requests": [row]}
+    return ("ok" if status in ("queued", "no_route") else "warn"), code, detail
 
 
 def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None, ocr=False, seed=None,
@@ -510,7 +628,8 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None,
         else:
             line.run("save_mail", save_mail, ["project/processing-v1/ledger.sqlite"])
         if seed is not None:
-            line.run("seed", lambda: _apply_seed(project, seed), ["project/agency-fact-sheets.json"])
+            line.run("seed", lambda: _apply_seed(project, seed, state),
+                     ["project/agency-fact-sheets.json", "project/" + TRACKER_NAME, "project/" + followup_clock.SETTINGS_FILE])
         extract_args = ("--ocr", "--timeout", str(OCR_STAGE_TIMEOUT), "--ocr-page-timeout", str(OCR_PAGE_TIMEOUT),
                         "--document-timeout", str(OCR_DOCUMENT_TIMEOUT)) if ocr else ()
         line.run("extract", lambda: _adapter("extract", project, run_id, *extract_args), ["project/processing-v1/extract"])
@@ -518,6 +637,8 @@ def replay(message, out, campaign_root, *, label="replay", as_of=None, now=None,
         line.run("outputs", outputs, [f"project/run-outputs/{run_id}/outcomes/{name}" for name in (
             "received-items.json", "comparison.json", "gap-proposals.json", "response-items.json",
             "register.json", "release-links.json", "textstate.json")] + ["project/approvals"])
+        if state.get("followup"):
+            line.run("followups", lambda: _followup_check(project, run_id, state["followup"]), [])
         line.run("next_steps", next_steps_check, ["project/approvals"])
         line.run("telegram_text", telegram_text, ["telegram-summary.txt", "project/run-report.json"])
         line.run("console", console, ["console"])
@@ -554,6 +675,8 @@ def _unfinished_work(stage):
     if stage["stage"] == "extract":
         held = {o.get("code"): o.get("count") or 0 for o in (stage.get("detail") or {}).get("outcomes") or []}
         return ["extract:" + code for code in EXTRACT_UNFINISHED if held.get(code, 0) > 0]
+    if stage["stage"] == "followups" and stage["status"] == "warn" and stage["code"] in FOLLOWUP_FAILURES:
+        return [stage["code"]]
     if stage["stage"] == "outputs" and stage["status"] == "warn" and OUTPUTS_UNFINISHED.match(stage["code"] or ""):
         return ["outputs:" + stage["code"]]
     return []
@@ -617,9 +740,18 @@ def render_markdown(report):
     note = (["Adoption rehearsal: the real delta and adoption stages ran on a synthetic, fictional export built for "
              "this replay. Mailbox sync, portal transport, live credentials and owner approval were not rehearsed.", ""]
             if report.get("with_adoption") else [])
+    follow = next((s for s in report["stages"] if s["stage"] == "followups"), None)
+    follow = (["Follow-up route for the seeded reply (what each owner queued; nothing is sent):", "",
+               "| Owner | Pattern | Asks | Status | Queued by kind |", "| --- | --- | --- | --- | --- |",
+               *["| %s | %s | %s | %s | %s |" % (
+                   r["handled_by"], r["pattern"] or "-", ",".join(map(str, r["asks_for"])) or "-",
+                   DRAFTING_OFF if r["status"] == "drafting_off" else r["status"],
+                   ", ".join("%s=%d" % kv for kv in sorted(r["queued_by_kind"].items())) or "-")
+                 for r in (follow.get("detail") or {}).get("requests", [])], ""]
+              if follow and follow["status"] != "not_run" else [])
     return "\n".join(["# Records e2e proof %s" % report["run_id"], "", "Result: **%s**. Sent: no. Published: no." %
                       report["result"], "", *note, *rows, "", "Total seconds: %.3f" % report["total_seconds"], "",
-                      "Manual steps needed:", *manual, "",
+                      *follow, "Manual steps needed:", *manual, "",
                       "Unread originals (extract outcome other than EXTRACTED; hash prefix, kind and code only):", *unread,
                       "", "`agency-side` rows are damaged or incomplete documents the agency supplied. PASS can coexist with "
                       "them and is not a claim that every supplied byte was read. With a failed or not-run extract an "

@@ -971,7 +971,7 @@ _MODULES = {
         newsletter.draft newsletter.sent outbox outbox_batch press recent search_log site site_check social social_threads source_bundle""",
     "other local files with no catalog store": """
         agency_actions agency_brief agency_cards approval cli finding_packet image_meta import_existing kit_agencies kit_asked
-        finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet launch_check git_exposure map_controller registry setup_cmd shell sources_cmd records.ask_parity""",
+        finding_search_log kit_fee_reply kit_preserve kit_repeat search_log law law_packet launch_check git_exposure map_controller registry setup_cmd shell sources_cmd records.ask_parity records.asks_propose""",
     "organizer-maintained public roster content/officials.json (built by the site), no catalog store": "officials_cmd",
     "organizer-maintained public statements content/statements.json (built by the site), no catalog store": "statements",
     "agenda PDF bytes to the converter's stdin pipe only; no file written": "meeting_pdf_scan",
@@ -984,6 +984,7 @@ MODULE_FUNCTIONS = {
     'records.packet_changes': ('export_changes',),  # PUB-BRIDGE-1: 0600 approved-change copies + active manifest in a private host export; never record objects, project writes or publication
     'records.campaign_readiness': ('main',),  # stdout only: states and fixed codes; reads project inputs, writes no store
     'records.ask_parity': ('main',),  # TSV/JSON to stdout only; reads local drafts, writes no store or confirmation
+    'records.asks_propose': ('encode', 'propose', 'write_proposals'),  # FLK-REC-3: encode is in-memory TSV; propose/write_proposals create only private agency-asks/K.proposed.tsv (0600, no-clobber, dry run default); never K.tsv, no store
     'git_exposure': ('_exposure',),  # doctor --checklist: read-only git queries (check-ignore/ls-files) on stdin; writes nothing
     'launch_check': ('launch_checks',),  # doctor --launch: scratch-tree rehearsal, removed in finally; no campaign writes or sends
     "map_survey": ("_install_new", "_write_checks", "render_csv", "survey_import"),
@@ -1067,7 +1068,7 @@ MODULE_FUNCTIONS = {
         'Journal._change', 'Journal.allocate', 'PrivateDir.write', 'admit', 'build_board', 'entry',
         'postrun_entry'
     ),
-    'records.e2e_proof': ('replay', 'replay.console', 'replay.telegram_text', '_apply_seed', '_private_file',),  # replay writes only under a new --out proof dir (OUT_EXISTS refuses reuse); _apply_seed writes only the replay sandbox ledger and its fact-sheets file (SEED_NOT_SANDBOX refuses any other project); _private_file (--with-adoption, called only by _prepare_adoption after the sandbox-marker guard: ADOPTION_NOT_SANDBOX refuses any other project) writes only the generated synthetic .example.invalid mail export and owner adoption config as new 0600 files under the replay sandbox, or accepts byte-identical existing ones; sends and publishes nothing
+    'records.e2e_proof': ('replay', 'replay.console', 'replay.telegram_text', '_apply_seed', '_seed_file', '_followup_files', '_private_file',),  # replay writes only under a new --out proof dir (OUT_EXISTS refuses reuse); _apply_seed writes only the replay sandbox ledger and its fact-sheets file (SEED_NOT_SANDBOX refuses any other project); _private_file (--with-adoption, called only by _prepare_adoption after the sandbox-marker guard: ADOPTION_NOT_SANDBOX refuses any other project) writes only the generated synthetic .example.invalid mail export and owner adoption config as new 0600 files under the replay sandbox, or accepts byte-identical existing ones; sends and publishes nothing
     'records.export_clearance': ('clearance',),
     'records.project_init': ('_write', 'init_project',),  # one new private records project: campaign.json, .campaign-root, empty ledger and queue; refuses an existing root; sends nothing
     'records.first_request': ('main',),  # prints a draft to stdout; --queue appends only via the approval journal
