@@ -146,4 +146,22 @@ class HTTPSTests(unittest.TestCase):
         self.assertEqual(cloned.origin,HOST)
 
 
+class EgressNestingTests(unittest.TestCase):
+    def test_deep_egress_policy_refuses_before_dns_or_connect(self):
+        import os,tempfile
+        from pathlib import Path
+        from tests.test_records_portal import DEEP_ARRAY,as_root_patches
+        resolutions=[]
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"egress.json";path.write_bytes(DEEP_ARRAY);path.chmod(0o644)
+            p1,p2,p3=as_root_patches()
+            with p1,p2,p3:
+                transport=StdlibHTTPS(apply=True,approval_loader=approval,origin_host=HOST,wall=lambda:NOW,
+                    egress_loader=lambda:load_egress(path,NOW),resolver=lambda h,t:resolutions.append(h) or ['93.184.216.34'],
+                    connector=lambda *a,**k:self.fail('connect'))
+                with self.assertRaisesRegex(PortalError,'egress_policy_missing_or_invalid'):
+                    transport.open(URL,timeout=10)
+        self.assertEqual(resolutions,[])
+
+
 if __name__=='__main__':unittest.main()

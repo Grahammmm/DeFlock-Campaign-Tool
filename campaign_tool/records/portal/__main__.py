@@ -31,7 +31,10 @@ def main(argv=None, *, transport=None, egress=None, ledger=None):
                 raw=stream.read(1024*1024+1)
             if len(raw)>1024*1024:
                 raise PortalError("inventory_oversize")
-            rows=json.loads(raw)
+            try:
+                rows=json.loads(raw)
+            except RecursionError:
+                raise PortalError("inventory_invalid") from None
             if not isinstance(rows,list) or len(rows)>1000:
                 raise PortalError("inventory_invalid")
             for row in rows:
@@ -45,7 +48,10 @@ def main(argv=None, *, transport=None, egress=None, ledger=None):
                 raw=stream.read(16*1024*1024+1)
             if len(raw)>16*1024*1024:
                 raise PortalError("intake_oversize")
-            rows=json.loads(raw)
+            try:
+                rows=json.loads(raw)
+            except RecursionError:
+                raise PortalError("intake_invalid") from None
             if not isinstance(rows,list) or len(rows)>1000:
                 raise PortalError("intake_invalid")
             from .intake import intake_notices

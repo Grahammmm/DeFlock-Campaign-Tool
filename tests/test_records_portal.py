@@ -400,5 +400,100 @@ class PortalTests(unittest.TestCase):
                 Limits(**kwargs)
 
 
+DEEP_ARRAY=b"["*10000+b"0"+b"]"*10000
+DEEP_OBJECT=b'{"x":'*10000+b"0"+b"}"*10000
+
+
+def as_root_patches():
+    real_fstat,real_stat=os.fstat,Path.stat
+
+    def as_root(result):
+        values=list(result)
+        values[stat.ST_UID]=0
+        return os.stat_result(values)
+    return (patch("campaign_tool.records.portal.policy.os.fstat",lambda fd:as_root(real_fstat(fd))),
+            patch("campaign_tool.records.portal.https_transport.os.fstat",lambda fd:as_root(real_fstat(fd))),
+            patch.object(Path,"stat",lambda self,**kw:as_root(real_stat(self,**kw))))
+
+
+class PortalNestingTests(unittest.TestCase):
+    def test_strict_json_and_parse_approval_contain_nesting(self):
+        from campaign_tool.records.portal.policy import strict_json
+        for raw in (DEEP_ARRAY,DEEP_OBJECT):
+            with self.assertRaisesRegex(ValueError,"^json_nesting_invalid$"):
+                strict_json(raw)
+            with self.assertRaises(PortalError) as caught:
+                parse_approval(raw,uid=0,mode=stat.S_IFREG|0o644,now=NOW)
+            self.assertEqual(str(caught.exception),"approval_invalid")
+        with patch("campaign_tool.records.portal.policy.json.loads",side_effect=RecursionError("private-sentinel")):
+            with self.assertRaises(PortalError) as caught:
+                parse_approval("{}",uid=0,mode=stat.S_IFREG|0o644,now=NOW)
+        self.assertEqual(str(caught.exception),"approval_invalid")
+        self.assertNotIn("private-sentinel",repr(caught.exception))
+        with self.assertRaises(ValueError):
+            from campaign_tool.records.portal.policy import strict_json
+            strict_json('{"a":1,"a":2}')
+        self.assertEqual(parse_approval(json.dumps(policy_data()),uid=0,mode=stat.S_IFREG|0o644,now=NOW).portals,frozenset({HOST}))
+
+    def test_load_approval_and_egress_files_refused_unchanged(self):
+        from campaign_tool.records.portal.https_transport import load_egress
+        for raw in (DEEP_ARRAY,DEEP_OBJECT):
+            for loader,code in ((load_approval,"approval_invalid"),(load_egress,"egress_policy_missing_or_invalid")):
+                with tempfile.TemporaryDirectory() as temp:
+                    path=Path(temp)/"policy.json"
+                    path.write_bytes(raw);path.chmod(0o644)
+                    before=(path.read_bytes(),path.stat().st_mtime_ns,path.stat().st_mode)
+                    p1,p2,p3=as_root_patches()
+                    with p1,p2,p3,patch("os.close",wraps=os.close) as closer:
+                        with self.assertRaises(PortalError) as caught:
+                            loader(path,NOW)
+                    self.assertEqual(str(caught.exception),code)
+                    self.assertTrue(closer.called)
+                    self.assertEqual((path.read_bytes(),path.stat().st_mtime_ns,path.stat().st_mode),before)
+
+    def run_cli(self,command,raw):
+        import subprocess,sys
+        with tempfile.TemporaryDirectory() as temp:
+            source=Path(temp)/"in.json";source.write_bytes(raw)
+            root=Path(temp)/"queue"
+            args=[sys.executable,"-B","-m","campaign_tool.records.portal","--root",str(root),command,"--input",str(source)]
+            if command=="intake":
+                args+=["--approval-file",str(Path(temp)/"missing-approval.json")]
+            done=subprocess.run(args,capture_output=True,timeout=60)
+            self.assertEqual(source.read_bytes(),raw)
+            conn=sqlite3.connect(str(root/"portal.sqlite")) if (root/"portal.sqlite").exists() else None
+            if conn:
+                tables=[r[0] for r in conn.execute("select name from sqlite_master where type='table'")]
+                counts={t:conn.execute('select count(*) from "%s"'%t).fetchone()[0] for t in tables}
+                conn.close()
+                self.assertFalse(any(counts.values()),counts)
+            return done
+
+    def test_cli_inventory_and_intake_deep_json_exit_2(self):
+        for command in ("inventory","intake"):
+            for raw in (DEEP_ARRAY,DEEP_OBJECT):
+                with self.subTest(command=command):
+                    done=self.run_cli(command,raw)
+                    self.assertEqual(done.returncode,2)
+                    self.assertEqual(json.loads(done.stdout)["error"],"portal_operation_failed")
+                    self.assertEqual(done.stderr,b"")
+
+    def test_cli_recursion_after_decoding_is_not_converted(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source=Path(temp)/"in.json";source.write_text("[]")
+            with patch("campaign_tool.records.portal.__main__.Queue.status",side_effect=RecursionError("downstream")):
+                with self.assertRaises(RecursionError):
+                    main(["--root",str(Path(temp)/"q"),"inventory","--input",str(source)])
+
+    def test_cli_shallow_inventory_still_works(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source=Path(temp)/"in.json";source.write_text("[]")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["--root",str(Path(temp)/"q"),"inventory","--input",str(source)]),0)
+            source.write_text("[1")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(["--root",str(Path(temp)/"q"),"inventory","--input",str(source)]),2)
+
+
 if __name__=="__main__":
     unittest.main()
