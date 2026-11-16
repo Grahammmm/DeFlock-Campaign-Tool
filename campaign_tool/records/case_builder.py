@@ -4,7 +4,7 @@ import csv
 import io
 import re
 
-from . import followup_drafter as drafter, followup_route, followup_state
+from . import followup_drafter as drafter, followup_findings, followup_route, followup_state
 from .intake.folder import secure_open
 from .ledger.store import checked_path
 from .outcomes import timeline
@@ -24,11 +24,42 @@ def _need(condition, code):
         raise CaseError(code)
 
 
-def build(route_row, timeline_request, items, *, asks_rows=None, policy_rows=(), policy_ref=None):
+CONTRADICT = "records_contradict_policy"
+_SETTING = re.compile(r"\b(retention|sharing)\b", re.IGNORECASE)
+
+
+def _contradiction_asks(route_row, agency, request_id, finding):
+    """Validate the caller's descriptor against the route, then build one new ask per cited fact (signed order)."""
+    keys = ("kind", "agency_key", "request_id", "finding_id", "finding_sha256", "evidence_sha256", "facts", "valid")
+    _need(isinstance(finding, dict) and all(k in finding for k in keys) and finding["valid"] is True
+          and finding["kind"] == followup_findings.KIND, "case_finding_mismatch")
+    _need((finding["agency_key"], finding["request_id"]) == (agency, request_id)
+          and route_row.get("finding") == followup_findings.locator(finding), "case_finding_mismatch")
+    facts = finding["facts"]
+    _need(isinstance(facts, list) and facts and all(
+        isinstance(f, dict) and set(f) == {"fact_id", "source_sha256", "page", "quote"} and type(f["page"]) is int
+        and f["page"] > 0 and all(isinstance(f[k], str) and f[k].strip() for k in ("fact_id", "source_sha256", "quote"))
+        for f in facts) and len({f["fact_id"] for f in facts}) == len(facts)
+        and followup_findings.evidence_digest(facts) == finding["evidence_sha256"], "case_finding_evidence_invalid")
+    asks = [{"ask_id": "finding:%s:%s" % (finding["finding_id"], f["fact_id"]), "number": n, "rating": "missing",
+             "text": "Please produce existing records explaining the discrepancy identified in finding %s concerning "
+                     "record %s, page %s, fact %s: %s." % (finding["finding_id"], f["source_sha256"], f["page"],
+                                                           f["fact_id"], f["quote"].strip().rstrip("."))}
+            for n, f in enumerate(facts, 1)]
+    slots = {"n": "; ".join("record %s page %s (fact %s)" % (f["source_sha256"][:12], f["page"], f["fact_id"])
+                            for f in facts)}
+    words = {w.lower() for f in facts for w in _SETTING.findall(f["quote"])}
+    if len(words) == 1:
+        slots["retention_or_sharing"] = words.pop()
+    return asks, slots, {k: copy.deepcopy(finding[k]) for k in keys[:-1]}
+
+
+def build(route_row, timeline_request, items, *, asks_rows=None, policy_rows=(), policy_ref=None, finding=None):
     """Build a review-required case; only route.asks_for becomes draftable asks.
 
     policy_rows is accepted for the caller's matching drafter invocation; a section
     is never selected implicitly. Missing contact information stays missing.
+    A reviewed-contradiction route builds its asks only from the finding's cited facts (FLK-REC-2).
     """
     pattern = route_row.get("pattern")
     extras = route_row.get("extra_patterns", [])
@@ -43,20 +74,29 @@ def build(route_row, timeline_request, items, *, asks_rows=None, policy_rows=(),
     for row in (route_row, items):
         _need(all(row.get(k, v) == v for k, v in (("agency_key", agency), ("request_id", request_id))),
               "case_request_mismatch")
-    numbers = route_row.get("asks_for")
-    _need(isinstance(numbers, list) and numbers and all(type(n) is int and n > 0 for n in numbers)
-          and len(set(numbers)) == len(numbers), "route_asks_invalid")
     by_number = {}
     for ask in items.get("asks", []):
         number = followup_state._number(ask)
         _need(number not in by_number, "case_duplicate_ask")
         by_number[number] = ask
-    _need(set(numbers) <= by_number.keys(), "route_asks_missing")
+    slots, reviewed = {}, None
+    if pattern == CONTRADICT:
+        _need(not extras and route_row.get("asks_for") == [], "case_finding_mismatch")
+        new_asks, slots, reviewed = _contradiction_asks(route_row, agency, request_id, finding)
+        numbers, asks = [], new_asks
+    else:
+        _need(finding is None and "finding" not in route_row, "case_finding_mismatch")
+        numbers = route_row.get("asks_for")
+        _need(isinstance(numbers, list) and numbers and all(type(n) is int and n > 0 for n in numbers)
+              and len(set(numbers)) == len(numbers), "route_asks_invalid")
+        _need(set(numbers) <= by_number.keys(), "route_asks_missing")
+        asks = [dict({k: copy.deepcopy(v) for k, v in by_number[n].items()
+                      if k in ("ask_id", "text", "rating", "produced")}, number=n) for n in numbers]
     case = {"schema": drafter.SCHEMA, "agency": {"id": agency, "name": timeline_request["agency"]},
             "request_id": request_id, "response_type": pattern, "extra_patterns": list(extras),
-            "asks": [dict({k: copy.deepcopy(v) for k, v in by_number[n].items()
-                           if k in ("ask_id", "text", "rating", "produced")}, number=n) for n in numbers],
-            "prior_asks": [], "slots": {}, "review_required": True}
+            "asks": asks, "prior_asks": [], "slots": slots, "review_required": True}
+    if reviewed:
+        case["finding"] = reviewed
     case["received_asks"] = [{"number": n, "text": a["text"]} for n, a in by_number.items()
                              if n not in numbers and a.get("rating") == "answered"]
     if asks_rows is None:
@@ -103,9 +143,16 @@ def _asks(project, agency_key):
     return rows
 
 
-def build_for_run(project, run_id, agency_key, request_id):
-    """Read same-run outputs and optional operator-staged ledger, without writes."""
-    routes = followup_route.route_run(project, run_id)  # validates run id and same-run schemas
+def build_for_run(project, run_id, agency_key, request_id, *, analysis_root=None):
+    """Read same-run outputs and optional operator-staged ledger, without writes.
+
+    With an explicit analysis_root the reviewed contradiction is reloaded through the real adapter here;
+    a route's own claim is never authority.
+    """
+    findings = None
+    if analysis_root is not None:
+        findings = followup_findings.load_reviewed_contradictions(project, run_id, analysis_root)
+    routes = followup_route.route_run(project, run_id, findings=findings)  # validates run id and same-run schemas
     project = followup_state.received_items._safe_dir(project)
     root = project / "run-outputs" / run_id / "outcomes"
     key = (agency_key, request_id)
@@ -116,4 +163,7 @@ def build_for_run(project, run_id, agency_key, request_id):
           "case_ratings_stale")
     by_items = followup_state._index(ratings["requests"])
     _need(key in by_route and key in requests and key in by_items, "case_request_missing")
-    return build(by_route[key], requests[key], by_items[key], asks_rows=_asks(project, agency_key))
+    chosen = by_route[key].get("finding")
+    descriptor = next((d for d in findings or () if chosen and followup_findings.locator(d) == chosen
+                       and (d["agency_key"], d["request_id"]) == key), None) if chosen else None
+    return build(by_route[key], requests[key], by_items[key], asks_rows=_asks(project, agency_key), finding=descriptor)

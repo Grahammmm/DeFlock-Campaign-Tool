@@ -103,7 +103,8 @@ An operator may stage `P/followup-coverage/AGENCY_KEY.tsv` with columns
 letter, list comma-separated ask numbers or `none`; this overrides machine mapping.
 Duplicate rows, inactive/unknown queue ids or out-of-scope asks yield manual
 `coverage_table_invalid`. The table is read-only. Neither ask text nor quotes are
-printed. `records_contradict_policy` and `vague_answer` require reviewed findings.
+printed. `records_contradict_policy` and `vague_answer` require reviewed findings (see Reviewed contradictions;
+`vague_answer` stays disabled).
 
 ## Read-only follow-up cases
 
@@ -143,6 +144,41 @@ the original numbering; (3) only then rename `K.proposed.tsv` to `K.tsv`, and on
 or force. `case_builder` never reads a `.proposed.tsv`, so until the rename the R1/R7
 manual-check note stays. There is no auto-confirm. Proposals are private and nothing is
 approved, sent or published.
+
+## Reviewed contradictions (FLK-REC-2)
+
+`records_contradict_policy` is routed only from a finding with a valid signed `finding-review-v1` approval
+(DF2007-05). A model verdict, PUBLIC-OK, an old packet or a review-state string is not approval. The supported
+convention is an exact signed **topic** of `contradiction` (the signature binds topic, claim, ordered fact ids and rule
+ids; there is no separate kind field). No prose is classified and no existing finding is reclassified.
+
+Pass the analysis root explicitly; without it every route and draft is exactly the legacy output:
+
+```
+records followup-route  --project P --run-id R --analysis-root ROOT
+records followup-engine --project P --run-id R --analysis-root ROOT            # dry run
+records followup-engine --project P --run-id R --analysis-root ROOT --apply    # pending drafts only
+```
+
+`followup_findings.load_reviewed_contradictions` reads fresh on every invocation (a revoked or untrusted signature stops
+new drafting on the next call; it does not cancel existing drafts). It maps profiles by exact `records_agency_id`,
+reuses the finding-review evaluator (checked facts, canonical pages, flags, duplicates) and requires every cited fact to
+have a source hash, a positive page and a verbatim quote, and every cited source to join one received item of the same
+agency and one request. An unusable root prints `followup_findings_unavailable`.
+
+Route position: after rules 1-7 (closed, clarification, fee, silence, extension keep their first-match output) and before
+the residual rules. The cited record must be an answered ask of the request. One eligible finding gives
+`reviewed_contradiction` (reply in thread, `asks_for: []`, a `finding` locator of id, hashes and fact ids); several give
+manual `contradiction_findings_ambiguous`; an approved finding whose citations cannot be joined gives manual
+`contradiction_evidence_unavailable`. Unreviewed, rejected and signature-refused findings are never routed.
+
+The case holds one new, case-local ask per cited fact (numbered 1..N in signed order), quoting that fact; the original
+produced asks stay `received_asks` and are never re-requested. Slot `n` lists only the cited record, page and fact; the
+retention/sharing slot is filled only when the cited quotes name exactly one of the two words, otherwise it stays an
+edit placeholder. The queue row's evidence carries the locator, and its identity includes the finding and evidence
+hashes, so a rerun adds nothing and changed evidence adds a distinct draft.
+
+Finding approval is not approval of the draft, a send or a publication. Scheduled root wiring is not part of this unit.
 
 ## Agency events import
 
