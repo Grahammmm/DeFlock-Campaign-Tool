@@ -125,6 +125,7 @@ class TextStateTests(unittest.TestCase):
             ts.write_run_textstate(self.project, "r3")
         self.assertFalse((self.project / "run-outputs" / "r3").exists())
 
+    @mock.patch("campaign_tool.records.followup_engine.run", new=lambda *args, **kwargs: None)  # needs full engine inputs; covered in test_outputs_followup_engine
     def test_outputs_carry_state_not_private_locators_and_keep_modes(self):
         absolute = str(self.project / "processing-v1" / "blobs" / "Secret.pdf")
         listed = self.listing("r1", [self.doc("a" * 64, "EXTRACT_NOT_ACCEPTED", path=absolute, storage_path=absolute,
@@ -232,6 +233,7 @@ class TextStateTests(unittest.TestCase):
         self.assertIn("\n" + c[:12] + " - A scan", text)
         self.assertNotIn(c, text)
 
+    @mock.patch("campaign_tool.records.followup_engine.run", new=lambda *args, **kwargs: None)  # needs full engine inputs; covered in test_outputs_followup_engine
     def test_empty_list_counts_zero_and_no_record_lines(self):
         self.listing("r1", [])
         code, line = self.stage("r1")
