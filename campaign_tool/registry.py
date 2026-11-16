@@ -309,6 +309,10 @@ def _records_degraded(row):
     return records["state"] != "ok" or records["code"] is not None or bool(records["unavailable"])
 
 
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
 def today_rows(as_of, now=None):
     """DF1109-15: every registered campaign's `today` items in name order, each keeping its own rank, with
     ``--campaign NAME`` selectors; ``(rows, current)``. Each campaign is read alone, confined exactly as for
@@ -318,7 +322,7 @@ def today_rows(as_of, now=None):
     entries = _load(register_path())  # read once; no lock is held while any campaign is read
     registered = [e["directory"] for e in entries]
     rows, current = [], True
-    now = now or datetime.now(timezone.utc)  # one wall-clock instant for every export age; --as-of plans site-kit tasks only
+    now = now or _utcnow()  # one wall-clock instant for every export age; --as-of plans site-kit tasks only
     for entry in sorted(entries, key=lambda e: e["name"]):
         name = entry["name"]
         try:
