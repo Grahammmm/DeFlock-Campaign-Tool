@@ -239,6 +239,56 @@ class ReviewTests(ServerCase):
         (self.project / "approvals" / ms.RESULTS).write_text("broken journal\n")
         self.assertEqual(self.get()[0], 503)
 
+    def test_real_revisionless_send_refusals_allow_approval_recovery(self):
+        for n, code in enumerate(("send_disabled", "kill_switch", "not_approved"), 90):
+            with self.subTest(code=code):
+                self.draft_row = self.draft(n, body="Synthetic clean reply")
+                self.configure_send(enabled=code != "send_disabled")
+                stop = self.project / "approvals" / ms.KILL
+                if code == "kill_switch":
+                    stop.touch()
+                imap = mock.Mock(side_effect=AssertionError("IMAP contacted"))
+                smtp = mock.Mock(side_effect=AssertionError("SMTP contacted"))
+                result = ms.send_one(self.project, self.server.options["send_config"], self.draft_row["id"],
+                                     actor="operator-1", page_fingerprint="", signature="synthetic-unused",
+                                     imap_factory=imap, smtp_factory=smtp)
+                self.assertEqual(result, {"state": "refused", "code": code})
+                logged = [r for r in ms.results(self.project, strict=True) if r["queue_id"] == self.draft_row["id"]]
+                self.assertEqual(len(logged), 1)
+                self.assertNotIn("revision", logged[0])
+                self.assertEqual((logged[0]["state"], logged[0]["code"]), ("refused", code))
+                if stop.exists():
+                    stop.unlink()
+                self.approve_review()
+                self.get()  # Open the fixture's read-only ledger before its tree snapshot.
+                before = tree_state(self.project)
+                status, _, page = self.get()
+                self.assertEqual(status, 200)
+                self.assertIn("Revise; clears approval", page)
+                with mock.patch.object(approval, "_require_root", side_effect=approval.TrustUnavailable("missing")):
+                    status, _, page = self.get()
+                self.assertEqual(status, 200)
+                self.assertIn("Approval verification unavailable", page)
+                self.assertIn('action="/approvals/edit"', page)
+                self.assertNotIn('formaction="/approvals/approve"', page)
+                self.assertNotIn('action="/approvals/reject"', page)
+                self.assertEqual(tree_state(self.project), before)
+                # A later pre-delivery refusal must not clear a known attempt.
+                self.assertTrue(ms._log(self.project, queue_id=self.draft_row["id"],
+                                        revision=self.row()["revision"], state="attempt", code=None))
+                self.configure_send(enabled=False)
+                result = ms.send_one(self.project, self.server.options["send_config"], self.draft_row["id"],
+                                     actor="operator-1", page_fingerprint="", signature="synthetic-unused",
+                                     imap_factory=imap, smtp_factory=smtp)
+                self.assertEqual(result, {"state": "refused", "code": "send_disabled"})
+                status, _, page = self.get()
+                self.assertEqual(status, 200)
+                self.assertIn("Delivery unresolved", page)
+                self.assertNotIn('action="/approvals/edit"', page)
+                self.assertNotIn('href="/send?', page)
+                imap.assert_not_called()
+                smtp.assert_not_called()
+
     def test_reason_text_escaped_and_test_mode_reason_when_available(self):
         codes = ["<unknown>&"] + (["test_mode_recipient"] if "test_mode_recipient" in ms.REASONS else [])
         self.approve_review()

@@ -90,7 +90,14 @@ def delivery_context(source, row):
     """All revisions of this identity; unavailable history must not mean unsent."""
     results = [r for r in source.send_results() if r["queue_id"] == row["id"]]
     placements = [r for r in source.mail_drafts() if r["queue_id"] == row["id"]]
-    for entry in results + placements:
+    # send_one logs pre-delivery refusals before it has a revision. These
+    # cannot establish delivery, nor resolve an attempt on a known revision.
+    for entry in results:
+        if "revision" not in entry and entry.get("state") == "refused":
+            continue
+        if type(entry.get("revision")) is not int or not isinstance(entry.get("state"), str):
+            raise ValueError("delivery_context_invalid")
+    for entry in placements:
         if type(entry.get("revision")) is not int or not isinstance(entry.get("state"), str):
             raise ValueError("delivery_context_invalid")
     if any(r.get("state") == "sent" for r in results):
