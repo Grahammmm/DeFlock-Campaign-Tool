@@ -21,7 +21,7 @@ import unittest
 
 
 SUITES = {
-    "catalog": (66, (
+    "catalog": (67, (
         "tests.records.test_catalog_stage",
         "tests.records.test_catalog_stage_drift",
         "tests.records.test_ledger_catalog",
