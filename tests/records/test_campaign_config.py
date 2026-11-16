@@ -137,6 +137,62 @@ class CampaignFieldsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "^campaign_config_invalid$"):
             cc.load(self.root)
 
+    BAD_AUTHORITIES = (
+        "https://records.cedar.example:bad", "https://records.cedar.example:65536",
+        "https://records.cedar.example:0", "https://records.cedar.example:",
+        "https://records.cedar.example:-1", "https://records.cedar.example:+80",
+        "https://records cedar.example", "https://records.cedar.example ", "https://records\tcedar.example",
+        "https://records\\.cedar.example", "https://records%2ecedar.example", "https://.",
+        "https://a..example", "https://.a.example", "https://-a.example", "https://a-.example",
+        "https://" + "a" * 64 + ".example", "https://" + ".".join(["a" * 60] * 5),
+        "https://[::1", "https://[::1]x", "https://[::1]:", "https://[::1]:99999", "https://[fe80::1%25eth0]",
+        "https://[1.2.3.4]", "https://[zz::1]", "https://::1", "https://a:1:2",
+        "https://999.1.1.1", "https://a.example?", "https://a.example/#", "https://a.example/?")
+    GOOD_AUTHORITIES = (
+        ("https://records.cedar.example/", "https://records.cedar.example"),
+        ("https://Records.Cedar.EXAMPLE", "https://Records.Cedar.EXAMPLE"),
+        ("https://records.cedar.example.", "https://records.cedar.example."),
+        ("https://localhost", "https://localhost"), ("https://10.1.2.3", "https://10.1.2.3"),
+        ("https://[::1]", "https://[::1]"), ("https://[2001:db8::1]:8443/", "https://[2001:db8::1]:8443"),
+        ("https://records.cedar.example:443", "https://records.cedar.example:443"),
+        ("https://records.cedar.example:8443", "https://records.cedar.example:8443"))
+
+    def test_public_base_url_authority_grammar(self):
+        for value in self.BAD_AUTHORITIES + (None, [], 443):
+            with self.subTest(value=str(value)[:80]):
+                self.write(dict(FICTIONAL, public_base_url=value))
+                before = (os.listdir(self.root), (self.root / "campaign.json").read_bytes(),
+                          (self.root / "campaign.json").stat().st_mode)
+                with self.assertRaisesRegex(ValueError, "^campaign_config_invalid$"):
+                    cc.load(self.root)
+                self.assertEqual(before, (os.listdir(self.root), (self.root / "campaign.json").read_bytes(),
+                                          (self.root / "campaign.json").stat().st_mode))
+        for value, expected in self.GOOD_AUTHORITIES:
+            with self.subTest(value=value):
+                self.write(dict(FICTIONAL, public_base_url=value))
+                self.assertEqual(cc.load(self.root).public_base_url, expected)
+        self.write({"schema_version": 1})
+        self.assertIsNone(cc.load(self.root).public_base_url)
+
+    def test_load_timezone_ignores_malformed_url(self):
+        self.write(dict(FICTIONAL, public_base_url="https://records.cedar.example:bad"))
+        self.assertEqual(cc.load_timezone(self.root), "UTC")
+
+    def test_board_and_readiness_refuse_malformed_url_without_leaking_it(self):
+        from tests.records import test_console_board as tb
+        from campaign_tool.records import campaign_readiness as cr
+        tb.build(self.root)
+        self.write(dict(FICTIONAL, public_base_url="https://secret-host.example:bad"))
+        with self.assertRaisesRegex(ValueError, "^campaign_config_invalid$") as caught:
+            cb.load(self.root, tb.RUN)
+        self.assertNotIn("secret-host", str(caught.exception))
+        issues = []
+        fields, config = cr._config(str(self.root), issues)
+        self.assertIsNone(config)
+        self.assertEqual(fields["public_base_url"], "invalid")
+        self.assertEqual([i["code"] for i in issues], ["READINESS_CONFIG_INVALID"])
+        self.assertNotIn("secret-host", json.dumps(issues))
+
     def test_load_timezone_still_ignores_unknown_keys(self):
         self.write(dict(FICTIONAL, surprise=1))
         self.assertEqual(cc.load_timezone(self.root), "UTC")
@@ -189,3 +245,12 @@ class CampaignPacketTests(tp.Base):
         Path(self.project, "campaign.json").write_text(json.dumps(dict(FICTIONAL, law_package="bad")))
         self.assertEqual(self.code(pp.write_change, self.project, ident, now=tp.T0 + 60), "campaign_config_invalid")
         self.assertFalse(Path(self.project, pp.OUT).exists() and any(Path(self.project, pp.OUT).iterdir()))
+
+    def test_malformed_url_authority_refuses_the_change_without_writes(self):
+        ident = self.approved()
+        self.turn_on()
+        Path(self.project, "campaign.json").write_text(json.dumps(
+            dict(FICTIONAL, public_base_url="https://records.cedar.example:bad")))
+        before = sorted(str(p) for p in Path(self.project).rglob("*"))
+        self.assertEqual(self.code(pp.write_change, self.project, ident, now=tp.T0 + 60), "campaign_config_invalid")
+        self.assertEqual(before, sorted(str(p) for p in Path(self.project).rglob("*")))
