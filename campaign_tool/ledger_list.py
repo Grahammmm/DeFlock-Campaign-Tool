@@ -9,6 +9,7 @@ import os
 import re
 import sqlite3
 import stat
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 
 from .content import load_sources
@@ -69,6 +70,31 @@ def _has_sidecar(name, dir_fd):
     return False
 
 
+@contextmanager
+def _held(fd):
+    """Own one raw descriptor and close it exactly once (never retried). While a failure is already unwinding, a
+    secondary OSError from the close is dropped so the original exception survives unchanged; with no primary
+    failure a close OSError propagates (the snapshot is then refused)."""
+    try:
+        yield
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    os.close(fd)
+
+
+def _discard(db):
+    """Close an allocated memory connection on an aborted snapshot without letting its error replace the primary."""
+    if db is not None:
+        try:
+            db.close()
+        except sqlite3.Error:
+            pass
+
+
 def _snapshot(path):
     """In-memory copy of the ledger; SQLite never opens the file itself.
 
@@ -83,18 +109,17 @@ def _snapshot(path):
     A file over MAX_LEDGER_BYTES (by fstat, or by what a bounded read actually returns) is refused before any copy."""
     name, parent = path.name, os.fspath(path.parent)
     db = None
-    dir_fd = None
     try:
-        try:
-            before = os.lstat(parent)
-            dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        before = os.lstat(parent)
+        dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        with _held(dir_fd):
             held = os.fstat(dir_fd)
             if not _same_directory(before, held) or not _same_directory(held, held):
                 raise OSError
             if _has_sidecar(name, dir_fd):
                 raise ValueError(SIDECAR_ERROR)
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
-            try:
+            with _held(fd):
                 info = os.fstat(fd)
                 if not stat.S_ISREG(info.st_mode):
                     raise OSError
@@ -117,8 +142,6 @@ def _snapshot(path):
                     raise OSError  # deserialize(b"") raises MemoryError, not sqlite3.Error
                 data = bytearray(raw)
                 del raw
-            finally:
-                os.close(fd)
             if _has_sidecar(name, dir_fd):
                 raise ValueError(SIDECAR_ERROR)  # a writer started while the bytes were read
             if not _same_directory(os.lstat(parent), held):
@@ -128,13 +151,12 @@ def _snapshot(path):
             db = sqlite3.connect(":memory:")
             db.deserialize(bytes(data))
             db.execute("SELECT count(*) FROM objects JOIN receipts ON 0").fetchone()
-        finally:
-            if dir_fd is not None:
-                os.close(dir_fd)
     except (OSError, sqlite3.Error):
-        if db is not None:
-            db.close()
+        _discard(db)
         raise ValueError("private/ledger.sqlite is not a readable ledger") from None
+    except BaseException:
+        _discard(db)  # the primary failure (explicit refusal or unexpected exception) keeps its identity
+        raise
     return db
 
 
