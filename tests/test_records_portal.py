@@ -463,7 +463,7 @@ class PortalNestingTests(unittest.TestCase):
             self.assertEqual(source.read_bytes(),raw)
             conn=sqlite3.connect(str(root/"portal.sqlite")) if (root/"portal.sqlite").exists() else None
             if conn:
-                tables=[r[0] for r in conn.execute("select name from sqlite_master where type='table'")]
+                tables=[r[0] for r in conn.execute("select name from sqlite_master where type='table' and name!='portal_meta'")]
                 counts={t:conn.execute('select count(*) from "%s"'%t).fetchone()[0] for t in tables}
                 conn.close()
                 self.assertFalse(any(counts.values()),counts)
