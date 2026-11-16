@@ -119,11 +119,11 @@ def encrypt(plain, out, pubkey):
                 raise _error("gpg encryption failed")
             _require_owned(partial, identity)
             listed = _gpg(["--homedir", home, "--no-autostart", "--list-only", "--list-packets", str(partial)])
-        _require_owned(partial, identity)
         packets = [line.split() for line in listed.stdout.decode("utf-8", "replace").splitlines()
                    if line.startswith(":pubkey enc packet:")]
         if listed.returncode != 0 or not any(word.upper() in key_ids for packet in packets for word in packet):
             raise _error("encrypted archive is not addressed to the --encrypt-to key")
+        _require_owned(partial, identity)
         try:
             os.link(partial, out)
         except FileExistsError:

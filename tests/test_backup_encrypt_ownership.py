@@ -189,6 +189,42 @@ class EncryptOwnershipTests(unittest.TestCase):
         self.assertEqual(self.partials(), [])
         self.assertFalse(self.out.exists())
 
+    def test_packet_failure_preserves_classification_when_partial_is_replaced(self):
+        for failure in ("inspection", "recipient"):
+            for kind in ("file", "symlink", "dir"):
+                with self.subTest(failure=failure, kind=kind):
+                    self.calls.clear()
+                    holder = {}
+                    before = open_fds()
+
+                    def replace(partial):
+                        holder["p"] = partial
+                        self.swap(kind, partial)
+
+                    forward = self.forwarding(after_list=replace)
+
+                    def failed_packets(args, **kwargs):
+                        result = forward(args, **kwargs)
+                        if "--list-packets" in args:
+                            if failure == "inspection":
+                                result.returncode = 2
+                            else:
+                                result.stdout = b""
+                        return result
+
+                    with mock.patch.object(backup_crypt, "_gpg", side_effect=failed_packets):
+                        with self.assertRaises(backup.BackupError) as ctx:
+                            self.encrypt()
+                    self.assertEqual(str(ctx.exception),
+                                     "encrypted archive is not addressed to the --encrypt-to key")
+                    self.assertEqual(self.calls, ["encrypt", "list"])
+                    self.assert_foreign_kept(kind, holder["p"])
+                    self.assertEqual(open_fds(), before)
+                    if kind == "dir":
+                        holder["p"].rmdir()
+                    else:
+                        holder["p"].unlink()
+
     def test_replaced_partial_refuses_before_packet_read_or_publication(self):
         for kind in ("missing", "file", "symlink", "dir"):
             with self.subTest(phase="before-packet", kind=kind):
