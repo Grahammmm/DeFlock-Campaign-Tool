@@ -16,6 +16,8 @@ RESIDUE = {"edit_placeholder": "[EDIT ME] placeholder left", "draft_heading": "D
 
 
 def approval_label(row, switches):
+    if row["kind"] in draft_templates.REVIEW_COPY_KINDS:
+        return "Approve copy (draft-copy decision only; nothing is posted, sent or published)"
     if row["kind"] in draft_templates.NEXT_STEP_KINDS:
         return "Approve (records the decision only; nothing is posted or sent)"
     if switches["can_send"]:
@@ -25,6 +27,8 @@ def approval_label(row, switches):
 
 
 def approval_status(project, row, switches, source=None):
+    if row["kind"] in draft_templates.REVIEW_COPY_KINDS:
+        return esc("Approved copy; draft-copy decision only; nothing is posted, sent or published.")
     source = source or console_snapshot.LiveSource(project)
     if row["kind"] in draft_templates.NEXT_STEP_KINDS:
         return esc("Approved; records the decision only; nothing is posted or sent.")
@@ -177,16 +181,32 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
     if message:
         out.append('<p role="alert" class="diag">%s. Nothing was saved or decided.</p>' % esc(message.rstrip(".")))
     out.append("<dl>")
-    for label, value in (("To", preview["to"] or "Unknown"), ("To note", preview["to_note"]),
+    copy = row["kind"] in draft_templates.REVIEW_COPY_KINDS
+    for label, value in [] if copy else (("To", preview["to"] or "Unknown"), ("To note", preview["to_note"]),
                          ("From", preview["from"] or "Unknown"), ("From note", preview["from_note"]),
                          ("Subject", preview["subject"]),
                          ("Reply in the agency's thread", "yes" if preview["threaded"] else "no"),
                          ("Attachments", ", ".join(a["name"] for a in preview["attachments"]) or "None")):
         out.append("<dt>%s</dt><dd>%s</dd>" % (esc(label), esc(value)))
-    out.append("</dl>")
+    if copy:
+        evidence = row["evidence"]
+        for key, value in evidence.get("target", {}).items():
+            out.append("<dt>Target %s</dt><dd>%s</dd>" % (esc(key), esc(value)))
+        for key, value in evidence.get("correction", {}).items():
+            out.append("<dt>Correction %s</dt><dd>%s</dd>" % (esc(key), esc(value)))
+        out.append("<dt>Source attachment sha256</dt><dd>%s</dd><dt>Source section</dt><dd>%s</dd>" % (
+            esc(evidence.get("source_attachment_sha256")), esc(evidence.get("source_section"))))
+        out.append("</dl><h2>Source caveats (review only)</h2><ul>")
+        for citation in evidence.get("citations", []):
+            out.append("<li>%s</li>" % esc("; ".join("%s: %s" % (k, v if v is not None else "not supplied")
+                                                            for k, v in citation.items())))
+        out.append("</ul><p>Copy approval cannot create a public packet or automatic next-site-update. "
+                   "No mail placement or send is available.</p>")
+    else:
+        out.append("</dl>")
     out.append(refusal_panel(project, row, run_id or row["source_run_id"]))
     warnings = [RESIDUE[code] for code in preview["residue"]]
-    if preview["body_header_lines"]:
+    if not copy and preview["body_header_lines"]:
         warnings.append("Lines %s: the body has its own To/Subject/From lines; the real headers are shown above" %
                         ", ".join(map(str, preview["body_header_lines"])))
     if warnings:
@@ -228,7 +248,8 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
         out.append("<p>Sign this text with your approval key "
                    "(<code>ssh-keygen -Y sign -n deflock-approval</code>) and paste the signature. "
                    "The console holds no key and never signs. Approval does not send or publish. "
-                   "For mail, continue to the separate send check after approval.</p>")
+                   + ("This is a draft-copy decision only.</p>" if copy else
+                      "For mail, continue to the separate send check after approval.</p>"))
         out.append(ap._form("/approvals/approve", token, row["id"], "",
                             '<label for="signature">Detached SSH signature</label>'
                             '<textarea id="signature" name="signature" required>%s</textarea>' % esc(

@@ -61,6 +61,10 @@ class OCRTests(unittest.TestCase):
                         pages_reviewed=1, awaiting_ocr_images=7)
         self.assertEqual(stage['ocr'], expected)
         self.assertEqual(stage['review_required'], 3)
+        # Scope (deploy/records-runtime/README.md, "OCR count scope"): the OCR block is a
+        # project-ledger snapshot, so zero extraction input/new data keeps nonzero OCR counts.
+        self.assertEqual(stage['counts'], dict(input=0, output=0, failed=0, skipped=0))
+        self.assertIsNone(stage.get('new_data'))
         self.assertIsNotNone(stage_parse(stage))
         config = {'target': 'TEST', 'stages': [dict(name=n, enabled=True, timeout_seconds=60, argv=['/synthetic'])
                              for n in orch.WORK_STAGES]}
@@ -75,6 +79,9 @@ class OCRTests(unittest.TestCase):
                          time.time() + 60, path, self.project, env={})
         report = json.loads(path.read_text())
         self.assertEqual(report['ocr'], expected)
+        extract = next(s for s in report['stages'] if s['name'] == 'extract')
+        self.assertEqual(extract['counts']['input'], 0)
+        self.assertIsNone(extract.get('new_data'))
         self.assertEqual(report['refusals'], stage['refusals'])
         self.assertEqual(run_report.validate_run_report(report), report)
         config['stages'][4]['enabled'] = False

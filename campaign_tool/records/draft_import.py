@@ -1,4 +1,4 @@
-"""Import one operator-checked correspondence draft; dry-run by default, never send."""
+"""Import one operator-checked correspondence or review-copy draft; dry-run by default, never send."""
 import argparse
 import hashlib
 import json
@@ -103,10 +103,39 @@ def identity(doc):
     return hashlib.sha256(aq._canon([doc["source_section"], doc["request_id"], doc["draft_key"]]).encode()).hexdigest()
 
 
+def validate_copy(doc):
+    """Review-only provenance: retain caveats verbatim, never infer an original or page."""
+    target = doc["target"]
+    _need(isinstance(target, dict) and set(target) == {"website", "page", "section"}
+          and all(_text(v) for v in target.values()), "input_target")
+    if doc["kind"] == "draft-correction-notice":
+        correction = doc["correction"]
+        _need(isinstance(correction, dict)
+              and set(correction) == {"prior_statement", "prior_version", "linkage"}
+              and all(_text(v) for v in correction.values()), "input_correction")
+    for citation in doc["citations"]:
+        _need(isinstance(citation, dict)
+              and set(citation) == {"source_type", "source_id", "locator", "as_of", "verification"},
+              "input_citations")
+        _need(_text(citation["source_type"])
+              and citation["verification"] in ("verified", "unverified", "tracker-only", "missing-original"),
+              "input_citations")
+        for key in ("source_id", "locator", "as_of"):
+            value = citation[key]
+            _need(_text(value) or (value is None and citation["verification"] != "verified"), "input_citations")
+
+
 def validate(doc):
     """Validate one v1 instance and return add_draft arguments; no filesystem or network."""
-    _need(isinstance(doc, dict) and set(doc) == FIELDS, "input_fields")
-    _need(doc["schema"] == SCHEMA and doc["kind"] == KIND, "input_schema")
+    _need(isinstance(doc, dict), "input_fields")
+    kind = doc.get("kind")
+    _need(doc.get("schema") == SCHEMA and isinstance(kind, str)
+          and kind in (KIND,) + draft_templates.REVIEW_COPY_KINDS, "input_schema")
+    copy = kind in draft_templates.REVIEW_COPY_KINDS
+    fields = (FIELDS - {"envelope"}) | {"target"} if copy else FIELDS
+    if kind == "draft-correction-notice":
+        fields = fields | {"correction"}
+    _need(set(doc) == fields, "input_fields")
     for key in ("draft_key", "agency_id", "request_id", "source_run_id", "source_section"):
         _need(isinstance(doc[key], str) and ID.fullmatch(doc[key]) is not None, "input_" + key)
     _need(isinstance(doc["source_attachment_sha256"], str)
@@ -120,15 +149,21 @@ def validate(doc):
     except (UnicodeEncodeError, ValueError, TypeError, RecursionError):
         raise aq.ApprovalQueueError("input_utf8") from None
     _need(len(data) <= draft_templates.MAX_BODY_BYTES, "body_bound")
-    _validate_citations(doc["citations"])
-    validate_envelope(doc["envelope"])
+    if copy:
+        _need(isinstance(doc["citations"], list) and bool(doc["citations"]), "input_citations")
+        validate_copy(doc)
+    else:
+        _validate_citations(doc["citations"])
+        validate_envelope(doc["envelope"])
     # Bind original body and run too: the queue compares evidence, not body, on re-import.
     evidence = {k: doc[k] for k in ("schema", "draft_key", "why", "source_run_id", "source_attachment_sha256",
-                                   "source_section", "citations", "envelope")}
+                                   "source_section", "citations")}
+    evidence.update({k: doc[k] for k in ("target", "correction") if k in doc} if copy else
+                    {"envelope": doc["envelope"]})
     evidence.update(source="terra-import", body_sha256=hashlib.sha256(data).hexdigest())
     draft = {k: doc[k] for k in ("kind", "agency_id", "request_id", "body", "source_run_id")}
     draft.update(item_id=identity(doc), evidence=evidence)
-    event = aq._event("draft", aq.draft_id(draft["item_id"], KIND), 0, aq.PIPELINE_ACTOR, snapshot=draft)
+    event = aq._event("draft", aq.draft_id(draft["item_id"], draft["kind"]), 0, aq.PIPELINE_ACTOR, snapshot=draft)
     _need(len(aq._canon(event).encode("utf-8")) <= aq.MAX_EVENT, "input_bound")
     return draft
 
@@ -161,10 +196,11 @@ def import_draft(project, path, *, apply=False):
     doc = aq._strict_load(read_input(path), "input_json")
     draft = validate(doc)
     try:
-        mail_drafts.correspondence_envelope(project, draft)  # read-only proof, also on dry-run
+        if draft["kind"] == KIND:
+            mail_drafts.correspondence_envelope(project, draft)  # read-only proof, also on dry-run
     except mail_drafts.MailDraftError as error:
         raise aq.ApprovalQueueError(error.code) from None
-    ident = aq.draft_id(draft["item_id"], KIND)
+    ident = aq.draft_id(draft["item_id"], draft["kind"])
     existing = next((r for r in aq.load_queue(project) if r["id"] == ident), None)
     if existing is not None:
         _need(existing["agency_id"] == draft["agency_id"] and existing["request_id"] == draft["request_id"]
