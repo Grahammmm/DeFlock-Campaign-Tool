@@ -23,6 +23,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True  # read-only: loading the sibling must not leave a __pycache__ behind
 _spec = importlib.util.spec_from_file_location("_scan_flock_privacy", Path(__file__).resolve().parent / "flock_privacy.py")
 _spec.loader.exec_module(privacy := importlib.util.module_from_spec(_spec))
+SIZE = object()
 SNIFF, NOFOLLOW = 8192, getattr(os, "O_NOFOLLOW", 0)
 REPO = os.path.realpath(Path(__file__).resolve().parents[1])
 
@@ -50,18 +51,47 @@ class Scan:
         self.note(name, why)
         print(f"{show(name)}: {why}")
 
+    def read_leaf(self, path, st):
+        """Leaf admission: open nonblocking and no-follow (a substituted FIFO must not wait for a writer), admit the descriptor's
+        real type, (dev, ino) and size against the first observation, only then read at most max_bytes+1. None = unreadable, SIZE = too big."""
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | NOFOLLOW)
+        except OSError:
+            return None
+        try:
+            fst = os.fstat(fd)
+            if not stat.S_ISREG(fst.st_mode) or (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
+                os.close(fd)
+                return None
+            if fst.st_size > self.max_bytes:
+                os.close(fd)
+                return SIZE
+            fh = os.fdopen(fd, "rb")  # on success the stream owns fd
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            return None
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+            raise
+        try:
+            with fh:
+                data = fh.read(self.max_bytes + 1)
+        except OSError:
+            return None
+        return SIZE if len(data) > self.max_bytes else data
+
     def entry(self, path, name, st):  # path opens it, name is what is printed
         self.files += 1
         why = ("link" if stat.S_ISLNK(st.st_mode) else "special" if not stat.S_ISREG(st.st_mode)
                else "allow" if (st.st_dev, st.st_ino) == self.allow_id else "size" if st.st_size > self.max_bytes else None)
         if why:
             return self.skip(name, why)
-        try:
-            with open(path, "rb", opener=lambda p, f: os.open(p, f | NOFOLLOW)) as fh:
-                data = fh.read(self.max_bytes + 1)
-        except OSError:
+        data = self.read_leaf(path, st)
+        if data is None:
             return self.fail(name, "unreadable")
-        if len(data) > self.max_bytes:
+        if data is SIZE:
             return self.skip(name, "size")
         try:
             text = None if b"\0" in data[:SNIFF] else data.decode("utf-8")

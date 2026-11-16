@@ -8,7 +8,9 @@ from fractions import Fraction
 
 from .agency_cards import text as plain_text
 
-_MIN_NORMAL = sys.float_info.min  # below this a crossing product may have lost precision
+_MIN_NORMAL = sys.float_info.min  # below this a value may have lost precision
+_FLOOR = 2.0 ** -1000  # a product below this may have underflowed; far above _MIN_NORMAL, far below real data
+_ERR = 2.0 ** -49  # relative roundoff bound for the crossing determinant, see _left_of_crossing
 
 
 def _number(n):
@@ -42,20 +44,38 @@ def _crosses(x, y, edges):
 
 
 def _left_of_crossing(x, y, x1, y1, x2, y2):
-    """``x < x1 + (y - y1) * (x2 - x1) / (y2 - y1)``; floats while every step is finite, exact otherwise."""
-    dy, dx, dn = y - y1, x2 - x1, y2 - y1  # finite inputs can still overflow here (or exceed float range as ints)
-    if not (_number(dy) and _number(dx) and _number(dn) and dn):  # dn == 0: mixed int/float operands rounded together
-        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
-    product = dy * dx
-    if not _number(product) or (dy and dx and abs(product) < _MIN_NORMAL):  # overflowed or underflowed product
-        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
+    """``x < x1 + (y - y1) * (x2 - x1) / (y2 - y1)`` (strict; y2 != y1).
+
+    Fast path: with a = x - x1, c = y - y1, d = x2 - x1, n = y2 - y1 the test is the sign of
+    ``a*n - c*d`` (flipped when n < 0), which needs no division. Each of a, c, d, n carries at most two
+    roundings (an int-to-float conversion and a subtraction), each product one more, and the final
+    subtraction one more, all of relative size <= 2**-53 while every value is normal. So the computed
+    difference is within ``_ERR`` * (|a*n| + |c*d|) of the true one, ``_ERR`` = 2**-49 (a wide margin).
+    The sign is trusted only when the difference exceeds that bound; a near-tie, an overflowed,
+    nonfinite or underflowed intermediate, or an unrepresentable integer goes to the exact comparison
+    on the original numbers. No geographic epsilon is involved.
+
+    Zero displacements need no arithmetic and are decided exactly from the original comparisons: a vertical
+    edge (x2 == x1) or a query level with the start (y == y1) crosses at x1; a query on x1 is left of the
+    crossing exactly when ``(y - y1) * (x2 - x1) / (y2 - y1)`` is positive, i.e. by the signs alone.
+    """
+    if x2 == x1 or y == y1:
+        return x < x1
+    if x == x1:
+        return ((y > y1) == (x2 > x1)) == (y2 > y1)
     try:
-        crossing = x1 + product / dn
-    except OverflowError:  # integer quotient too large for a float
-        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
-    if not _number(crossing):  # never compare against infinity or NaN
-        return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
-    return x < crossing
+        a, c, d, n = float(x - x1), float(y - y1), float(x2 - x1), float(y2 - y1)
+        if math.isfinite(a + c + d + n) and n and all(not v or abs(v) >= _MIN_NORMAL for v in (a, c, d, n)):
+            first, second = a * n, c * d
+            # a nonzero product below _FLOOR may have underflowed, losing relative accuracy
+            if all(not (u and v) or abs(u * v) >= _FLOOR for u, v in ((a, n), (c, d))):
+                bound = _ERR * (abs(first) + abs(second))
+                diff = first - second
+                if math.isfinite(bound) and math.isfinite(diff) and abs(diff) > bound:
+                    return (diff < 0) == (n > 0)
+    except OverflowError:  # an integer difference too large for a float
+        pass
+    return _exact_left_of_crossing(x, y, x1, y1, x2, y2)
 
 
 def _exact_left_of_crossing(x, y, x1, y1, x2, y2):

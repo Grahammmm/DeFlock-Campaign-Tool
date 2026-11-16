@@ -13,7 +13,10 @@ diff checks both snapshots against the v1 shape and vocabularies (the first fail
 value) and prints one line per request or run that is new, gone or changed state, then a totals delta. Rows masked as
 (unsafe-label) or `row N`, and requests with no id (-), cannot be matched and are only counted (unmatched=K). A basis change
 with the same state is not a change. JSON schema flock-state-diff-v1 is review_required. Exit 0 nothing changed; 3 something
-changed (a change line or a totals delta); 1 unusable snapshot."""
+changed (a change line or a totals delta); 1 unusable snapshot.
+A snapshot made with --agency carries an agency_filter list (1-20 distinct plain slugs) and every row must belong to it; a
+snapshot without one is the full store. Two snapshots compare only when both are full or both select the same agencies (in any
+order); otherwise diff refuses before printing anything rather than reading absent rows as new or gone."""
 import csv
 import collections
 import importlib.util
@@ -176,6 +179,21 @@ def render(reqs, runs, as_json, only=None):
 
 def load_snapshot(path, side):
     """[(kind, agency, id, state, matchable)] from one saved `state --json` document; refusals name a field path, never a value."""
+    return _load_scoped(path, side)[0]
+
+
+def _scope(data, bad):  # None = full snapshot (no agency_filter key); else the frozenset of selected slugs
+    if "agency_filter" not in data:
+        return None
+    sel = data["agency_filter"]
+    if not (isinstance(sel, list) and 1 <= len(sel) <= 20 and all(isinstance(s, str) and SAFE.fullmatch(s) and not BANNED.search(s) for s in sel)
+            and len(set(sel)) == len(sel)):
+        raise bad("agency_filter", "is not 1-20 distinct plain slugs")
+    return frozenset(sel)
+
+
+def _load_scoped(path, side):
+    """(rows as load_snapshot returns them, scope); the scope is None for a full snapshot, else the frozenset of selected agencies."""
     try:
         if Path(path).is_symlink():
             raise Refuse("snapshot must not be a link (%s)" % side)
@@ -189,12 +207,13 @@ def load_snapshot(path, side):
     except (OSError, UnicodeDecodeError, ValueError, RecursionError):
         raise Refuse("snapshot unreadable (%s)" % side) from None
     bad = lambda where, what: Refuse("%s %s (%s)" % (where, what, side))
-    if not isinstance(data, dict) or set(data) != SNAP_KEYS:
+    if not isinstance(data, dict) or set(data) - {"agency_filter"} != SNAP_KEYS:
         raise bad("snapshot", "keys are not flock-state-v1")
     if data["schema"] != "flock-state-v1":
         raise bad("schema", "is not flock-state-v1")
     if data["review_required"] is not True:
         raise bad("review_required", "is not true")
+    scope = _scope(data, bad)
     out, seen = [], set()
     for field, kind, key, vocab, keys in SNAP_ROWS:
         if not isinstance(data[field], list):
@@ -210,13 +229,15 @@ def load_snapshot(path, side):
             for k in ("agency", key):  # exactly what label() prints, or one of the masks state itself writes
                 if not (isinstance(r[k], str) and (label(r[k]) == r[k] or r[k] == "-" or ROW_N.fullmatch(r[k]))):
                     raise bad(at + "." + k, "is not a plain label")
+            if scope is not None and r["agency"] not in scope:
+                raise bad(at + ".agency", "is outside agency_filter")
             ident = (kind, r["agency"], r[key])
             matchable = "(unsafe-label)" not in ident and not ROW_N.fullmatch(r[key]) and ident[::2] != ("request", "-")  # no id
             if matchable and ident in seen:
                 raise bad(at, "repeats an (agency, %s) pair" % key)
             seen.add(ident)
             out.append(ident + (r["state"], matchable))
-    return out
+    return out, scope
 
 
 def diff(old, new):
@@ -253,7 +274,10 @@ def main(argv):
         if not (len(argv) in (3, 4) and argv[3:] in ([], ["--json"]) and not any(p.startswith("-") for p in argv[1:3])):
             return print(USAGE, file=sys.stderr) or 2
         try:
-            return render_diff(load_snapshot(argv[1], "OLD"), load_snapshot(argv[2], "NEW"), argv[3:] == ["--json"])
+            (old, old_scope), (new, new_scope) = _load_scoped(argv[1], "OLD"), _load_scoped(argv[2], "NEW")
+            if old_scope != new_scope:  # full vs filtered, or different selections: absent rows would look like changes
+                raise Refuse("snapshot agency filters differ (OLD/NEW)")
+            return render_diff(old, new, argv[3:] == ["--json"])
         except Refuse as exc:
             return print("diff: " + str(exc), file=sys.stderr) or 1
     if not (len(argv) >= 2 and argv[0] == "state" and (opts := state_opts(argv[2:]))):
