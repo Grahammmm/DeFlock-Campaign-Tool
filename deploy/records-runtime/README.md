@@ -412,6 +412,54 @@ human gate, each tagged with gate 1, 2 or 3 or the operator; unknown codes
 stay `unmapped`). It writes nothing, has no verb that marks anything
 reviewed, and always ends `REVIEWED | none by this tool`.
 
+OCR count scope
+
+Why this section exists: a report can show zero extraction inputs and still
+carry nonzero `ocr` counts. Current code explains that, because the `ocr`
+block is a snapshot of the project's processing ledger, not a count of work
+done in this run. This explains the earlier rehearsal observation by current
+semantics only. It does not replay that run, and its exact provenance stays
+unverified without the retained source context.
+
+- `ocr.pages_ocr` is the number of current rows in the project's processing
+  ledger selected by `needs_visual_review=1` (`ocr_review.pages`; read in
+  `run_stages.py` extract adapter). No run id filter is applied. It is
+  project-ledger-wide across that selected population. It is NOT every page
+  ever processed, NOT every page in the project and NOT pages OCR'd during
+  this invocation. A confirmed or rejected review does not remove a page
+  from `pages_ocr`.
+- `pages_conf_ge80`, `pages_conf_lt80` and `pages_conf_unknown` split that
+  same population by confidence (80 exactly counts as `>=80`; a missing
+  confidence is unknown, never 0). Their sum equals `pages_ocr`.
+- `pages_reviewed` counts selected current page bindings that have an entry
+  in the review journal, including a rejection. It is not a claim of
+  semantic acceptance. A review of a binding that is no longer current does
+  not count. `review_required` is the unmatched remainder of the selected
+  population. A high confidence or a zero pending count grants neither
+  publication nor independent semantic approval.
+- `new_data.pages` and `new_data.extracted_units` are the new extraction work
+  of this run. Extract `counts.input` is the number of this run's classified
+  document outcomes: not a page count, and not necessarily the number of
+  parser attempts. So `counts.input=0`, no new data and nonzero `ocr` counts
+  are compatible. Do not read every stage count as a per-run delta: held and
+  backlog classifications (see `awaiting_ocr` above) have their own meaning.
+- `ocr.awaiting_ocr_images` has a different scope from the other `ocr`
+  fields. It comes from the extractor summary's non-PDF `AWAITING_OCR`
+  documents, not from the page-review SELECT. It is a document/image backlog
+  count, not OCR pages and not newly OCR'd images.
+- A missing `ocr` block means unavailable or not supplied, never zero. It is
+  omitted when the extract stage is disabled or the ledger is busy or
+  unreadable. A broken review chain fails closed with
+  `OCR_REVIEW_CHAIN_BROKEN`.
+
+Synthetic example (invented numbers): extract `counts` input 0, output 0,
+failed 0, skipped 0; `new_data` null; `ocr` `pages_ocr` 4 (2 at `>=80`, 1 at
+`<80`, 1 unknown), `pages_reviewed` 0, `awaiting_ocr_images` 7;
+`review_required` 4. The four pages were selected from earlier ledger state.
+Nothing here says OCR ran in this run, and the 7 is a document backlog, not
+a page count. Reading the report writes nothing, runs no OCR and sends
+nothing.
+
 Non-fatal notify
 
 `notify.py` sends one metadata-only message, built from the report's codes.
