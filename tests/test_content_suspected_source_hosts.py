@@ -49,26 +49,26 @@ class HostTests(base.Case):
         self.assertFalse(_public_source(None, []))
 
     def test_strict_diagnostic_and_unknown_context_agree(self):
-        secret = 'canary-path-xyz'
-        self.put([base.entry(id='a', source=f'https://127.0.0x1/{secret}'),
-                  base.entry(id='b', source=f'https://192.168.0x1/{secret}')])
+        canary = 'canary-path-xyz'
+        self.put([base.entry(id='a', source=f'https://127.0.0x1/{canary}'),
+                  base.entry(id='b', source=f'https://192.168.0x1/{canary}')])
         problems = []
         self.assertIsNone(read_suspected(self.root, None, SOURCES_UNKNOWN, base.DAY, problems))
         text = '\n'.join(problems)
         self.assertIn('.entries[0].source', text)
         self.assertIn('.entries[1].source', text)
-        self.assertNotIn(secret, text)
+        self.assertNotIn(canary, text)
         with self.assertRaises(ContentError) as caught:
             read_suspected(self.root, None, SOURCES_UNKNOWN, base.DAY)
-        self.assertNotIn(secret, str(caught.exception))
+        self.assertNotIn(canary, str(caught.exception))
 
     def test_real_content_check_and_build_refuse_without_public_changes(self):
-        secret = 'canary-path-xyz'
+        canary = 'canary-path-xyz'
         self.put([base.entry()])
         build_site(self.root, today=base.DAY)
         before = self.tree()
         self.assertIn('suspected.html', before)
-        self.put([base.entry(source=f'https://127.0.0x1/{secret}?q=1')])
+        self.put([base.entry(source=f'https://127.0.0x1/{canary}?q=1')])
         with self.assertRaises(ContentError):
             load_content(self.root, base.DAY)
         self.assertTrue(any('.source' in p for p in content_problems(self.root, today=base.DAY)))
@@ -79,7 +79,7 @@ class HostTests(base.Case):
             with self.subTest(args=args):
                 self.assertNotEqual(result.returncode, 0, out)
                 self.assertIn('.source', out)
-                self.assertNotIn(secret, out)
+                self.assertNotIn(canary, out)
                 if '--json' in args:
                     self.assertEqual(json.loads(result.stdout)['schema'], 'content-check-v1')
         self.assertEqual(before, self.tree())
