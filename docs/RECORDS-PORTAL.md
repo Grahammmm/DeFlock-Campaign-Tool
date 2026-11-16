@@ -268,3 +268,12 @@ are a single fixed JSON code on stderr (`usage_invalid`, `input_*`,
 `output_not_created`, `internal_error`) and never echo arguments or input text. The report opens no queue store,
 allowlist, ledger, mailbox or network connection. The counts it produces still
 need review and are not acceptance.
+
+## Malformed and over-nested policy or notice JSON
+
+Input nested so deeply that the standard JSON decoder is exhausted is treated as
+malformed input, using the existing refusal codes: `approval_invalid` for the
+approval policy, `egress_policy_missing_or_invalid` for the egress policy, and the
+usual `portal_operation_failed` JSON with exit 2 for `inventory` and `intake`
+input. Nothing is authorized or fetched because of a parse error. The byte-size
+caps are not a complete memory or time sandbox.
