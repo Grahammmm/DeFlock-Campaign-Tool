@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from campaign_tool.records import cli, followup_route as fr, followup_state as fs
+from campaign_tool.records import cli, followup_findings as ff, followup_route as fr, followup_state as fs
 from campaign_tool.records.outcomes import timeline
 
 DAY = "2026-11-06"
@@ -161,6 +161,75 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(r["asks_for"], [1])
         r = fr.route(state("extension", ["extension_limit_exceeded"], produced=[1]), {}, [], DAY)
         self.assertEqual((r["pattern"], r["asks_for"]), ("extension", []))
+
+
+def finding(valid=True, fid="F1", request="r1", quote="synthetic cited fact", item="i1"):
+    facts = [{"fact_id": "fact-1", "source_sha256": "a" * 64, "page": 2, "quote": quote}]
+    return {"kind": "contradiction", "agency_key": "alpha-pd", "request_id": request if valid else None,
+            "finding_id": fid, "finding_sha256": "b" * 64, "evidence_sha256": ff.evidence_digest(facts) if valid else None,
+            "facts": facts if valid else [], "item_ids": [item] if valid else [], "valid": valid}
+
+
+class ReviewedContradictionTests(unittest.TestCase):
+    def route(self, s, found, asks=(ask(1, rating="answered"),), clock=None):
+        args = (s, clock or {}, [], DAY)
+        before = copy.deepcopy((s, found))
+        out = fr.route(*args, items={"asks": list(asks)}, reviewed_findings=found)
+        self.assertEqual((s, found), before)
+        return out
+
+    def test_reviewed_finding_selects_cited_reply_in_thread_after_residual_rules_only(self):
+        for s in (state("answered", produced=[1]), state("waiting"), state("withheld", withheld=[1]),
+                  state("partial", not_addressed=[1])):
+            with self.subTest(state=s["state"]):
+                r = self.route(s, [finding()])
+                self.assertEqual((r["pattern"], r["vehicle"], r["handled_by"], r["reason"], r["asks_for"], r["extra_patterns"]),
+                                 ("records_contradict_policy", "reply_in_thread", "engine", "reviewed_contradiction", [], []))
+                self.assertEqual((r["planned_date"], r["date_basis"]), (DAY, fr.READY))
+                self.assertEqual(r["finding"], ff.locator(finding()))
+                self.assertNotIn("synthetic cited fact", json.dumps(r))  # full quotes stay out of the route output
+
+    def test_first_match_precedence_is_unchanged_for_every_current_fixture(self):
+        future = {"promised": {"date": "2026-11-26"}, "extended_due": "2026-11-20"}
+        fixtures = [(state("closed", ["open_tier1", "extension_limit_exceeded"], withheld=[1]), []),
+                    (state("closed", withheld=[1]), []), (state("clarification", withheld=[1]), [queue(kind="fee-reply")]),
+                    (state("silence", withheld=[1]), [queue(kind="fee-reply")]),
+                    (state("silence", ["extension_limit_exceeded"], withheld=[1]), []),
+                    (state("extension", ["extension_limit_exceeded"], withheld=[1]), []),
+                    (state("extension", ["extension_limit_exceeded"], withheld=[1]), [queue(kind="reply-extension")]),
+                    (state("extension", withheld=[1]), []), (state("unknown", not_addressed=[1]), []),
+                    (state("withheld", withheld=[1]), []), (state("answered", produced=[1]), []),
+                    (state("silence", not_addressed=[1]), [])]
+        for s, qs in fixtures:
+            with self.subTest(state=s["state"], flags=s["flags"]):
+                plain = fr.route(s, future, qs, DAY, items={"asks": [ask(1, rating="answered")]})
+                with_finding = fr.route(s, future, qs, DAY, items={"asks": [ask(1, rating="answered")]},
+                                        reviewed_findings=[finding()])
+                number = fr._rule(s["state"], s["flags"], {q["kind"] for q in qs}, [1] if s["item_needs"] else [])
+                if number in (8, 9):
+                    self.assertEqual(with_finding["pattern"], "records_contradict_policy")
+                else:
+                    self.assertEqual(json.dumps(with_finding, sort_keys=True), json.dumps(plain, sort_keys=True))
+                    self.assertNotIn("finding", with_finding)
+                self.assertNotIn("finding", plain)
+
+    def test_ineligible_findings_leave_the_legacy_route(self):
+        s = state("answered", produced=[1])
+        legacy = fr.route(s, {}, [], DAY, items={"asks": [ask(1, rating="answered")]})
+        for label, found, asks in (("none", [], (ask(1, rating="answered"),)),
+                                   ("not answered", [finding()], (ask(1, rating="missing"),)),
+                                   ("other item", [finding(item="other")], (ask(1, rating="answered"),))):
+            with self.subTest(label):
+                self.assertEqual(self.route(s, found, asks), legacy)
+
+    def test_unmapped_or_ambiguous_findings_are_manual(self):
+        s = state("answered", produced=[1])
+        r = self.route(s, [finding(valid=False)])
+        self.assertEqual((r["handled_by"], r["reason"], r["pattern"], r["asks_for"]), ("manual", "contradiction_evidence_unavailable", None, []))
+        r = self.route(s, [finding(), finding(fid="F2")])
+        self.assertEqual((r["handled_by"], r["reason"], r["pattern"]), ("manual", "contradiction_findings_ambiguous", None))
+        r = self.route(state("unknown", not_addressed=[1]), [finding()])
+        self.assertEqual((r["handled_by"], r["reason"][:7]), ("manual", "rule 10"))
 
 
 class RunTests(unittest.TestCase):

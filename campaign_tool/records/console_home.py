@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import console_board as cb, console_oversight as co, console_outstanding, console_standing, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
-from . import console_calendar, console_layout, console_snapshot, followup_clock, site_prs
+from . import approval_anchor_status, console_calendar, console_layout, console_snapshot, followup_clock, site_prs
 
 GROUPS = ("request", "follow-up", "send", "site-update", "social-post", "status-line", "packet")
 LABELS = ("Requests", "Follow-ups", "Sends", "Site updates", "Social posts", "Status lines", "Packets")
@@ -26,6 +26,8 @@ NEXT = {"next-site-update": ("site-update", "site"), "next-social-post": ("socia
 def load(project, run_id, run_report_path=None, now=None, *, send_config=None, meetings_dir=None, source=None):
     source = source or console_snapshot.LiveSource(project)
     model = co.load(project, run_id, run_report_path, now, source=source)
+    model["approval_anchor"] = approval_anchor_status.from_source(source)  # exported observation, read-only
+    model["approval_anchor_pinned"] = approval_anchor_status.pinned(source)
     calendar = {}
     try:
         calendar = console_calendar.load(project, run_id, model["now"], send_config=send_config,
@@ -319,7 +321,10 @@ def render_home(model, token):
     waiting_count = ("%d waiting on agencies (%d overdue)" % (len(waiting["rows"]), sum(bool(r["overdue"]) for r in waiting["rows"]))
                      if waiting["state"] == "ok" and "received" not in missing else "waiting on agencies: unknown")
     out = ([console_layout.sources_banner(console_layout.plain(missing))] if missing else []) + [
-           "<h1>Home</h1>", '<p role="status">%s need your decision · %s due in the next 7 days · %s</p>' % (decision_count, week_count, waiting_count)
+           "<h1>Home</h1>",
+           '<p role="status" id="approval-anchor">%s</p>' % esc(approval_anchor_status.paragraph(
+               model.get("approval_anchor", "unknown"), model.get("approval_anchor_pinned", True))),
+           '<p role="status">%s need your decision · %s due in the next 7 days · %s</p>' % (decision_count, week_count, waiting_count)
            + ('<p role="status" class="diag">%d open request%s no usable due date, so the 7-day count may be low.</p>' % (
               no_clock, " has" if no_clock == 1 else "s have") if no_clock else ""),
            '<section id="decide"><h2>Needs your decision</h2>']
