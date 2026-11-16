@@ -237,6 +237,16 @@ class ImportTests(Base):
         self.assertEqual(aq.load_queue(self.project)[0]["status"], "pending")
         self.assertEqual(self.place()["placed"], 0)
 
+    def test_public_copy_cli_duplicate_and_conflict_exit_codes(self):
+        from tests.records.test_review_copy_kinds import document_copy
+        for n in (0, 1):
+            self.doc = document_copy(n)
+            self.imported()
+            before = tree(self.project)
+            self.assertEqual(self.cli(apply=True)[0], 0)
+            self.assertEqual(self.cli({**self.doc, "body": "Conflicting copy"}, apply=True)[0], 3)
+            self.assertEqual(tree(self.project), before)
+
     def test_cli_registration_real_entry_point_dry_run(self):
         self.input.write_text(json.dumps(self.doc))
         before = tree(self.project)
