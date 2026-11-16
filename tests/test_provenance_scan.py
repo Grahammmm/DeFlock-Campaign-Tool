@@ -216,5 +216,90 @@ class PinScanTests(unittest.TestCase):
         self.assertIn("potential secrets: 0", result.stdout)
 
 
+ROOT = Path(__file__).resolve().parents[1]
+ANCHOR = "import-manifest-pin-refresh-checklist"
+MANIFESTS = ("docs/records-intake-import.json", "docs/records-gates-import.json")
+
+
+def guidance_rows(text):
+    section = text.split("## Import-manifest pin refresh checklist", 1)[-1]
+    return dict(re.findall(r"^\| `([^`]+)` \| `([^`]+)` \|$", section, re.M))
+
+
+def guidance_problems(text, expected):
+    problems = []
+    if "## Import-manifest pin refresh checklist" not in text:
+        problems.append("heading")
+    if guidance_rows(text) != expected:
+        problems.append("mapping")
+    for token in ("engine_sha256", "APPROVED_MANIFESTS", "tools/check_secret_report.py",
+                  "entire manifest", "final bytes", "same PR", "source_sha256",
+                  "weaken the scanner", "not publication clearance"):
+        if token not in text:
+            problems.append(token)
+    if text.find("engine_sha256") > text.find("entire manifest") >= 0:
+        problems.append("order")
+    return problems
+
+
+def template_problems(text, agents):
+    problems = []
+    match = re.search(r"\]\(\.\./AGENTS\.md#([^)]+)\)", text)
+    if not match or match.group(1) != ANCHOR or "## Import-manifest pin refresh checklist" not in agents:
+        problems.append("link")
+    for token in ("engine_sha256", "APPROVED_MANIFESTS", "tools/check_secret_report.py",
+                  "not applicable"):
+        if token not in text:
+            problems.append(token)
+    return problems
+
+
+class ImportPinGuidanceTests(unittest.TestCase):
+    def setUp(self):
+        self.agents = (ROOT / "AGENTS.md").read_text()
+        self.template = (ROOT / ".github/pull_request_template.md").read_text()
+        self.expected = {}
+        for name in MANIFESTS:
+            for entry in json.loads((ROOT / name).read_text())["files"]:
+                self.expected[entry["engine_path"]] = name
+
+    def test_guidance_maps_every_manifest_engine_path(self):
+        self.assertEqual(len(self.expected), 9)
+        self.assertEqual(guidance_rows(self.agents), self.expected)
+        self.assertEqual(guidance_problems(self.agents, self.expected), [])
+
+    def test_guidance_rejects_missing_or_misassigned_path(self):
+        for path, manifest in self.expected.items():
+            row = "| `%s` | `%s` |\n" % (path, manifest)
+            self.assertIn(row, self.agents)
+            self.assertIn("mapping", guidance_problems(self.agents.replace(row, ""), self.expected))
+            other = MANIFESTS[1] if manifest == MANIFESTS[0] else MANIFESTS[0]
+            moved = self.agents.replace(row, "| `%s` | `%s` |\n" % (path, other))
+            self.assertIn("mapping", guidance_problems(moved, self.expected))
+
+    def test_guidance_requires_both_hash_layers_in_order(self):
+        for token in ("engine_sha256", "entire manifest", "final bytes", "same PR"):
+            problems = guidance_problems(self.agents.replace(token, "xx"), self.expected)
+            self.assertTrue(problems, token)
+        swapped = self.agents.replace("engine_sha256", "source_sha256", 1)
+        self.assertTrue(guidance_problems(swapped, self.expected) or
+                        "engine_sha256" not in swapped.split("Order, all")[1].split("2.")[0])
+
+    def test_template_links_to_real_refresh_anchor_and_requires_evidence(self):
+        self.assertEqual(template_problems(self.template, self.agents), [])
+        self.assertIn("link", template_problems(self.template.replace(ANCHOR, "nope"), self.agents))
+        self.assertIn("link", template_problems(self.template, "# nothing"))
+        for token in ("APPROVED_MANIFESTS", "not applicable"):
+            self.assertIn(token, template_problems(self.template.replace(token, "xx"), self.agents))
+
+    def test_guidance_preserves_scanner_and_historical_provenance(self):
+        low = self.agents.lower()
+        self.assertIn("blanket allowlist", low)
+        self.assertIn("weaken the scanner", low)
+        self.assertIn("historical `source_sha256` and `schema_sha256`", self.agents)
+        self.assertIn("not publication clearance", low)
+        self.assertNotIn("--no-verify", self.agents)
+
+
 if __name__ == "__main__":
     unittest.main()
