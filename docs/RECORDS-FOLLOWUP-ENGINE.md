@@ -121,6 +121,30 @@ Missing ledgers carry the R1/R7 manual-check note. No recipient, contact or send
 is inferred. Closed routes use the recorded request id and unsuperseded closure
 date; missing values remain edit placeholders. No ledger writes or network calls.
 
+## Proposing and confirming the asks ledger
+
+`records asks-propose --project P --run-id R [--agency K]` is a dry run: it checks the
+same run's register, received items and optional response items and prints counts
+only (`records-asks-proposal-summary-v1`); it writes nothing. Add `--apply` to create
+`P/agency-asks/K.proposed.tsv` (private 0700/0600) in the `case_builder` columns. It
+numbers asks exactly as the run's register does (`ask-1`, `ask-2`, ... in document
+order) and refuses with a named code (`ASKS_REGISTER_INVALID`, `ASKS_SCOPE_INCOMPLETE`,
+`ASKS_EVIDENCE_INVALID`, `ASKS_PROPOSAL_EXISTS`, ...) rather than write a clipped or
+incomplete ledger. It never overwrites an existing proposal and never touches `K.tsv`.
+
+`produced` and `pending` appear only when one exact received-item quote names that same
+numbered item and says it is attached/enclosed/produced/provided or will be provided;
+everything else, including a generic extension or acknowledgment, stays `unknown`. These
+are machine proposals for review, not findings.
+
+Confirm step, done by an operator and never by a command: (1) read each proposed row
+against the original request and its evidence; (2) correct statuses and `period`, keeping
+the original numbering; (3) only then rename `K.proposed.tsv` to `K.tsv`, and only if
+`K.tsv` does not already exist. If it does, compare and merge privately; never overwrite
+or force. `case_builder` never reads a `.proposed.tsv`, so until the rename the R1/R7
+manual-check note stays. There is no auto-confirm. Proposals are private and nothing is
+approved, sent or published.
+
 ## Reviewed contradictions (FLK-REC-2)
 
 `records_contradict_policy` is routed only from a finding with a valid signed `finding-review-v1` approval

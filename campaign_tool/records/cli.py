@@ -13,6 +13,7 @@ COMMANDS = {
     "deadlines": ("deadline_calc", "main"),
     "followup-engine": ("followup_engine", "main"),
     "followup-route": ("followup_route", "main"),
+    "asks-propose": ("asks_propose", "main"),
     "followup-state": ("followup_state", "main"),
     "events-import": ("events_import", "main"),
     "doctor": ("runtime", "main"),
