@@ -208,8 +208,14 @@ class Phone:
     def wait_for(self, expression, what):
         deadline = time.monotonic() + TIMEOUT
         while time.monotonic() < deadline:
-            if self.js(expression):
-                return
+            try:
+                if self.js(expression):
+                    return
+            except CdpError as exc:
+                # A tap can replace the execution context during this poll. Retry
+                # only that navigation race, still under the original deadline.
+                if not str(exc).startswith("Runtime.evaluate:") or "Inspected target navigated or closed" not in str(exc):
+                    raise
             time.sleep(0.05)
         raise CdpError("timed out waiting for " + what)
 

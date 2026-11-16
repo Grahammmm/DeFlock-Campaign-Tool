@@ -315,6 +315,11 @@ def settle(args, raw, prop_raw, entry, sig):
     if entry['revision_seen'] != digest(prop_raw):
         return 'STALE_PROPOSAL'
     try:
+        # Inputs were loaded before the replay lock: recheck even when an interrupted
+        # install left a sign-off, before verifying it or receipting recovery.
+        source(args)
+        if record._bytes(args.folder / 'PROPOSAL.json') != prop_raw:
+            raise ValueError('proposal_mismatch')
         if os.path.lexists(args.folder / 'SIGNOFF.json'):
             # Only a sign-off of exactly this entry's signature (a restart after the install) is recognised; never replaced.
             try:
