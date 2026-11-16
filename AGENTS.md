@@ -24,3 +24,12 @@ Use one codex/<task> branch and PR per task; never push to main. Before each pus
 For each extraction, rebuild the pilot from a pinned engine version and compare its output against the accepted asset hashes. List every intentional difference. Do not rewrite findings, dates, policy claims or consent wording as an incidental refactor.
 
 Staging deployment to the pilot's existing staging Worker is authorized. Production deployment, DNS, Access and Brevo list changes require explicit owner approval in chat. No account values or owner identities belong in a public fixture.
+
+## run_stages hotspot pre-review
+
+Each lane changing `campaign_tool/records/run_stages.py`, its stage-contract tests,
+or stacked interacting stage behavior must run its relevant tests on the exact
+composed candidate tree before requesting review, including single-lane candidates.
+An isolated-green head is not a composed-tree receipt. Follow the
+[composed-tree test workflow and review receipt](docs/RUN-STAGES-PRE-REVIEW.md);
+record every admitted constituent and rerun after any head/tree change.
