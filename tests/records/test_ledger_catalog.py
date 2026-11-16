@@ -223,8 +223,21 @@ class CanonicalCatalogTests(unittest.TestCase):
 
     def test_repository_output_rejected(self):
         (self.output / ".git").write_text("synthetic repository marker")
-        with self.assertRaisesRegex(module.CatalogError, "private_output_inside_repository"):
+        with self.assertRaisesRegex(module.CatalogError,
+                                    r"^private_output_inside_repository depth=0 basename=\.git$") as ctx:
             module.export(self.build(), self.output)
+        self.assertNotIn(self.root.name, str(ctx.exception))
+        self.assertEqual(sorted(p.name for p in self.output.iterdir()), [".git"])
+
+    def test_ancestor_repository_rejected_at_both_guard_sites(self):
+        result = self.build()
+        (self.root / ".git").mkdir()
+        pattern = r"^private_output_inside_repository depth=1 basename=\.git$"
+        with self.assertRaisesRegex(module.CatalogError, pattern):
+            module.export(result, self.output)
+        with self.assertRaisesRegex(module.CatalogError, pattern):
+            module.build(self.db, self.output)
+        self.assertEqual(list(self.output.iterdir()), [])
 
     def test_html_escaped_no_external_assets(self):
         text = '<script src="https://example.invalid/payload">alert(1)</script>'

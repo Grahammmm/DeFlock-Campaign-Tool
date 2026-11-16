@@ -270,6 +270,26 @@ Order of one run
 5. Bounded Docker wait (plan T10, Oct 17 regression). On failure: report
    `sync` `DOCKER_UNAVAILABLE` plus a blocking needs-G item, notify, exit 75.
 6. Image pin check. On mismatch: `IMAGE_MISMATCH`, exit 78.
+6a. Repository-ancestor preflight (AUDINV-FIX-136). Read-only and run only after
+   the image check, before any arrival claim, backup or stage. For every
+   enabled stage that invokes `campaign_tool.records.run_stages` the wrapper
+   runs `campaign_tool.records.repository_preflight probe --project PATH` in the
+   SAME container, user and interpreter (list argv, no shell), once per distinct
+   context/project, so the container filesystem is checked, not the host
+   `RUNTIME_DIR`. A plan with no records stage logs `not-applicable`; a records
+   stage whose argv cannot be read unambiguously, a nonzero/timed-out/malformed
+   probe or a missing helper fails closed. The probe walks the project and every
+   parent to `/` and refuses on the nearest `.git` entry (directory, worktree
+   pointer file or dangling symlink; never followed or read). Depth 0 is the
+   project directory itself, depth 1 its parent. Marker found: report `sync`
+   `PROJECT_INSIDE_REPOSITORY`, log `depth=N basename=.git`, exit 78. Inspection
+   uncertain (permissions, I/O, timeout): `PROJECT_REPOSITORY_CHECK_FAILED`,
+   exit 78. Neither names a path or ancestor. The stamps stay pending and
+   `--dry-run` only lists the step. The same finder guards the catalog export
+   (`private_output_inside_repository depth=N basename=.git`, depth relative to
+   the output directory). Remediation is manual and owner-only: move the
+   project out of the repository, or have the owner remove the stray marker
+   after confirming it. The software never deletes, chmods or retries it.
 7. Stage orchestrator. It runs sync, delta, adoption, portal, extract,
    digest_gates and outputs in order, each under its own timeout. All stages
    share one deadline: `RUN_BUDGET_SECONDS` counted from wrapper start, so
