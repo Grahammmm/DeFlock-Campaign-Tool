@@ -945,7 +945,7 @@ FUNCTION_LEVEL_MODULES = {"findings", "kit", "kit_track", "kit_assign", "kit_und
 _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
         records.schedule_snapshot
-        records.admin_panel records.agency_reconciliation records.analysis_bridge records.analysis_config records.analysis_packets records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links records.finding_review
+        records.admin_panel records.agency_reconciliation records.analysis_bridge records.analysis_config records.analysis_packets records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links records.finding_review records.finding_review_apply
         records.catalog_stage records.console_calendar records.console_documents records.console_export records.contained_resume records.e2e_proof records.container_host records.export_clearance
         records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes records.first_request
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
@@ -1142,6 +1142,7 @@ MODULE_FUNCTIONS = {
     'records.portal.engine': ('_download',),
     'records.portal.ledger_adapter': ('WP1LedgerAdapter._copy_cas',),
     'records.portal.store': ('Queue.__init__', 'Queue.lock', 'Queue.promote',),
+    'records.finding_review_apply': ('_receipt',),  # DF2007-06: one 0600 O_APPEND receipt line (entry id, UTC time, outcome; no signature, claim or reason) per final finding-decision outcome in .analysis/finding-decisions-applied.jsonl; the review writer it calls is the classified finding_review one; sends and publishes nothing
     'records.console_apply': ('_receipt',),  # DFGL-16C: one 0600 O_APPEND receipt line per final decisions-apply outcome under the approval store lock; the writers it calls are the existing classified ones; no send
     'records.console_journal': ('append',),  # DFGL-16B decision journal outside the export: one 0600 O_APPEND line per validated console decision under flock; no live-project or export write, no signature check; sends nothing
     'records.console_manual_events': ('append_events', 'post',),  # actor-bearing local-console manual events: append-only journal line and timeline refresh; nothing sent or published

@@ -13,7 +13,7 @@ semantic, legal or privacy acceptance. No approval publishes by itself.
 | Update packets (`document`, `summary`, `finding`, `site_update`) | `/packets` → `/packets/approve` or `/packets/reject` | Shows request, source, revision, age, expiry and the exact signature payload. Approve calls `public_packets.approve`, scope `public-packet-v1`, retaining G's revision-bound signature, 14-day expiry and lint. Reject calls `public_packets.decide`, recording the console actor and private reason. Stale forms conflict. | Never calls `write_change`, enables the packets switch or publishes. CLI write remains separate and requires switch ON plus re-verification. | `public-packets.jsonl`: `approved` with id, revision, principal, signature; `rejected` with id, revision, actor, reason. A later CLI write records `written` with file and SHA-256. |
 | Agency page publishing | Not connected to console | Page units open draft site PRs held for G's approval. GitHub PR approval and the existing exact-head CI/review merge gates govern publication. | No console approval or merge exists. | GitHub review record and merge commit. |
 | Document redactions | Not connected to console | CLI `tools/flock_redact.py signoff STORE SLUG SHA DOCUMENT --signature ...`, scope `flock-redaction`; separate apply builds a redacted derivative. | Packet approval does not sign off redactions or apply them. | `<store>/agencies/<slug>/redaction/<sha>/SIGNOFF.json`, then `ELIGIBILITY.json`. |
-| Analysis findings | `records finding-review list\|approve\|reject` (CLI only; console not connected) | Verifies a detached SSH signature over the exact finding text (`finding_payload`, scope `finding-review-v1`, bound to agency slug, finding id and a sha256 of topic, claim, fact ids and rule ids), or records a rejection with a private reason. The packet step then stops holding that exact finding as `FINDING_UNREVIEWED`. | Does not approve, sign, stage-publish or send the finding packet: packet approval (`public-packet-v1`) stays a separate decision. A changed claim or fact list needs a new review. Trust unavailable is `FINDING_REVIEW_DEFERRED`, never a final refusal. | `<analysis root>/.analysis/finding-reviews.jsonl`: append-only, hash-chained `approve` (principal, signature, finding text) and `reject` (reason). |
+| Analysis findings | `records finding-review list\|approve\|reject`, or the console's `/findings/review` (journaled; applied at the next analysis tick) | Verifies a detached SSH signature over the exact finding text (`finding_payload`, scope `finding-review-v1`, bound to agency slug, finding id and a sha256 of topic, claim, fact ids and rule ids), or records a rejection with a private reason. The packet step then stops holding that exact finding as `FINDING_UNREVIEWED`. | Does not approve, sign, stage-publish or send the finding packet: packet approval (`public-packet-v1`) stays a separate decision. A changed claim or fact list needs a new review. Trust unavailable is `FINDING_REVIEW_DEFERRED`, never a final refusal. | `<analysis root>/.analysis/finding-reviews.jsonl`: append-only, hash-chained `approve` (principal, signature, finding text) and `reject` (reason). |
 
 ## Correcting a wrong message tie (`message_link` replacement)
 
@@ -53,8 +53,28 @@ A tie is never edited or deleted. A reply tied to the wrong request is corrected
 - **CON-REDACT-1**: read proposals awaiting sign-off and reuse the existing
   redaction sign-off path, not a new approval chain.
 - **CON-FIND-1**: the signed finding-review journal and `records finding-review`
-  CLI are implemented (see the Analysis findings row); the console is not yet
-  connected to it, so a reviewer signs and runs the CLI by hand.
+  CLI are implemented (see the Analysis findings row). The console takes the
+  review too (DF2007-06): `records panel --export-root DIR --run-id auto
+  --decisions-dir J --analysis-root ROOT` serves `/findings/review`, which lists
+  each finding held `FINDING_UNREVIEWED` (agency, topic, claim, cited facts with
+  record prefix and page, the F4 model verdict and the exact `finding-review-v1`
+  text). Approve (a pasted detached signature) and Reject (a private reason) only
+  append a `finding_review` entry to `J/decisions.jsonl` (`action`
+  `finding_approve`/`finding_reject`, `target_id` `agency:finding_id`,
+  `revision_seen` the finding's sha256, `value` the analysis-root binding plus the
+  signature or reason); success reads "recorded for the next analysis tick", never
+  "approved". The entry is applied by `records analysis-tick --root ROOT
+  --from-journal J/decisions.jsonl`, before any agency step or packet staging,
+  through `finding_review.approve|reject` with the entry id and expected hash, and
+  receipted in `ROOT/.analysis/finding-decisions-applied.jsonl` (0600,
+  `{entry_id, at, outcome}` only): `APPLIED`, `STALE_FINDING` (the finding changed
+  after the page), `SIGNATURE_REFUSED` or `REFUSED <code>`; a receipted entry is
+  `ALREADY`. A missing trust anchor or an unavailable review store is `DEFERRED`
+  (nothing receipted, tried again next tick); an unreadable receipt file refuses
+  the whole pass (`FINDING_APPLY_REFUSED`). An entry for another analysis root is
+  left alone. `records decisions-apply` prints `ANALYSIS_TICK_REQUIRED` for these
+  entries and never receipts them. The console is read-only to the analysis root;
+  the later packet approval (`public-packet-v1`) stays a separate decision.
 
 No real records or production settings are needed for console tests. Approving
 packets works with the packets switch OFF; the switch controls the later CLI

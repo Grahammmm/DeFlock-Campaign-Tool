@@ -49,12 +49,33 @@ def _canon(entry):
     return json.dumps(entry, sort_keys=True, separators=(",", ":"))
 
 
-def append(journal, pin, actor, route, action, target_id, revision_seen, value, choice=None):
+FINDING_KIND, FINDING_ACTIONS = "finding_review", ("finding_approve", "finding_reject")  # DF2007-06: applied by analysis-tick, not decisions-apply
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+def finding_value(entry):
+    """-> {analysis_root_sha256, signature|reason} of a well-formed finding_review entry, else ValueError (nothing is trusted)."""
+    try:
+        value = json.loads(entry["value"])
+        want = "signature" if entry["action"] == "finding_approve" else "reason"
+        agency, _, finding_id = entry["target_id"].partition(":")
+        if (entry["action"] not in FINDING_ACTIONS or not isinstance(value, dict) or set(value) != {"analysis_root_sha256", want}
+                or not isinstance(value[want], str) or not value[want].strip() or not _HEX64.fullmatch(str(value["analysis_root_sha256"]))
+                or not _HEX64.fullmatch(str(entry["revision_seen"])) or not agency or not finding_id or entry["value"] != _canon(value)):
+            raise ValueError("finding_entry_invalid")
+    except (KeyError, TypeError, AttributeError, ValueError):
+        raise ValueError("finding_entry_invalid") from None
+    return value
+
+
+def append(journal, pin, actor, route, action, target_id, revision_seen, value, choice=None, kind=None):
     entry = {"schema": SCHEMA, "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "actor": actor,
              "route": route, "action": action, "target_id": target_id, "revision_seen": revision_seen, "value": value,
              "source_project_id": pin.source_project_id, "export_run_id": pin.run_id, "export_name": pin.name}
     if choice is not None:
         entry["choice"] = choice
+    if kind is not None:  # only a newly supplied kind adds a field: every older entry and hash stays byte-compatible
+        entry["kind"] = kind
     entry["entry_id"] = hashlib.sha256(_canon(entry).encode()).hexdigest()
     data = (_canon(entry) + "\n").encode()
     flags = os.O_NOFOLLOW | os.O_CLOEXEC
@@ -98,6 +119,8 @@ def parse(raw):
             entry = json.loads(line)
             body = {k: v for k, v in entry.items() if k != "entry_id"}
             good = entry.get("schema") == SCHEMA and entry["entry_id"] == hashlib.sha256(_canon(body).encode()).hexdigest()
+            if good and "kind" in entry:  # the one known kind, with its own strict envelope; no permissive default
+                good = entry["kind"] == FINDING_KIND and bool(finding_value(entry))
         except (ValueError, AttributeError, KeyError):
             good = False
         if not good:
@@ -116,8 +139,8 @@ def overlay(journal, pin):
     applied, outcomes = manifest.get("applied_journal_ids") or [], manifest.get("apply_outcomes") or {}
     notes = {}
     for entry in read(journal):
-        if entry["source_project_id"] != pin.source_project_id or entry["entry_id"] in applied:
-            continue
+        if entry["source_project_id"] != pin.source_project_id or entry["entry_id"] in applied or entry.get("kind"):
+            continue  # a finding_review entry belongs to the analysis root (console_findings shows its own pending state)
         outcome = outcomes.get(entry["entry_id"]) if isinstance(outcomes, dict) else None
         refusal = outcome.get("refusal") if isinstance(outcome, dict) else None
         text = ("not applied: %s" % refusal) if isinstance(refusal, str) else "pending apply: %s" % entry["action"]
@@ -151,14 +174,26 @@ class JournalSource(snap.SnapshotSource):
                                                  "pending_apply": self.notes.get("switch")}
 
 
-def _record(handler, action, target, revision, value, choice=None):
+def _record(handler, action, target, revision, value, choice=None, kind=None):
     try:
-        append(handler.server.decisions_dir, handler.pin, handler.actor or handler.server.actor, handler.path, action, target,
-               revision, value, choice)
+        entry_id = append(handler.server.decisions_dir, handler.pin, handler.actor or handler.server.actor, handler.path, action,
+                          target, revision, value, choice, kind)
     except (OSError, JournalError):
         handler._fail(503)
         return False
+    if kind is not None:  # read the exact appended entry back before anything claims it was recorded
+        try:
+            if not any(e["entry_id"] == entry_id for e in read(handler.server.decisions_dir)):
+                raise JournalError("journal_unusable")
+        except (OSError, JournalError):
+            handler._fail(503)
+            return False
     return True
+
+
+def finding(handler, action, target, digest, value):
+    """One finding_review decision (already checked against the live analysis view by console_findings): journal only."""
+    return _record(handler, action, target, digest, value, kind=FINDING_KIND)
 
 
 def queue(handler, action, ident, value, row, expected, choice):

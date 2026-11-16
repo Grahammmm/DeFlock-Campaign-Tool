@@ -312,6 +312,19 @@ applied) into `EXPORT.json`, so the panel's pending overlay clears or shows `not
 export when `DECISIONS_DIR` (the host directory of `records panel --decisions-dir`) is also in the render values; the render refuses it without
 `CONSOLE_EXPORT_DIR`, and without it the rendered script is unchanged. A failure is logged (`decisions apply rc=N ...`) and never changes the run's exit status.
 
+### Finding review (DF2007-06)
+
+`--analysis-root ROOT` (absolute, a real directory, not a symlink and disjoint from `--export-root` and `--decisions-dir`, else `analysis_root_invalid`)
+adds `GET /findings/review`: each finding the analysis packet step holds as `FINDING_UNREVIEWED`, with its agency, topic, claim, cited facts
+(quote, 12-hex record prefix and page), the F4 verdict (a model check, not a human review) and the exact `finding-review-v1` text in a wrapping
+block. Rejected, deferred and unreadable agencies are counted separately; an unreadable view is said, never shown as an empty list. Without the
+option the page says configuration is required. The approve form (pasted signature) and reject form (reason) exist only with
+`--export-root` and `--decisions-dir`; a POST needs the same origin, Access and CSRF checks as every decision, re-reads the finding and
+refuses a changed one (409) or a pending decision for it, and only appends a `finding_review` journal entry (nothing in ROOT is created or
+changed). Apply it with `records analysis-tick --root ROOT --from-journal J/decisions.jsonl` (see CON-FIND-1 in
+`docs/RECORDS-CONSOLE-APPROVALS.md`). `--render OUT.html --project P --run-id RUN --analysis-root ROOT` writes the same list with no form, token or
+submit URL; OUT must be outside ROOT.
+
 ### Hosted decisions behind Access (DFB-11)
 
 `records panel --export-root DIR --run-id auto --decisions-dir J --public-origin URL --access-config C --access-keys K --actor G` is the

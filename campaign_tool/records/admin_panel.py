@@ -21,7 +21,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_board, console_calendar, console_documents, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
+from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
 from . import console_origin, console_automation
 from . import console_access, console_export, console_journal, console_layout, console_review, console_settings, console_snapshot
 from .ledger import store
@@ -863,6 +863,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if console_ocr.serve(self):  # OCR page confirm / reject
             return
+        if console_findings.serve(self):  # finding review (DF2007-06)
+            return
         if console_documents.serve(self):  # Screen C
             return
         if console_board.serve(self):  # Screens A and B
@@ -1015,6 +1017,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if console_ocr.post(self):  # one OCR page: confirm or reject, journaled
             return
+        if console_findings.post(self):  # one finding: approve or reject, journaled only
+            return
         if self.path == RELINK_PATH:
             return self._post_relink()
         route = ROUTES.get(self.path) or (SEND_ROUTE if self.path == "/send" else console_manual_events.ROUTE if self.path == "/manual-event" else None)
@@ -1143,7 +1147,7 @@ def _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg):
 def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
                  timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None,
                  access_config=None, access_clock=None, manual_events_dir=None, meetings_dir=None, export_root=None,
-                 decisions_dir=None, access_keys=None):
+                 decisions_dir=None, access_keys=None, analysis_root=None):
     """Unstarted loopback-only server; the caller serves and closes it.
 
     export_root (DFGL-16A) with run_id "auto" serves the one real export DIR/current points at, pinned per request.
@@ -1181,6 +1185,11 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
         manual_events_dir = console_manual_events.check_manual_events_dir(manual_events_dir, project)
     except ValueError:
         raise PanelError("manual_events_dir_invalid") from None
+    if analysis_root is not None:
+        try:  # read-only input: it may overlap no enabled console write location (project, export, journal, manual events, meetings)
+            analysis_root = console_findings.check_root(analysis_root, project, export_root, decisions_dir, manual_events_dir, meetings_dir)
+        except ValueError:
+            raise PanelError("analysis_root_invalid") from None
     access_cfg = _access_cfg(public_origin, access_config)
     _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg)
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
@@ -1200,6 +1209,7 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
                       "send_config": send_config, "source": console_snapshot.LiveSource(os.path.abspath(project))}
     server.pinner = console_snapshot.Pinner(os.path.abspath(project)) if export_root is not None else None
     server.decisions_dir = decisions_dir
+    server.analysis_root = analysis_root
     return server
 
 
@@ -1214,6 +1224,7 @@ def main(argv=None):
                         help="serve the one real export DIR/current points at (use --run-id auto); read-only, no --project")
     parser.add_argument("--decisions-dir", metavar="J",
                         help="with --export-root: journal each decision in J (absolute, 0700, outside DIR) for the next apply")
+    parser.add_argument("--analysis-root", metavar="ROOT", help="read-only analysis root: adds /findings/review (finding review); never written here")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-report")
     parser.add_argument("--kit-root")
@@ -1256,7 +1267,17 @@ def main(argv=None):
             protected = [project / "processing-v1" / "ledger.sqlite", project / "approvals" / "queue.jsonl",
                          project / "run-outputs" / args.run_id / "outcomes" / "received-items.json"]
             protected += [Path(p) for p in (args.run_report,) if p]
-            write_snapshot(args.render, render_dashboard(model), protected)
+            text = render_dashboard(model)
+            if args.analysis_root is not None:  # the same renderer with no token: the list and exact text, no forms
+                try:
+                    root = console_findings.check_root(args.analysis_root, None, None)
+                except ValueError:
+                    raise PanelError("analysis_root_invalid") from None
+                out = os.path.abspath(args.render)
+                if out == root or out.startswith(root + os.sep):
+                    raise PanelError("output_collides_with_source")
+                text = text.replace("</main>", "<section id=\"finding-review\">%s</section></main>" % console_findings.render_body(console_findings.load(root), None), 1)
+            write_snapshot(args.render, text, protected)
             return 0
         if not args.actor:
             raise PanelError("actor_required")
@@ -1278,7 +1299,8 @@ def main(argv=None):
                               timers=timers, system=not args.no_system, mail_drafts_config=args.mail_drafts_config,
                               send_config=args.send_config, public_origin=args.public_origin,
                               access_config=access, manual_events_dir=args.manual_events, meetings_dir=args.meetings_dir,
-                              export_root=args.export_root, decisions_dir=args.decisions_dir, access_keys=args.access_keys)
+                              export_root=args.export_root, decisions_dir=args.decisions_dir, access_keys=args.access_keys,
+                              analysis_root=args.analysis_root)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required", "_unused", "_needs_export")) else 1
