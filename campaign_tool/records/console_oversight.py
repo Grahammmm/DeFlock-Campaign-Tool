@@ -9,8 +9,9 @@
 Read-only views over files that other units own: the timeline (REC-TL-1), the release-link register
 (REC-LINK-1), the run reports and the health watch (REC-HEALTH-1), the approval queue (REC-AUTO-4) and the
 public-updates journal (REC-PUB-1). Each source fails alone and is named unavailable. The only writes are the
-three Screen F buttons, which call the REC-PUB-1 functions that only ever make things safer (retract, OFF,
-kill). Nothing here turns the switch ON, approves, fetches, sends or publishes. Agencies, requests and
+Screen F buttons: retract, OFF and kill only ever make things safer, and /public-updates/approve-line (CON-LINE-APPROVE-1)
+records G's pasted signature over one exact line (scope public-update-line-v1; journal mode only journals it). Nothing here
+turns the switch ON, advances or posts a line, fetches, sends or publishes. Agencies, requests and
 campaign are data. Overdue marks and "stuck" are arithmetic on our records, not a legal finding.
 """
 import hmac
@@ -22,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import approval_queue, pipeline_health, public_packets
+from .. import approval
 from . import public_updates as pu
 from . import console_board as cb
 from .outcomes import release_links as _rl
@@ -34,7 +36,8 @@ RUN_WINDOW_HOURS = 24
 STATES = ("proposed", "holding", "posted", "retracted")
 LABEL = "Private; review required. Stuck and overdue are arithmetic on our records, not a legal finding."
 ROUTES = {"/public-updates/retract": ("csrf_token", "id"), "/public-updates/off": ("csrf_token",),
-          "/public-updates/kill": ("csrf_token",)}
+          "/public-updates/kill": ("csrf_token",),
+          "/public-updates/approve-line": ("csrf_token", "id", "revision", "signature")}  # CON-LINE-APPROVE-1
 
 
 def _unavailable(code):
@@ -136,7 +139,10 @@ def _load_public(project, source=None):
         pu._need(all(isinstance(e, dict) and e.get("schema") == pu.SCHEMA for e in events), "journal_invalid")
         lines, _switch, alerts = pu.fold(events)
         switch = pu._switch_state(files, events)
-        return {"state": "ok", "lines": sorted(lines.values(), key=lambda r: (r["proposed_at"], r["id"])),
+        rows = sorted(lines.values(), key=lambda r: (r["proposed_at"], r["id"]))
+        return {"state": "ok", "lines": [{**r, "revision": pu.line_revision(r)} for r in rows],
+                "line_payloads": {r["id"]: pu.line_payload_for_row(project, r).decode("utf-8")
+                                  for r in rows if r["state"] in ("proposed", "holding")},
                 "switch": switch, "alerts": [{k: a.get(k) for k in ("code", "agency_key", "at")} for a in alerts]}
     except pu.PublicUpdatesError as error:
         return _unavailable(error.code)
@@ -328,6 +334,24 @@ def _form(path, token, label, fields=()):
             '<button type="submit">%s</button></form>' % (path, esc(token), hidden, esc(label)))
 
 
+def _approve_block(row, pub, token):
+    """The exact per-line payload (CON-LINE-APPROVE-1), its approval state and, when writable, the pasted-signature form."""
+    payload = (pub.get("line_payloads") or {}).get(row["id"])
+    if payload is None or not row.get("revision"):
+        return ""
+    if row.get("signed_revision") == row["revision"]:
+        note = "Signed by %s for this exact text; it posts at the next advancement, even with auto-post OFF." % row.get("signed_by")
+    else:
+        note = "Not approved. G's signature over the exact payload below lets this one line post at the next advancement while auto-post is OFF."
+    form = ""
+    if token is not None:
+        form = ('<form method="post" action="/public-updates/approve-line"><input type="hidden" name="csrf_token" value="%s">'
+                '<input type="hidden" name="id" value="%s"><input type="hidden" name="revision" value="%s">'
+                '<label>G\'s SSH signature<textarea name="signature" required></textarea></label>'
+                '<button type="submit">Record line approval</button></form>' % (esc(token), esc(row["id"]), esc(row["revision"])))
+    return '<p>%s Revision %s.</p><pre>%s</pre>%s' % (esc(note), esc(row["revision"]), esc(payload), form)
+
+
 def render_public(model, token):
     out = _head("Public updates", model)
     pub = model["public"]
@@ -357,8 +381,9 @@ def render_public(model, token):
                 when = "proposed"
             action = _form("/public-updates/retract", token, "Undo" if state == "posted" else "Veto",
                            (("id", r["id"]),)) if state in ("proposed", "holding", "posted") else ""
-            out.append("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s%s</td></tr>" % (
-                esc(r["id"]), esc(r["agency_key"]), esc(r["text"]), esc(when), action, esc(r.get("pending_apply") or "")))
+            out.append("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s%s%s</td></tr>" % (
+                esc(r["id"]), esc(r["agency_key"]), esc(r["text"]), esc(when), action, esc(r.get("pending_apply") or ""),
+                _approve_block(r, pub, token) if state in ("proposed", "holding") else ""))
         out.append("</tbody></table>")
     refused = [r for r in pub["lines"] if r["state"] == "refused"]
     if refused:
@@ -411,6 +436,33 @@ def _journal_actor(label):
     return text or "console"
 
 
+def _post_line_approval(handler, fields):
+    """Record one pasted signature for one line. Journal mode only journals it; live mode records the verified approval and
+    never advances, posts or touches the switch."""
+    ident, revision, signature = fields["id"], fields["revision"], fields["signature"].replace("\r\n", "\n")
+    if not re.fullmatch(r"[0-9a-f]{16}", ident) or not re.fullmatch(r"[0-9a-f]{64}", revision):
+        handler._fail(400)
+        return True
+    if not signature.strip() or len(signature) > approval.MAX_SIGNATURE:
+        handler._fail(403)
+        return True
+    if handler.server.decisions_dir is not None:
+        if console_journal.line_approval(handler, ident, revision, signature):
+            handler._send(303, "", location="/public-updates")
+        return True
+    try:
+        pu.approve_line(handler.server.options["project"], ident, signature, revision=revision)
+    except pu.PublicUpdatesError as error:
+        handler._fail(403 if error.code == "approval_required" else 409 if error.code in (
+            "invalid_transition", "line_unknown", "stale_revision", "killed", "text_mismatch") else 503)
+        return True
+    except OSError:
+        handler._fail(503)
+        return True
+    handler._send(303, "", location="/public-updates")
+    return True
+
+
 def post(handler):
     """Called by admin_panel's POST handler. Returns True when the path is one of ours (answered either way)."""
     if handler.path not in ROUTES:
@@ -429,6 +481,8 @@ def post(handler):
     if not hmac.compare_digest(fields["csrf_token"].encode("utf-8"), handler.server.csrf_token.encode("ascii")):
         handler._fail(403)
         return True
+    if handler.path == "/public-updates/approve-line":
+        return _post_line_approval(handler, fields)
     if handler.server.decisions_dir is not None:  # journal mode: checked against the snapshot, journaled, never written
         if console_journal.oversight(handler, handler.path.rpartition("/")[2], fields.get("id")):
             handler._send(303, "", location="/public-updates")

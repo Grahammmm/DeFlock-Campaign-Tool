@@ -69,6 +69,7 @@ def finding_value(entry):
 
 
 REDACTION_ACTION = "redaction_signoff"  # DF2007-08: replayed by tools/flock_redact.py signoff-apply, not by decisions-apply
+LINE_APPROVAL_ACTION = "public_update_line_approval"  # DF2007-10: applied by decisions-apply through public_updates.approve_line
 
 
 def append(journal, pin, actor, route, action, target_id, revision_seen, value, choice=None, kind=None):
@@ -147,6 +148,8 @@ def overlay(journal, pin):
         outcome = outcomes.get(entry["entry_id"]) if isinstance(outcomes, dict) else None
         refusal = outcome.get("refusal") if isinstance(outcome, dict) else None
         text = ("not applied: %s" % refusal) if isinstance(refusal, str) else "pending apply: %s" % entry["action"]
+        if entry["action"] == LINE_APPROVAL_ACTION:
+            text = ("not applied: %s" % refusal) if isinstance(refusal, str) else "recorded; pending apply (not approved until applied and verified)"
         notes[entry["target_id"]] = text + (" (%s)" % LATER if entry["action"] in ("off", "kill") else "")
     return notes
 
@@ -268,6 +271,22 @@ def ocr(handler, action, ident, derivative, confidence):
         return handler._fail(409) or False
     value = _canon({"confidence": row["confidence"], "derivative_sha256": row["derivative_sha256"]})
     return _record(handler, action, ident, None, value)
+
+
+def line_approval(handler, ident, revision, signature):
+    """One pasted signature for one status line (CON-LINE-APPROVE-1): the line must be open in the pinned export at exactly
+    this revision and not already waiting here. Nothing is verified or posted. True: journaled; False: the refusal was sent."""
+    try:
+        doc = handler.options["source"].public_updates()
+    except OSError:
+        doc = {"state": "unavailable"}
+    if doc["state"] != "ok":
+        return handler._fail(503) or False
+    row = next((r for r in doc["lines"] if r["id"] == ident), None)
+    if (row is None or row["state"] not in ("proposed", "holding") or row.get("revision") != revision
+            or ident not in (doc.get("line_payloads") or {}) or "pending apply" in str(row.get("pending_apply") or "")):
+        return handler._fail(409) or False
+    return _record(handler, LINE_APPROVAL_ACTION, ident, revision, signature)
 
 
 def oversight(handler, action, ident):
