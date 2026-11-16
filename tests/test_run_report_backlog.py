@@ -92,6 +92,17 @@ class BacklogTests(unittest.TestCase):
         self.assertIn("none on main", out)
         self.assertIn("adopt-mail --root ROOT --mail-history MAIL (no --apply)", out)
 
+    def test_preserve_guidance_names_the_holds_routes_and_shared_commands(self):
+        from campaign_tool.records import preserve_routes
+        _, out, _ = self.run_main(backlog_report())
+        row = next(line for line in out.splitlines() if "EXTRACT_PRESERVE_PENDING x400" in line)
+        for text in ("holds --project PROJECT --routes --mail-history MAIL", "R1", "R2", "R2s", "R3", "R4", "R5",
+                     "unavailable", preserve_routes.COMMANDS["R1"], preserve_routes.COMMANDS["R2"],
+                     preserve_routes.COMMANDS["R3"], preserve_routes.COMMANDS["R4"]):
+            self.assertIn(text, row)
+        self.assertEqual(sum("T4B" in line for line in out.splitlines()), 2)  # preservation and adoption rows
+        self.assertNotIn("x400 ", row.split("clear:")[1])  # no per-route counts invented
+
     def test_invalid_report_is_refused_without_listing(self):
         report = backlog_report()
         del report["needs_g"]

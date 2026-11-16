@@ -19,6 +19,45 @@ python3 -B -m campaign_tool.records holds --project PROJECT [--report RUN-REPORT
 
 It never opens an original, an evidence payload, unit text, a mail receipt or a message. It prints no
 path, file name, subject or address: each item is a 12-hex prefix of the original's sha256 plus fixed codes.
+(Only `--routes` below also streams candidate mail object bytes, to check a content-addressed copy's size and
+sha256; nothing of them is printed, and local sources and receipts stay unopened.)
+
+## Clearing routes (`--routes`, DF0652-07)
+
+```
+python3 -B -m campaign_tool.records holds --project PROJECT --routes --mail-history MAIL [--code CODE] [--json]
+```
+
+`--routes` and `--mail-history` go together (either alone: `ROUTES_OPTIONS`, exit 2, nothing opened). Without
+them the output is byte-identical to the plain listing. With them each `PRESERVE_PENDING` item adds `route` and
+`clearing_command` (text: two more columns, `- -` on other rows) and the document adds `route_counts`
+(`R1 R2 R2s R3 R4 R5 unavailable`, zeroes included; text: a `route_counts` line). Totals cover every
+`PRESERVE_PENDING` original before `--code` filters, one route per full original. Read-only: the ledger snapshot
+and `MAIL/objects` are opened without writing; no proposal, manifest or report is produced. It only PRINTS the
+workflow: it clears nothing, approves nothing and runs nothing.
+
+Precedence (first match; only the ledger and `MAIL/objects` are read, never a local source path):
+
+1. `R1` a regular file named by the original's sha256 in `MAIL/objects` with equal size and sha256 (no
+   symlink followed). A copy is a candidate, not proof the adoption receipt or policy accepts it.
+2. `R3` xlsx with a retained `storage_path` and the phrase `pending trusted validation` in its preservation
+   status or preserve-stage reason: custodian validation, no clearing command.
+3. A retained `storage_path` otherwise: `unavailable`.
+4. No occurrence evidence at all (and no mail copy): `R5`, "no source recorded in the supplied ledger and mail
+   history", not "no bytes exist anywhere". `G scope decision`.
+5. `R4` json or csv with occurrence evidence: `G scope decision`.
+6. `R2` / `R2s` from the class of the first legacy local occurrence path (stable lexical order), by whole
+   path component: `received`, `received-user-files`, `portal-intake`, `productions` give `R2`; `archive` or
+   `research` give `R2s` (prepare an approved source under the configured `supplement_root` first). Anything
+   else is `unavailable`.
+
+A missing, unsafe (symlink, non-directory) or unreadable `MAIL` or `MAIL/objects`, a candidate that cannot be
+verified (symlink, FIFO, directory, wrong size or hash, changed while read), malformed occurrence evidence
+or an unclassifiable row is `unavailable`, never `R5`; with no inspectable mail history every row is
+`unavailable`. Commands are fixed placeholders (ROOT, CFG, OUT, MANIFEST, POLICY, MAIL, INV, APPROVAL): with a
+pinned config the manifest and `--policy POLICY` must match it; with `policy_sha256` null the report-only run
+omits `--policy POLICY`. Qualification of sources stays with `--report-sources`. `tools/run_report_backlog.py`
+names the same routes (it cannot count them from a run report).
 
 ## Which documents are listed
 

@@ -17,10 +17,22 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from campaign_tool.records.preserve_routes import COMMANDS as ROUTE_COMMANDS  # noqa: E402
 from tools.run_report_review import RUN_ID, Refused, _field, load, read_file  # noqa: E402
 
 SCHEMA = "run-report-backlog-v1"
 NOTE = "listing only; clears nothing; machine-valid is review-required, not semantic acceptance"
+# The same routes `records holds --routes` names; this report-only tool cannot count them per route.
+PRESERVE_ROUTES = (
+    "none on main: originals not yet preserved; `python3 -m campaign_tool.records holds --project PROJECT "
+    "--routes --mail-history MAIL` names each original's route: "
+    f"R1 mail-backed [{ROUTE_COMMANDS['R1']}]; "
+    f"R2 local export and R2s archive or research only [{ROUTE_COMMANDS['R2']}; R2s: prepare approved "
+    "supplement source first]; "
+    f"R3 retained workbook [{ROUTE_COMMANDS['R3']}]; "
+    f"R4 json or csv metadata and R5 no bytes found [{ROUTE_COMMANDS['R4']}]; "
+    f"unavailable [{ROUTE_COMMANDS['unavailable']}]; a clear is a live-data write by the attended operator "
+    "(attended T4B apply: docs/runbooks/T4B-TEST-APPLY.md)")
 # (stage, needs_g code, extract outcome code or None, writes live data, clearing path)
 HELD = (
     ("extract", "EXTRACT_ERROR", "EXTRACT_ERROR", "yes",
@@ -29,9 +41,7 @@ HELD = (
     ("extract", "EXTRACT_NOT_ACCEPTED", "EXTRACT_NOT_ACCEPTED", "yes",
      "none on main: the extracted text failed the acceptance check; clear only through card "
      "BACKLOG-EXTRACT-1 (new engine reports internal type/where); no model may clear it"),
-    ("extract", "EXTRACT_PRESERVE_PENDING", "PRESERVE_PENDING", "yes",
-     "none on main: originals not yet preserved; the attended T4B apply (docs/runbooks/T4B-TEST-APPLY.md) "
-     "or card BACKLOG-PRESERVE-1 decides; a clear is a live-data write"),
+    ("extract", "EXTRACT_PRESERVE_PENDING", "PRESERVE_PENDING", "yes", PRESERVE_ROUTES),
     ("adoption", "ADOPTION_CODED_GAPS", None, "yes",
      "read-only view: python3 -m campaign_tool.records adopt-mail --root ROOT --mail-history MAIL (no --apply); "
      "clearing is the T4B resolution policy apply (docs/RECORDS-MAIL-ADOPTION.md), attended, G approval"),
