@@ -23,6 +23,16 @@ def _key(path):
     return path.rstrip("/") or "/"
 
 
+ENCODED_DOT = re.compile(r"%2e", re.IGNORECASE)
+
+
+def _encoded_dot(segment):
+    """RF0452-12: True if ``segment`` spells ``.`` or ``..`` using at least one %2e/%2E. Comparison only (decoded
+    once, nothing else unquoted); the source itself is refused, never normalized, so owned-page and withdrawn
+    checks cannot be bypassed by an encoded alias."""
+    return bool(ENCODED_DOT.search(segment)) and ENCODED_DOT.sub(".", segment) in (".", "..")
+
+
 def _safe(text):
     """Diagnostic text only (RF1025-2): printable characters stay verbatim; every other one (line breaks, terminal
     controls, bidi marks, lone surrogates) becomes its visible ASCII escape, so a malformed ``to`` stays one
@@ -57,6 +67,8 @@ def redirect_rows(document):
             # RF1420-4: a literal single-dot segment is another spelling of the path without it, which the textual
             # owned-page and withdrawn-finding checks would miss. Refused, never normalized, before those checks.
             problems.append(f"redirects[{n}]: from {row['from']!r} must not contain . path segments")
+        elif any(_encoded_dot(part) for part in row["from"].split("/")):
+            problems.append(f"redirects[{n}]: from {row['from']!r} must not contain percent-encoded . or .. path segments")
         else:
             rows.append((n, row["from"], row["to"]))
     _refuse(problems)
