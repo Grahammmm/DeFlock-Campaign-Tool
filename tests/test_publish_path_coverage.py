@@ -443,6 +443,10 @@ class Drivers:
 
 def source_problem(entry, root=ROOT):
     """The static half of assertion (a): the module still names its entry point and still carries every lint call."""
+    try:
+        publish_paths.check_marker(entry["marker"])
+    except ValueError:
+        return "%s: invalid lint marker" % entry["id"]
     path = root / ("campaign_tool/site.py" if entry["driver"] == "site" else entry["module"])
     if not path.is_file():
         return "%s: %s is gone" % (entry["id"], entry["module"])
