@@ -34,8 +34,9 @@ supplied source attachment, **not** an unavailable original. For these two kinds
 `verification` is exactly `verified`, `unverified`, `tracker-only` or `missing-original`.
 The other three values are non-empty single-line strings, or may be JSON null only
 for non-verified citations. Supply only known locators/dates/identities; never invent
-original hashes/pages or upgrade a tracker reference to verified. Legacy mail-draft
-citations remain page/quote objects; this allowance does not relax mail intake.
+original hashes/pages or upgrade a tracker reference to verified. Correspondence
+citations retain CONDRAFT-01's typed validation unchanged; the review-copy rules do
+not relax mail intake.
 
 Target, correction linkage, citations, source section/hash and original body hash
 are bound into signed evidence. `/review` shows the entire editable draft, target,
