@@ -359,3 +359,39 @@ class EngineTests(Base):
         self.assertEqual(json.loads(output.getvalue())["would_queue"], 1)
         self.assertNotIn("ALPR search logs", output.getvalue())
         self.assertEqual(before, self.snapshot())
+
+    def test_advisories_stored_in_evidence_body_unchanged_and_not_rewritten(self):
+        from campaign_tool.records import followup_drafter
+        mixed = "The agency secretly shared data. Please respond under §6253."
+        real = followup_drafter.draft
+        plain = {}
+
+        def draft(*args):
+            out = real(*args)
+            plain.setdefault("body", out["body"])
+            return dict(out, body=out["body"] + "\n" + mixed)
+        self.build_ledger()
+        self.settings()
+        self.fixture()
+        before = self.snapshot()
+        with mock.patch.object(fe.followup_drafter, "draft", draft):
+            self.assertEqual(fe.run(self.project, "r1")["would_queue"], 1)
+            self.assertEqual(before, self.snapshot())  # dry run writes nothing
+            self.assertEqual(fe.run(self.project, "r1", apply=True)["queued"], 1)
+        row, = self.queued()
+        self.assertEqual(row["body"], plain["body"] + "\n" + mixed)
+        self.assertEqual(row["status"], "pending")
+        limits = row["evidence"]["limits"]
+        self.assertTrue("(intent)" in limits[0] and "former_cpra_citation" in limits[-1], limits)
+        with mock.patch.object(fe.followup_drafter, "draft", lambda *a: dict(real(*a), body="Please send the logs.")):
+            again = fe.run(self.project, "r1", apply=True)
+        self.assertEqual((again["queued"], again["duplicate"]), (0, 1))
+        self.assertEqual(self.queued(), [row])
+
+    def test_clean_letter_adds_no_limits_key(self):
+        self.build_ledger()
+        self.settings()
+        self.fixture()
+        fe.run(self.project, "r1", apply=True)
+        row, = self.queued()
+        self.assertNotIn("limits", row["evidence"])

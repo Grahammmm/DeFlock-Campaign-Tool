@@ -295,3 +295,20 @@ class RefusalReview(ServerCase):
         with mock.patch.object(review.denial_log, "load", return_value={"state": "available", "entries": [entry]}), \
                 mock.patch.object(review.followup_clock, "read_register", return_value=None):
             self.assertEqual(review.refusal_panel(self.project, row, RUN), "")
+
+    def test_followup_advisories_render_beside_full_body_without_refusal_context(self):
+        from campaign_tool.records import followup_advisories
+        letter = "The agency secretly shared data. Please respond under §6253. <b>x</b>"
+        notes = followup_advisories.notes(letter)
+        self.assertEqual(len(notes), 2)
+        for n, kind in ((3, "reminder-no-response"), (4, "followup-playbook")):
+            row = aq.add_draft(self.project, item_id=f"{n:064x}", kind=kind, agency_id="alpha-pd", request_id="req-9",
+                               body=letter, evidence={"limits": notes}, source_run_id=RUN)
+            before = journal(self.project)
+            status, _, page = self.get("/review?id=" + row["id"])
+            self.assertEqual(status, 200)
+            self.assertIn(unescape(re.search(r'<textarea id="body"[^>]*>\n(.*?)</textarea>', page, re.S)[1]), letter)
+            for note in notes:
+                self.assertIn(note.replace("&", "&amp;").replace("<", "&lt;"), page)
+            self.assertNotIn("<b>x</b>", page)
+            self.assertEqual(journal(self.project), before)
