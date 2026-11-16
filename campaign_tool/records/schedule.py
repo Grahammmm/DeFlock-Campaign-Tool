@@ -468,12 +468,21 @@ def health_main(argv=None):
     parser.add_argument("--now", help="ISO-8601 clock override for tests and reviews")
     parser.add_argument("--record", action="store_true", help="write missed/failed/stalled slots as ledger alerts")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--console-export-root", dest="console_export_root",
+                        help="console export root whose pinned export's approval-anchor state is reported (read-only)")
     _add_calendar_flags(parser)
     args = parser.parse_args(argv)
     now = datetime.fromisoformat(args.now) if args.now else None
     report = health(args.root, now=now, spec=_spec_from(parser, args))
     if args.record:
         report["alerts_recorded"] = record_health(args.root, report)
+    anchor = "unknown"
+    if args.console_export_root:
+        from . import approval_anchor_status
+        anchor = approval_anchor_status.from_export_root(args.console_export_root)
+    report["approval_anchor"] = {"state": anchor}
+    report["alerts"] = [] if anchor == "ok" else [{"code": "APPROVAL_ANCHOR_UNAVAILABLE"}]  # report-only, never recorded
+    exit_code = report["exit_code"] if anchor == "ok" else max(report["exit_code"], 1)
     if args.json:
         print(json.dumps(report, sort_keys=True))
     else:
@@ -483,7 +492,10 @@ def health_main(argv=None):
         if report.get("last_run"):
             print(f"  last run {report['last_run']['run_id']} {report['last_run']['status']} started {report['last_run']['started_at']}")
         print(f"  open alerts: {report.get('open_alerts', 0)}; blocked stages: {report.get('blocked_stages', 0)}")
-    return report["exit_code"]
+        print(f"  approval anchor: {anchor}")
+        if anchor != "ok":
+            print("  alert: APPROVAL_ANCHOR_UNAVAILABLE")
+    return exit_code
 
 
 def schedule_main(argv=None):

@@ -36,6 +36,14 @@ class SettingsTests(Base):
         self.assertIn('Nothing can be sent from this console', html.split('<h2>Sending</h2>')[0])
         self.assertIn('Sending is set up and is off, so nothing can be sent now.', self.render(self.config()))
 
+    def test_approval_anchor_status_for_a_live_source_follows_the_intro_and_keeps_sending_markup(self):
+        html = self.render()
+        fragment = '<p role="status" id="approval-anchor">Approval anchor state: unknown (no pinned export).</p>'
+        top = html.split('<h2>Sending</h2>')[0]
+        self.assertLess(top.index('Read-only. Changes are owner-only'), top.index(fragment))
+        self.assertIn('<h2>Sending</h2><dl>\n<dt>Send config</dt><dd>not given to the console</dd>\n', html)
+        self.assertNotIn('approvals verify', html)
+
     def test_missing_and_invalid_send_config(self):
         html = self.render()
         for text in ('not given to the console', '<dd>no</dd>', 'Switch: OFF',

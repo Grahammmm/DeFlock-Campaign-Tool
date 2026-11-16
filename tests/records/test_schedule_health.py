@@ -6,7 +6,9 @@ weekend without a run is never a miss. The activation and rollback scripts are
 exercised against a fake ``systemctl`` on PATH so the exact command sequence,
 state file and unit placement are verified without touching any real host.
 """
+import contextlib
 from datetime import datetime, timedelta
+import io
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 from campaign_tool.records import schedule
@@ -217,6 +220,52 @@ class HealthTests(unittest.TestCase):
                                 "--days", "daily", "--now", (now + timedelta(days=2)).isoformat()], cwd=REPO, capture_output=True, text=True)
         self.assertEqual(later.returncode, 1)
         self.assertIn("missed", later.stdout)
+
+    def anchor_cli(self, state, *extra, root=None):
+        """Run health_main in-process; the export-root read is stubbed (the adapter is tested on real exports)."""
+        out = io.StringIO()
+        args = ["--root", str(root or self.root), "--now", la(2026, 10, 1, 7, 30).isoformat(), *extra]
+        with mock.patch("campaign_tool.records.approval_anchor_status.from_export_root", return_value=state) as read, \
+                contextlib.redirect_stdout(out):
+            code = schedule.health_main(args)
+        return code, out.getvalue(), read
+
+    def test_approval_anchor_alert_is_content_free_report_only_and_raises_the_exit_code(self):
+        self.add_run("r1", la(2026, 10, 1, 7, 1), la(2026, 10, 1, 7, 9))
+        code, out, _ = self.anchor_cli("ok", "--console-export-root", "/x", "--json")
+        report = json.loads(out)
+        self.assertEqual((code, report["approval_anchor"], report["alerts"], report["status"]), (0, {"state": "ok"}, [], "ok"))
+        for state in ("unavailable", "unknown"):
+            code, out, read = self.anchor_cli(state, "--console-export-root", "/x", "--json")
+            report = json.loads(out)
+            self.assertEqual((code, report["status"], report["approval_anchor"], report["alerts"]),
+                             (1, "ok", {"state": state}, [{"code": "APPROVAL_ANCHOR_UNAVAILABLE"}]))
+            read.assert_called_once_with("/x")
+        code, out, _ = self.anchor_cli("unavailable", "--console-export-root", "/x")
+        self.assertEqual(code, 1)
+        self.assertIn("  approval anchor: unavailable\n  alert: APPROVAL_ANCHOR_UNAVAILABLE\n", out)
+        code, out, _ = self.anchor_cli("ok", "--console-export-root", "/x")
+        self.assertIn("  approval anchor: ok\n", out)
+        self.assertNotIn("APPROVAL_ANCHOR_UNAVAILABLE", out)
+
+    def test_omitted_flag_is_unknown_and_never_reads_an_export(self):
+        self.add_run("r1", la(2026, 10, 1, 7, 1), la(2026, 10, 1, 7, 9))
+        code, out, read = self.anchor_cli("ok", "--json")
+        self.assertEqual((code, json.loads(out)["approval_anchor"]), (1, {"state": "unknown"}))
+        read.assert_not_called()
+
+    def test_stronger_calendar_exit_code_is_kept_and_record_never_persists_the_anchor_alert(self):
+        empty = Path(self.tmp.name) / "no-ledger"
+        empty.mkdir(mode=0o700)
+        code, _, _ = self.anchor_cli("unavailable", "--console-export-root", "/x", "--json", root=empty)
+        self.assertEqual(code, 2)
+        code, out, _ = self.anchor_cli("unavailable", "--console-export-root", "/x", "--json", "--record")
+        self.assertEqual(code, 1)
+        con = sqlite3.connect(self.root / "ledger.sqlite")
+        keys = [row[0] for row in con.execute("SELECT key FROM alerts")]
+        con.close()
+        self.assertFalse([k for k in keys if "APPROVAL" in k.upper() or "anchor" in k], keys)
+        self.assertEqual(json.loads(out)["alerts"], [{"code": "APPROVAL_ANCHOR_UNAVAILABLE"}])
 
 
 class RenderAndActivationTests(unittest.TestCase):
