@@ -1,6 +1,6 @@
 """PUBLISH_PATHS: one entry for every code path that emits an artefact a member of the public could read, or that feeds one.
 
-Plain data, no behaviour. tests/test_publish_path_coverage.py drives each entry with a synthetic email, phone and plate and
+Declarative data; the only behaviour is pure marker admission (check_marker refuses a blank or empty marker). tests/test_publish_path_coverage.py drives each entry with a synthetic email, phone and plate and
 proves it refuses; fails on an emitting module, an emitting function or a Worker emission site that is not named here; and fails
 on a second copy of the patterns. Add the entry for a new output path in the same change that adds the path.
 
@@ -10,15 +10,27 @@ the human publish gate and BF-df-redaction's sign-off, never in place of them.
 
 Fields: id; module (repo path); entry_point; artefact_kind (page|feed|card|report|brief|draft|post|export); audience (public|pre-public);
 lint (privacy|privacy+legal: privacy refuses, the legal-claim guard only flags and never refuses; upstream: the path sends text
-another registered path already linted, named by inherits); redaction_required; marker (text, or a tuple of texts, the module source
-must keep: each lint call); driver (how the test feeds it); inherits (id of the path that lints the text, or None); note.
+another registered path already linted, named by inherits); redaction_required; marker (nonblank text, or a nonempty tuple of nonblank texts, the module
+source must keep: each lint call); driver (how the test feeds it); inherits (id of the path that lints the text, or None); note.
 
 EMISSION_SITES binds every Python function that writes a file inside a registered module to a registry id. WORKER_EMISSIONS pins how
 many Worker (TypeScript) sends, uploads and serves each file makes. A new writer or send fails the test until it is added here.
 """
 
 
+MARKER_ERROR = "publish path marker must be nonblank text or a nonempty tuple of nonblank texts"
+
+
+def check_marker(marker):
+    """Refuse a marker that names no source text to look for. Pure: no coercion, no normalisation, nothing echoed."""
+    texts = marker if isinstance(marker, tuple) else (marker,)
+    if not texts or not all(isinstance(text, str) and text.strip() for text in texts):
+        raise ValueError(MARKER_ERROR)
+    return marker
+
+
 def _entry(id, module, entry_point, kind, audience, lint, marker, driver, note, redaction=True, inherits=None):
+    check_marker(marker)
     return {"id": id, "module": module, "entry_point": entry_point, "artefact_kind": kind, "audience": audience, "lint": lint,
             "redaction_required": redaction, "marker": marker, "driver": driver, "inherits": inherits, "note": note}
 
