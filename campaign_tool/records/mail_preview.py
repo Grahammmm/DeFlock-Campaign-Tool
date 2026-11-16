@@ -1,7 +1,7 @@
 """Read-only placement headers and draft warnings; no mailbox access or approval."""
 import re
 
-from . import draft_residue, mail_drafts
+from . import draft_residue, draft_templates, mail_drafts
 
 
 def preview(project, row, drafts_config_path=None):
@@ -10,6 +10,10 @@ def preview(project, row, drafts_config_path=None):
     Attachments are evidence metadata only: build_message sends a plain-text letter.
     Missing inputs are display values, not permission to place or send a draft.
     """
+    if row.get("kind") in draft_templates.REVIEW_COPY_KINDS:
+        return {"to": None, "to_note": "Review copy only", "from": None, "from_note": "Not mail",
+                "subject": None, "threaded": False, "attachments": [],
+                "residue": draft_residue.codes(row["body"]), "body_header_lines": []}
     imported = row.get("kind") == "correspondence-draft"
     envelope = None
     try:

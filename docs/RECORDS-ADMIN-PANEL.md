@@ -1,7 +1,8 @@
 # Records admin panel (`records panel`)
 
 A private, local, stdlib-only dashboard over the records pipeline. It **sends nothing, publishes nothing and runs
-nothing**. Approving a draft only marks it approved-to-send in the approval queue; a human sends separately. It is
+nothing**. Approving a mail draft only marks it approved-to-send in the approval queue; a human sends separately.
+Review-copy approval is a draft-copy decision only, never permission to send or publish. It is
 not installed, enabled or started by this repository.
 
 ```sh
@@ -9,6 +10,63 @@ records panel --project PROJECT --run-id RUN_ID [--run-report FILE] [--kit-root 
               [--port 8765] --actor LABEL [--timer-unit records-run.timer] [--no-system]
 records panel --project PROJECT --run-id RUN_ID ... --render out.html     # static snapshot, no socket
 ```
+
+## Review-only agency summaries and corrections (CONDRAFT-02)
+
+### Implementation scope amendment
+
+The CONDRAFT-02 fix task `t_e19fbb3e` applies the operator's SCOPE-3 standing
+file-scope grant to the following two additions to the frozen owned-file list:
+
+- `campaign_tool/records/mail_preview.py`: the review-copy-only preview avoids
+  mail lookup/configuration and shows no mail recipient, sender or subject.
+- `campaign_tool/records/mail_send.py`: the explicit `review_copy_not_mail`
+  refusal prevents either review-copy kind from entering send preparation.
+
+These narrowly scoped additions implement the existing requirement that agency
+summaries and corrections are not email, including after copy approval. This
+amendment records file ownership only; it does not authorize a send, change the
+approval chain, relax source/privacy/redaction checks, or change what may be
+published. The existing refusal behavior is retained unchanged by this fix.
+
+`records draft-import --project PROJECT --file INPUT [--apply]` also accepts one
+`records-console-draft-input-v1` instance of kind `draft-agency-summary` or
+`draft-correction-notice`. Dry-run remains the default; apply adds only one pending
+full-text row through the existing approval queue. There is no new store or packet
+edit API. Use synthetic or operator-checked input, not a batch array.
+
+These kinds use `target: {website, page, section}` **instead of** `envelope` (an
+envelope is refused). All three target values are non-empty, single-line strings;
+they are inert display evidence, not URLs to fetch or permission to write a site.
+A correction additionally requires `correction: {prior_statement, prior_version,
+linkage}`, each a non-empty, single-line string identifying the earlier wording,
+its version and the correction relationship. A summary cannot carry correction fields.
+
+Keep the existing `draft_key`, agency/request, full `body`, `why`, `source_run_id`,
+`source_attachment_sha256` and `source_section`. The attachment hash identifies the
+supplied source attachment, **not** an unavailable original. For these two kinds,
+`citations` is a non-empty list of exact objects with `source_type`, `source_id`,
+`locator`, `as_of`, `verification`. `source_type` is a non-empty single-line string;
+`verification` is exactly `verified`, `unverified`, `tracker-only` or `missing-original`.
+The other three values are non-empty single-line strings, or may be JSON null only
+for non-verified citations. Supply only known locators/dates/identities; never invent
+original hashes/pages or upgrade a tracker reference to verified. Correspondence
+citations retain CONDRAFT-01's typed validation unchanged; the review-copy rules do
+not relax mail intake.
+
+Target, correction linkage, citations, source section/hash and original body hash
+are bound into signed evidence. `/review` shows the entire editable draft, target,
+correction context and source caveats. Saving an edit retains the instantiated
+original and invalidates the old approval signature. Stable duplicate/conflict
+handling is unchanged: identical imports do not duplicate or reopen rejection;
+changed body/evidence under the same identity refuses for operator resolution.
+
+**Approve copy (draft-copy decision only; nothing is posted, sent or published)**
+records only the copy decision, even when sending is enabled. Both kinds are
+explicitly non-mail before admission: they cannot be placed or sent, and cannot be
+converted by `public_packets.from_queue` or automatically become `next-site-update`.
+Copy approval never makes an eligible public packet or supplies human/legal/source
+acceptance. No public-content write, fact resolution or publication is performed.
 
 ## Roots, run and report are distinct
 
