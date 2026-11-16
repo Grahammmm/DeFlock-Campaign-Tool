@@ -37,6 +37,22 @@ def require(ok, reason):
         raise enrollment.ExtractionBindingError(reason)
 
 
+def _require_no_reparse_timeout(checked, code):
+    """Raise ``code`` when the trusted installed reparse result is a runtime timeout.
+
+    Only a blocked result carrying an issue dict with exact code ``extraction_timeout``
+    and owner ``runtime`` counts; ``code`` is fixed by the caller and no result text is echoed.
+    """
+    if not isinstance(checked, dict) or checked.get("status") != "blocked":
+        return
+    issues = checked.get("issues")
+    if not isinstance(issues, list):
+        return
+    for issue in issues:
+        if isinstance(issue, dict) and issue.get("code") == "extraction_timeout" and issue.get("owner") == "runtime":
+            raise enrollment.ExtractionBindingError(code)
+
+
 def encoded(value):
     return enrollment.canonical(value).encode("utf-8")
 
@@ -604,6 +620,7 @@ class _InstalledExtractionValidator:
             workbook = self.native_workbook_policy.qualify(raw_original, units)
             with tempfile.TemporaryDirectory(prefix="extract-validate-", dir=self.evidence_root) as scratch:
                 checked = routes.extract(original_path, subject, Path(scratch), form="xlsx", timeout=60)
+            _require_no_reparse_timeout(checked, "installed_workbook_reparse_timeout")
             require(checked.get("status") == "partial" and checked.get("parser") == parser
                     and checked.get("parser_version") == version and checked.get("parser_components", {}) == receipt.get("parser_components", {})
                     and checked.get("issues") == receipt.get("issues") and checked.get("units") == units
@@ -616,6 +633,7 @@ class _InstalledExtractionValidator:
             # earlier only when each is a preserved original in its own right.
             with tempfile.TemporaryDirectory(prefix="extract-validate-", dir=self.evidence_root) as scratch:
                 checked = routes.extract(original_path, subject, Path(scratch), form=form, timeout=60)
+            _require_no_reparse_timeout(checked, "installed_reparse_timeout")
             require(checked.get("status") == "complete" and checked.get("issues") == [] and
                     checked.get("parser") == parser and checked.get("parser_version") == version and
                     checked.get("parser_components", {}) == receipt.get("parser_components", {}),
@@ -631,6 +649,7 @@ class _InstalledExtractionValidator:
             # callback, form, timeout, or output directory controls this invocation.
             with tempfile.TemporaryDirectory(prefix="extract-validate-", dir=self.evidence_root) as scratch:
                 checked = routes.extract(original_path, subject, Path(scratch), form="pdf", timeout=20)
+            _require_no_reparse_timeout(checked, "installed_pdf_reparse_timeout")
             require(checked.get("parser") == parser and checked.get("parser_version") == version and
                     checked.get("parser_components", {}) == receipt.get("parser_components", {}),
                     "installed_pdf_reparse_incomplete")
