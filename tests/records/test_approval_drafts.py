@@ -15,7 +15,7 @@ from unittest import mock
 
 from campaign_tool.records import approval_queue as aq
 from campaign_tool.records import draft_templates as dt
-from campaign_tool.records import run_stages
+from campaign_tool.records import followup_engine, run_stages
 from campaign_tool import kit_track
 from tests.approval_signing import Signer
 from tests.test_records_run_stages import StageTestCase, synthetic_ledger, run_main
@@ -368,7 +368,8 @@ class OutputsSeamTests(StageTestCase):
                 (target / "received-items.json").write_text(json.dumps(doc), encoding="utf-8")
         # Response ratings are their own outputs writer with their own tests; keep this seam about drafts only.
         with mock.patch.object(received_items, "write_run_received_items", fake), \
-                mock.patch.object(response_items, "write_run_response_items", lambda project, run_id: None):
+                mock.patch.object(response_items, "write_run_response_items", lambda project, run_id: None), \
+                mock.patch.object(followup_engine, "run", lambda project, run_id, apply=False: None):  # needs ratings
             return self.stage("outputs")
 
     def test_outputs_stage_queues_pending_drafts_once(self):
