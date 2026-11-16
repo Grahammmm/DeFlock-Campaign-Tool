@@ -137,7 +137,7 @@ jobs:
           select_root wp2 campaign_tool/records/runner/canonical_mail.py
           select_root wp4 campaign_tool/records/extraction_ledger.py
           select_root pr19 campaign_tool/records/catalog_links.py
-      - name: Exact 66 catalog and 4 composition tests; no skips
+      - name: Exact 67 catalog and 4 composition tests; no skips
         if: steps.scope.outputs.run == 'true'
         working-directory: engine
         run: |
