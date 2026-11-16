@@ -79,6 +79,14 @@ def context(config, out):
     return {"FO": store.parent, "RO": ro, "CO": co, "slug": slug, "agency": squash(agency), "out": out,
             "deny": [s for d in deny for s in d or ()], "ts": text_state(rv["text_state_file"]) if "text_state_file" in rv else None}
 TEXT_STATES, TS_MAX = ("text_reviewed", "ocr_flagged", "ocr_unreviewed", "awaiting_ocr", "could_not_be_read", "waiting", "unknown_state"), 64 << 20
+def _ts_pairs(pairs):  # receipt-local: a repeated member name at any depth is ambiguous JSON (never echoed)
+    if len({k for k, _ in pairs}) != len(pairs):
+        raise ValueError("duplicate member")
+    return dict(pairs)
+def _ts_constant(_token):  # NaN, Infinity, -Infinity are not standard JSON
+    raise ValueError("nonfinite constant")
+def ts_decode(text):  # the narrow parser seam for the text-state receipt; RecursionError is translated by the caller
+    return json.loads(text, object_pairs_hook=_ts_pairs, parse_constant=_ts_constant)
 def text_state(value):  # DOC-2 text-state file -> {sha256: label suffix, "" when reviewed}; any doubt fails closed
     why, raw = "config: review.text_state_file %s", os.path.expanduser(value) if isinstance(value, str) else ""
     if not os.path.isabs(raw):
@@ -92,15 +100,18 @@ def text_state(value):  # DOC-2 text-state file -> {sha256: label suffix, "" whe
             data = handle.read(TS_MAX + 1)
         if len(data) > TS_MAX:
             raise Fail(why % "is larger than 64 MiB")
-        doc = json.loads(data.decode("utf-8"))
+        doc = ts_decode(data.decode("utf-8"))
+    except RecursionError:
+        raise Fail(why % "JSON nesting exceeds parser limit") from None
     except OSError as exc:
         raise Fail(why % ("is a link (refused)" if exc.errno == errno.ELOOP else "cannot be read (%s)" % type(exc).__name__)) from None
     except ValueError:
         raise Fail(why % "is not valid JSON") from None
     recs = doc.get("records") if isinstance(doc, dict) and doc.get("schema") == "records-text-state-v1" else None
-    if not isinstance(recs, list) or not all(isinstance(r, dict) and isinstance(r.get("sha256"), str) and isinstance(r.get("words"), str)
+    if not isinstance(recs, list) or not all(isinstance(r, dict) and isinstance(r.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", r["sha256"])
+                                             and isinstance(r.get("words"), str)
                                              and r.get("state") in TEXT_STATES for r in recs) or len({r["sha256"] for r in recs}) != len(recs):
-        raise Fail(why % "is not a records-text-state-v1 file (schema; records of unique sha256 with state and words)")
+        raise Fail(why % "is not a records-text-state-v1 file (schema; records of unique lowercase 64-hex sha256 with state and words)")
     return {r["sha256"]: "" if r["state"] == "text_reviewed" else "OCR text, not visually reviewed" if r["state"] in ("ocr_unreviewed", "ocr_flagged")
             else "text state: " + (clean(r["words"]) or r["state"].replace("_", " ")) for r in recs}
 def load(c):
