@@ -125,6 +125,15 @@ the 45-minute grace), `missed`, `failed`, `stalled` (started, never finalised) o
 or `never`. Exit code 0 for `ok`/`late`, 1 otherwise, 2 when the root has no ledger. `--record` writes
 keyed `schedule:<status>:<slot>` alerts so `records status` shows them.
 
+`records health --console-export-root DIR` additionally reads `approval_anchor.state` from the manifest of the export
+that DIR's `current` pins (read-only: no trust file, keys, signatures or verification) and adds
+`approval_anchor: {state}` and `alerts` to the report (`  approval anchor: STATE` in text). Only the exact states `ok` and
+`unavailable` are recognised; a missing field, an old export, an omitted flag or an unreadable export is `unknown`, never ok.
+Any non-ok state adds the fixed, content-free alert `APPROVAL_ANCHOR_UNAVAILABLE` and raises the exit code to at least 1
+(a stronger calendar code is kept; calendar `status` is unchanged). This alert is report-only: even with `--record` it is
+never written to the ledger. The state is the exported observation, not live verification; verification still happens when
+decisions are applied. The console shows the same state on Home and Settings.
+
 The legacy `.service.in`/`.timer.in` templates under `campaign_tool/records/runner/templates/` remain as
 the unresolved historical form; the rendered units above supersede them for operation.
 
