@@ -27,7 +27,7 @@ MAX_PARTS = 200
 MAX_PART_BYTES = MAX_BYTES  # decoded attachment cap
 MAX_NAME = 120
 _FATAL = (errors.NoBoundaryInMultipartDefect, errors.StartBoundaryNotFoundDefect,
-          errors.MultipartInvariantViolationDefect)
+          errors.MultipartInvariantViolationDefect, errors.CloseBoundaryNotFoundDefect)
 _BAD_ENCODING = "InvalidAttachmentEncoding"
 _IDENTITY = ("7bit", "8bit", "binary")
 _ENCODINGS = _IDENTITY + ("base64", "quoted-printable")

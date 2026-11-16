@@ -71,6 +71,18 @@ def bad_message():
     return (head + part.format("ok", first) + part.format("bad", "AP8BAgM") + "--B--\r\n").encode()
 
 
+UNCLOSED_ATTACHMENT = b"unclosed multipart attachment bytes"
+
+
+def unclosed_message():
+    """A multipart whose named base64 attachment is intact but whose closing `--B--` delimiter is missing."""
+    head = (f"Subject: {HEADER_VALUES[0]}\r\nFrom: {HEADER_VALUES[1]}\r\nTo: {HEADER_VALUES[2]}\r\nMIME-Version: 1.0\r\n"
+            'Content-Type: multipart/mixed; boundary="B"\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n')
+    part = ("--B\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n"
+            'Content-Disposition: attachment; filename="u.bin"\r\n\r\n')
+    return (head + part + base64.b64encode(UNCLOSED_ATTACHMENT).decode() + "\r\n").encode()
+
+
 def deep(depth, leaf="leaf"):
     """A complete message of `depth` nested multiparts around one text leaf; each level has its own boundary `D<n>`,
     opened and closed (RF1355-1: deeper than the stdlib email parser can follow at depth 1200)."""
@@ -726,6 +738,63 @@ class IngestMboxTests(unittest.TestCase):
                 ingest_mbox._require_receipt_name(value)
             self.assertEqual(str(caught.exception), self.REFUSAL)
         ingest_mbox._require_receipt_name("plain-\u00e9\U0001f4ec.mbox")
+
+
+    # RF0520-2: an unclosed multipart skips only its own message; the mailbox and its neighbours are kept
+    def test_unclosed_mbox_skips_only_bad_message_and_preserves_graph(self):
+        m1, m3 = message((PDF, "application", "pdf", "a.pdf")), message((CSV, "text", "csv", "b.csv"))
+        for lf in (False, True):
+            with self.subTest(lf=lf):
+                self.setUp()
+                bad = unclosed_message()
+                data = mbox(m1, bad.replace(b"\r\n", b"\n") if lf else bad, m3)
+                path = self.write(data)
+                report = self.ingest(path)
+                self.assertEqual(report["skipped"], [{"number": 2, "code": "malformed"}])
+                self.assertEqual([(m["number"], m["sha256"], m["outcome"]) for m in report["messages"]],
+                                 [(1, sha(m1), "stored"), (3, sha(m3), "stored")])
+                self.assertEqual(report["count"], 3)
+                objects = self.root / "private" / "objects"
+                self.assertEqual((objects / report["mailbox"]["sha256"]).read_bytes(), data)
+                self.assertEqual(path.read_bytes(), data)
+                self.assertNotIn(sha(UNCLOSED_ATTACHMENT), set(os.listdir(objects)))
+                self.assertNotIn(sha(bad), set(os.listdir(objects)))
+                self.assertEqual(self.counts(), [(5, 5, 4)])
+                self.assertEqual(sorted(r[0] for r in self.rows("SELECT original_name FROM receipts")),
+                                 sorted(["replies.mbox", "replies.mbox/message-1.eml",
+                                         "replies.mbox/message-1.eml/a.pdf", "replies.mbox/message-3.eml",
+                                         "replies.mbox/message-3.eml/b.csv"]))
+
+    def test_all_unclosed_mbox_preserves_only_container(self):
+        path = self.write(mbox(unclosed_message(), unclosed_message()))
+        before = self.files()
+        preview = self.ingest(path, dry=True)
+        self.assertEqual(self.files(), before)
+        report = self.ingest(path)
+        self.assertEqual((report["skipped"], report["messages"], report["count"]),
+                         ([{"number": 1, "code": "malformed"}, {"number": 2, "code": "malformed"}], [], 2))
+        self.assertEqual((preview["skipped"], preview["messages"]), (report["skipped"], report["messages"]))
+        self.assertEqual((self.root / "private" / "objects" / report["mailbox"]["sha256"]).read_bytes(), path.read_bytes())
+        self.assertEqual(self.counts(), [(1, 1, 0)])
+
+    def test_unclosed_mbox_preview_replay_and_existing_objects(self):
+        path = self.write(mbox(message((PDF, "application", "pdf", "a.pdf")), unclosed_message(),
+                               message((CSV, "text", "csv", "b.csv"))))
+        before = self.files()
+        preview = self.ingest(path, dry=True)
+        self.assertEqual(self.files(), before)
+        # the bad message's attachment was stored independently earlier; refusal must not delete it
+        keep = self.write(UNCLOSED_ATTACHMENT, "keep.bin")
+        self.cli("ingest", "--file", keep, "--source-id", "keep-1")
+        real = self.ingest(path)
+        shape = lambda r: (r["skipped"], [(m["number"], m["sha256"]) for m in r["messages"]], r["count"])
+        self.assertEqual(shape(preview), shape(real))
+        self.assertEqual(real["skipped"], [{"number": 2, "code": "malformed"}])
+        self.assertIn(sha(UNCLOSED_ATTACHMENT), set(os.listdir(self.root / "private" / "objects")))
+        stored = self.counts()
+        again = self.ingest(path)
+        self.assertEqual(self.counts(), stored)
+        self.assertEqual((again["skipped"], again["count"]), (real["skipped"], 3))
 
 
 if __name__ == "__main__":
