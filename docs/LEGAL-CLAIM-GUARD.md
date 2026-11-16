@@ -125,6 +125,69 @@ Tests: `tests/test_legal_claim_advisories.py` (patterns, quotes, negation, capab
 unchanged legal corpus) and `tests/flock/test_legal_advisory_surfaces.py` (every reporting surface: advisory-only input keeps its
 exit code, artifacts and state).
 
+## Third advisory category: dated `not-law` wording (DF0652-11)
+
+`NOT_LAW_TABLE` in the module is a finite four-row historical observation table, not a
+current-law database. Every row has read date **2026-11-09** (not an effective date).
+**Before relying on it, the table must be re-checked against the official status page before each use**;
+for case claims, reread the official opinion/holding too. The software does not do that
+check or fetch anything. A warning's absence is not confirmation of law, legal advice
+or publication permission. If an attended official reread contradicts a bill status,
+update the table and its tests/docs together before relying on it. Do not invent a
+new read date or add runtime network checks. SB 1013's entry is a dated observation,
+not a claim about its current status.
+
+| Stable row id | Kind / label | What it is (read 2026-11-09) | Official source URL |
+|---|---|---|---|
+| `sb-274-2025` | bill / SB 274 | 2025–2026 ALPR bill; vetoed 2025-10-01, veto sustained 2026-03-02; not enacted | https://leginfo.legislature.ca.gov/faces/billStatusClient.xhtml?bill_id=202520260SB274 |
+| `sb-1013-2025` | bill / SB 1013 | 2025–2026 ALPR bill; not chaptered on the status page read 2026-11-09 | https://leginfo.legislature.ca.gov/faces/billStatusClient.xhtml?bill_id=202520260SB1013 |
+| `carpenter-2018` | case / Carpenter | Carpenter v. United States, No. 16-402, decided 2018-06-22; historical cell-site location records, not an ALPR holding | https://www.supremecourt.gov/opinions/17pdf/16-402_h315.pdf |
+| `yang-2020` | case / Yang | United States v. Yang, No. 18-10341, filed 2020-05-04; standing on expired-rental facts, not a general ALPR search/warrant holding | https://cdn.ca9.uscourts.gov/datastore/opinions/2020/05/04/18-10341.pdf |
+
+Exact output is `warning: <where>: wording advisory (not-law). Fix: <fixed fix>`.
+Only these packaged canonical names/dates appear, never submitted wording or exception
+details. Fixed fixes, in table order:
+
+- SB 274 was vetoed; say what it would have done and that it is not law
+- SB 1013 was not chaptered as of 2026-11-09; describe it as a bill, not law, and re-check its official status
+- Carpenter concerns cell-site records, not an ALPR holding; do not say it requires an ALPR warrant or held ALPR is a search
+- Yang is a standing holding on its facts; do not say it requires an ALPR warrant or held ALPR is a search
+
+| Row | Warns | Silent |
+|---|---|---|
+| SB 274 | `SB 274 requires a retention limit.` | `SB 274 would have required a retention limit.` / `SB 274 was vetoed.` |
+| SB 1013 | `SB 1013 bans sharing ALPR data.` | `SB 1013 is pending.` / `Proposed SB 1013 bans sharing.` |
+| Carpenter | `Carpenter requires a warrant for ALPR.` | `Carpenter requires a warrant for cell-site records.` |
+| Yang | `Yang held ALPR is a search.` | `Yang concerns standing on expired-rental facts.` |
+
+Match whole identifiers case-insensitively: `SB274`/`SB 274`, `SB1013`/`SB 1013`
+(ordinary whitespace), and short or full case names containing whole `Carpenter` or
+`Yang`; never `SB 2740`, `SB 10130`, `Carpenters` or `Yangs`. Bills trigger only on
+`requires`, `limits`, `bans`, `is the law`, with ordinary intervening object words;
+no ALPR word is required for bills. Cases require `requires a warrant for ALPR` or
+`held ALPR is a search` (optional `that` after `held`, ordinary whitespace).
+Bare citations/status descriptions and synonyms are outside this finite matcher.
+It has no other sessions/cases, pronoun resolution or generic legal truth detector.
+
+The citation and predicate must govern the same unquoted clause: predicates cannot
+be borrowed across sentences, comma/semicolon/colon segments or joined clauses.
+The `v.` in a full case name is not a sentence boundary for this category only.
+`would have`, `proposed`, `pending`, local negation, conditions/questions and
+attribution qualify only their governed claim, never an unrelated later assertion.
+`SB 1013 is pending and SB 274 requires retention` still warns for SB 274.
+`requires` is a trigger here, not the old legal scanner's neutral requirement cue.
+Complete straight/curly single/double quotes (including inner apostrophes and single
+line breaks, not blank lines) use the unchanged advisory quote mask: quoted predicates
+cannot complete unquoted citations, and quoted `pending` cannot excuse an unquoted claim.
+
+`legal_advisories` still returns sorted unique category names: several matching rows
+produce one `not-law` category. `advisory_notes` emits each matching row once per item,
+in table order within sorted category order, preserving item order. Old legal notes
+still come first. Existing guard-error warnings, `intent`/`undated-count`, refusal
+predicates, channels, approval/stage states and exit codes remain unchanged. No draft
+is rewritten; no new output keys, headings, sidecars or options are added. Not-law-only
+input never refuses; an independent refusal in mixed input still wins.
+
 ## The older Flock word ban is now alert-only too (operator ruling 1, 2026-11-02)
 
 `compare.GATED` (`violat*`, `illegal*`, `admit*` without a matching quote) used to **refuse** in the Flock lints. The operator

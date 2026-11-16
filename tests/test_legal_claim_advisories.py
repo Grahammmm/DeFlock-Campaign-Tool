@@ -301,5 +301,140 @@ class RefusalInvarianceTest(unittest.TestCase):
             self.assertIn(old, doc)
 
 
+class NotLawTest(unittest.TestCase):
+    EXAMPLES = (
+        ("sb-274-2025", "SB 274 requires a retention limit.", "SB 274 was vetoed."),
+        ("sb-1013-2025", "SB 1013 bans sharing ALPR data.", "SB 1013 was not chaptered as of 2026-11-09."),
+        ("carpenter-2018", "Carpenter requires a warrant for ALPR.", "Carpenter requires a warrant for cell-site records."),
+        ("yang-2020", "Yang held ALPR is a search.", "Yang concerns standing on expired-rental facts."),
+    )
+    FIXES = (
+        "SB 274 was vetoed; say what it would have done and that it is not law",
+        "SB 1013 was not chaptered as of 2026-11-09; describe it as a bill, not law, and re-check its official status",
+        "Carpenter concerns cell-site records, not an ALPR holding; do not say it requires an ALPR warrant or held ALPR is a search",
+        "Yang is a standing holding on its facts; do not say it requires an ALPR warrant or held ALPR is a search",
+    )
+
+    def note(self, index, where="draft"):
+        return "warning: %s: wording advisory (not-law). Fix: %s" % (where, self.FIXES[index])
+
+    def test_not_law_positive_and_negative_per_table_row(self):
+        for i, (_, positive, negative) in enumerate(self.EXAMPLES):
+            for text in (positive, positive.swapcase()):
+                with self.subTest(text=text):
+                    self.assertEqual(adv(text), ["not-law"])
+                    self.assertEqual(lc.advisory_notes([("draft", text)]), [self.note(i)])
+                    self.assertEqual(lc.legal_claims(text), [])
+            self.assertEqual(adv(negative), [])
+        for label in ("SB 274", "sb274", "SB\t1013", "SB1013"):
+            for predicate in ("requires", "limits", "bans", "is the law"):
+                self.assertEqual(adv(label + " on ALPR " + predicate + " retention."), ["not-law"])
+        for name in ("Carpenter", "Carpenter v. United States", "Yang", "United States v. Yang"):
+            for predicate in ("requires a warrant for ALPR", "held ALPR is a search", "held that ALPR is a search"):
+                self.assertEqual(adv(name + " " + predicate + "."), ["not-law"])
+        for text in ("SB 34 requires a policy.", "SB 2740 requires retention.", "SB10130 bans sharing.",
+                     "Carpenters held ALPR is a search.", "Yangs held ALPR is a search.",
+                     "SB 274 prohibits sharing.", "SB 1013 mandates retention.", "See Carpenter and Yang.",
+                     "SB 274; requires retention.", "SB 1013. It bans sharing."):
+            self.assertEqual(adv(text), [], text)
+
+    def test_not_law_quoted_and_conditional_wording(self):
+        for _, positive, _ in self.EXAMPLES:
+            for left, right in (('"', '"'), ('“', '”'), ("'", "'"), ('‘', '’')):
+                self.assertEqual(adv(left + positive + right), [])
+                self.assertEqual(adv(left + "The agency's note: " + positive.replace(" ", "\n", 1) + right), [])
+                self.assertEqual(adv(left + "pending" + right + " " + positive), ["not-law"])
+                self.assertEqual(adv(left + positive + right + " " + positive), ["not-law"])
+            for prefix in ("If ", "Whether ", "Unless ", "According to counsel, ", "The complaint alleges ",
+                           "Proposed ", "Pending "):
+                self.assertEqual(adv(prefix + positive), [], prefix + positive)
+            self.assertEqual(adv(positive.rstrip(".") + "?"), [])
+        for text in ("SB 274 would have required retention.", "SB 1013 would have banned sharing.",
+                     "SB 274 would have limits on sharing.", "SB 1013 is proposed and requires retention.",
+                     "Carpenter would have held ALPR is a search.", "Yang never held ALPR is a search.",
+                     "Yang has not held that ALPR is a search.", "SB 274 never requires retention.",
+                     "SB 1013 does not limit sharing.", 'SB 274 "requires retention".',
+                     'Yang "held ALPR is a search".'):
+            self.assertEqual(adv(text), [], text)
+
+    def test_not_law_scope_is_per_claim_not_document(self):
+        warns = (
+            "Pending review. SB 274 requires retention.",
+            "SB 1013 is pending, but SB 274 requires retention.",
+            "SB 1013 would have banned sharing and SB 274 requires retention.",
+            "The agency did not respond and SB 274 requires retention.",
+            "SB 274 requires retention if asked.",
+            "According to counsel, SB 1013 bans sharing, and SB 274 requires retention.",
+        )
+        for text in warns:
+            self.assertEqual(lc.advisory_notes([("draft", text)]), [self.note(0)], text)
+        for text in ("SB 274 is pending and the agency requires retention.",
+                     "Carpenter concerns cell-site records and Yang requires a warrant for cell-site records.",
+                     "SB 274 is pending; SB 34 requires retention.",
+                     "If SB 274 requires retention and SB 1013 bans sharing, we will ask."):
+            self.assertEqual(adv(text), [], text)
+        self.assertEqual(lc.advisory_notes([("draft", "SB 274 is pending and SB 1013 bans sharing.")]), [self.note(1)])
+
+    def test_not_law_qualification_spans_citations_in_one_clause(self):
+        for text in (
+            "We ask whether SB 274 or SB 1013 bans sharing.",
+            "We ask if SB 274 or SB 1013 bans sharing.",
+            "The complaint alleges SB 274 or SB 1013 bans sharing.",
+            "No SB 274 or SB 1013 bans sharing.",
+            "Neither case is settled: not Carpenter or Yang held ALPR is a search.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(adv(text), [])
+                self.assertEqual(lc.advisory_notes([("draft", text)]), [])
+        for text in (
+            "We ask whether SB 274 bans sharing; SB 1013 bans sharing.",
+            "The complaint alleges SB 274 bans sharing but SB 1013 bans sharing.",
+            "No SB 274 bans sharing, SB 1013 bans sharing.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(lc.advisory_notes([("draft", text)]), [self.note(1)])
+
+    def test_not_law_sorted_category_and_row_fix_dedup(self):
+        text = " ".join(row[1] for row in reversed(self.EXAMPLES)) + " SB 274 limits retention. CANARY-992."
+        mixed = "The agency secretly shared data from 40 cameras. " + text
+        self.assertEqual(adv(mixed), ["intent", "not-law", "undated-count"])
+        expected = ["warning: draft: wording advisory (intent). Fix: " + FIX_INTENT]
+        expected += [self.note(i) for i in range(4)]
+        expected += ["warning: draft: wording advisory (undated-count). Fix: " + FIX_COUNT, self.note(0, "next")]
+        items = [("draft", mixed), ("next", self.EXAMPLES[0][1])]
+        self.assertEqual(lc.advisory_notes(iter(items)), expected)
+        self.assertEqual(lc.advisory_notes(iter(items)), expected)
+        self.assertNotIn("CANARY-992", " ".join(expected))
+        notes = lc.legal_notes(iter([("legacy", "Agency X violated SB 34."), *items]))
+        self.assertEqual(notes, ["review-required: legacy: legal-claim wording (violation-verb)"] + expected)
+        for value in (None, "", 7, b"SB274 requires retention", []):
+            self.assertEqual(adv(value), [])
+
+    def test_not_law_table_and_documentation_are_dated(self):
+        import datetime
+        table = lc.NOT_LAW_TABLE
+        self.assertEqual([r["id"] for r in table], [r[0] for r in self.EXAMPLES])
+        self.assertEqual([r["kind"] for r in table], ["bill", "bill", "case", "case"])
+        self.assertEqual([r["fix"] for r in table], list(self.FIXES))
+        doc = (ROOT / "docs" / "LEGAL-CLAIM-GUARD.md").read_text(encoding="utf-8")
+        for row in table:
+            self.assertEqual(datetime.date.fromisoformat(row["read_date"]).isoformat(), "2026-11-09")
+            for key in ("id", "label", "what_it_is", "source_url", "read_date", "fix"):
+                self.assertTrue(row[key])
+                self.assertIn(row[key], doc)
+            self.assertRegex(row["source_url"], r"^https://(?:leginfo\.legislature\.ca\.gov|www\.supremecourt\.gov|cdn\.ca9\.uscourts\.gov)/")
+        self.assertIn("the table must be re-checked against the official status page before each use", doc)
+        self.assertIn("reread the official opinion/holding", doc)
+
+    def test_not_law_fault_preserves_old_legal_and_advisory_notes(self):
+        with mock.patch.object(lc, "_not_law_rows", side_effect=RuntimeError("CANARY-992")):
+            self.assertEqual(adv(self.EXAMPLES[0][1]), ["guard-error"])
+            self.assertEqual(lc.legal_notes([("x", "Agency X violated SB 34."), ("y", self.EXAMPLES[0][1])]),
+                             ["review-required: x: legal-claim wording (violation-verb)", GUARD_ERROR])
+        with mock.patch.object(lc, "ADVISORY_FIX", {}):
+            self.assertEqual(lc.legal_notes([("x", "Agency X violated SB 34. The sheriff hid the logs.")]),
+                             ["review-required: x: legal-claim wording (violation-verb)", GUARD_ERROR])
+
+
 if __name__ == "__main__":
     unittest.main()

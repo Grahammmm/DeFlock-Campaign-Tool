@@ -10,9 +10,12 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
 import sys
 import time
 from datetime import datetime, timezone
+
+from .runtime_fds import receive_runtime_fds, RuntimeSocketError, RUNTIME_SOCKET_UNSAFE
 
 PROC_ROOT = "/proc"
 MAX_AGE = 120
@@ -74,14 +77,18 @@ def _open_files(root):
     return {"count": held, "proc_unreadable": unreadable}
 
 
-def _lock(runtime):
+def _lock(runtime, *, runtime_fd=None):
     try:
-        fd = os.open(os.path.join(runtime, "run-records.lock"), os.O_RDONLY | os.O_NOFOLLOW)
+        fd = (os.open(os.path.join(runtime, "run-records.lock"), os.O_RDONLY | os.O_NOFOLLOW)
+              if runtime_fd is None else os.open("run-records.lock",
+                  os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=runtime_fd))
     except FileNotFoundError:
-        return "absent" if os.path.isdir(runtime) else "unreadable"
+        return "absent" if runtime_fd is not None or os.path.isdir(runtime) else "unreadable"
     except OSError:
         return "unreadable"
     try:
+        if runtime_fd is not None and not stat.S_ISREG(os.fstat(fd).st_mode):
+            return "unreadable"
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return "free"
     except BlockingIOError:
@@ -92,7 +99,30 @@ def _lock(runtime):
         os.close(fd)  # closing releases the momentary lock
 
 
-def audit(project, runtime, units_file):
+def _pending(runtime_fd):
+    try:
+        fd = os.open("arrival.pending", os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=runtime_fd)
+    except FileNotFoundError:
+        return False
+    try:
+        os.fstat(fd)
+        return True
+    finally:
+        os.close(fd)
+
+
+def audit(project, runtime, units_file, *, runtime_socket=None):
+    if (runtime is None) == (runtime_socket is None):
+        raise RuntimeSocketError(RUNTIME_SOCKET_UNSAFE)
+    if runtime_socket is None:
+        return _audit(project, runtime, units_file)
+    with receive_runtime_fds(runtime_socket) as source:
+        doc = _audit(project, None, units_file, runtime_fd=source.runtime_fd)
+        doc["runtime_source"] = "socket"
+        return doc
+
+
+def _audit(project, runtime, units_file, *, runtime_fd=None):
     """Evidence for ``records backup``: ``roots`` names every root the backup reads (the project, then each declared
     off-project store root that exists), and the open-file check covers each of them."""
     from .recovery.records_profile import ProfileIncomplete, backup_roots
@@ -114,10 +144,11 @@ def audit(project, runtime, units_file):
         codes.append("OPEN_FILE")
     if checks["open_files"]["proc_unreadable"]:
         codes.append("PROC_UNREADABLE")
-    checks["run_lock"] = _lock(runtime)
+    checks["run_lock"] = _lock(runtime) if runtime_fd is None else _lock(None, runtime_fd=runtime_fd)
     if checks["run_lock"] in ("held", "unreadable"):
         codes.append("RUN_LOCK_" + checks["run_lock"].upper())
-    checks["arrival_pending"] = os.path.lexists(os.path.join(runtime, "arrival.pending"))
+    checks["arrival_pending"] = (os.path.lexists(os.path.join(runtime, "arrival.pending"))
+                                 if runtime_fd is None else _pending(runtime_fd))
     if checks["arrival_pending"]:
         codes.append("ARRIVAL_PENDING")
     checks["codes"] = codes
@@ -129,7 +160,9 @@ def audit(project, runtime, units_file):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="records quiescence-audit", description="Check every known records writer at one moment; write quiescence evidence.")
     parser.add_argument("--project", required=True)
-    parser.add_argument("--runtime", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--runtime")
+    source.add_argument("--runtime-socket")
     parser.add_argument("--units-file", required=True, help="captured units (first line Captured=<epoch>), or - for stdin")
     parser.add_argument("--out", required=True)
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
@@ -138,7 +171,8 @@ def main(argv=None):
         print("OUT_INSIDE_PROJECT")
         return 2
     try:
-        doc = audit(project, os.path.abspath(args.runtime), args.units_file)
+        doc = audit(project, os.path.abspath(args.runtime) if args.runtime is not None else None,
+                    args.units_file, runtime_socket=args.runtime_socket)
         raw = (json.dumps(doc, sort_keys=True) + "\n").encode()
         fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         try:
@@ -146,6 +180,9 @@ def main(argv=None):
             os.write(fd, raw)
         finally:
             os.close(fd)
+    except RuntimeSocketError as error:
+        print(error.code)
+        return 2
     except OSError:
         print("AUDIT_UNAVAILABLE")
         return 2

@@ -808,5 +808,41 @@ class OfficialsCatalogueTests(Case):
         self.assertEqual((report["added"], report["removed"], report["changed"]), ([], [], []))
 
 
+class SuspectedCatalogueTests(Case):
+    def test_suspected_exact_bytes_schema_rights_and_readback(self):
+        from tests.test_content_suspected import entry
+        path = self.content / 'suspected-locations.json'
+        path.write_text(json.dumps({'schema_version': 1, 'entries': [entry(as_of='2026-01-01')]}))
+        for license_id in (None, 'CC-BY-4.0'):
+            with self.subTest(license=license_id):
+                self.set_license({'id': license_id} if license_id else None)
+                self.build()
+                data_path = self.public / 'data/suspected-locations.json'
+                data = data_path.read_bytes()
+                resource = self.resources()['data/suspected-locations.json']
+                self.assertEqual(resource['name'], 'suspected-locations-json')
+                self.assertEqual(resource['schema'], SCHEMA_BASE + 'suspected-locations-open-data.schema.json')
+                self.assertEqual(resource['bytes'], len(data))
+                self.assertEqual(resource['hash'], 'sha256:' + hashlib.sha256(data).hexdigest())
+                self.assertEqual([r['name'] for r in resource['licenses']], [license_id] if license_id else [])
+                self.assertEqual(verify_data_package(self.public), [])
+                self.assertIn('not confirmed cameras', self.rows()['data/suspected-locations.json']['text'])
+                data_path.write_bytes(data + b' ')
+                self.assertTrue(verify_data_package(self.public))
+                data_path.write_bytes(data)
+                descriptor = self.descriptor()
+                target = next(r for r in descriptor['resources'] if r['name'] == 'suspected-locations-json')
+                target['schema'] = SCHEMA_BASE + 'suspected-open-data.schema.json'
+                (self.public / 'data/datapackage.json').write_text(json.dumps(descriptor))
+                self.assertTrue(verify_data_package(self.public))
+                self.build()
+                descriptor = self.descriptor()
+                descriptor['resources'] = [r for r in descriptor['resources'] if r['name'] != 'suspected-locations-json']
+                (self.public / 'data/datapackage.json').write_text(json.dumps(descriptor))
+                self.assertTrue(verify_data_package(self.public))
+                self.build(); data_path.unlink()
+                self.assertTrue(verify_data_package(self.public))
+
+
 if __name__ == "__main__":
     unittest.main()

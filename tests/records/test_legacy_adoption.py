@@ -58,22 +58,24 @@ class LegacyAdoptionTests(unittest.TestCase):
                 for row in self.rows[:3]}}
         self.save_inputs()
 
-    def save_inputs(self, *, enabled=True):
+    def save_inputs(self, *, enabled=True, null_policy=False):
         self.manifest.write_text("sha256\tsize\tsource_path\n" + "".join(
             f'{r["sha256"]}\t{r["size"]}\t{r["source_path"]}\n' for r in self.rows))
         self.policy.write_bytes(capture.encoded(self.policy_value))
         value = {"schema": "legacy-adoption-v1", "manifest_sha256": capture.digest(self.manifest.read_bytes()),
-            "policy_sha256": capture.digest(self.policy.read_bytes()), "export_root": str(self.export),
+            "policy_sha256": None if null_policy else capture.digest(self.policy.read_bytes()),
+            "export_root": str(self.export),
             "supplement_root": str(self.supplement), "adoption": "enabled" if enabled else "disabled"}
         self.config.write_bytes(capture.encoded(value))
         for path in (self.manifest, self.policy, self.config):
             path.chmod(0o600)
 
-    def invoke(self, *extra):
+    def invoke(self, *extra, policy=True):
         output = io.StringIO()
+        policy_args = ["--policy", str(self.policy)] if policy else []
         with contextlib.redirect_stdout(output):
             status = adoption.main(["--root", str(self.base), "--config", str(self.config),
-                "--manifest", str(self.manifest), "--policy", str(self.policy), *extra])
+                "--manifest", str(self.manifest), *policy_args, *extra])
         counts = json.loads(output.getvalue())
         self.assertNotIn(str(self.base), output.getvalue())
         self.assertNotIn("fictional", output.getvalue())
@@ -306,3 +308,509 @@ class LegacyAdoptionTests(unittest.TestCase):
                 "portal-intake": 0, "productions": 0, "supplement": 0}})
         self.assertEqual(self.snapshot(), before)
         self.assertFalse((self.base / "legacy-adoption").exists())
+
+    def test_null_policy_first_proposal_passes_existing_policy_loader(self):
+        self.save_inputs(enabled=False, null_policy=True)
+        proposal = self.base / "first.json"
+        before = self.snapshot()
+        self.assertEqual(self.invoke("--write-policy-proposal", str(proposal), policy=False)[0], 0)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.ledger_rows("SELECT count(*) FROM runs WHERE run_id LIKE 'legacy-adoption-%'"), [(0,)])
+        self.assertFalse((self.base / "legacy-adoption").exists())
+        raw = proposal.read_bytes()
+        self.assertEqual(proposal.stat().st_mode & 0o777, 0o600)
+        loaded = capture.ApprovedCapturePolicy(raw, expected_sha256=capture.digest(raw))
+        self.assertIsNotNone(loaded)
+        value = json.loads(raw)
+        self.assertEqual(value["originals"], self.policy_value["originals"])
+        self.assertEqual(value["approval_sha256"], capture.digest(self.config.read_bytes()))
+        self.assertEqual(value["inventory_sha256"], capture.digest(self.manifest.read_bytes()))
+
+    def test_null_policy_refuses_every_other_mode_naming_the_code(self):
+        refused = (2, {"legacy_policy_required": 1})
+        for enabled in (False, True):
+            self.save_inputs(enabled=enabled, null_policy=True)
+            proposal = self.base / f"never-{enabled}.json"
+            before = self.snapshot()
+            with self.subTest(enabled=enabled):
+                with patch.object(adoption, "preflight", side_effect=AssertionError("preflight reached")), \
+                        patch.object(adoption, "apply_batch", side_effect=AssertionError("apply reached")):
+                    self.assertEqual(self.invoke(policy=False), refused)
+                    self.assertEqual(self.invoke("--apply", policy=False), refused)
+                    self.assertEqual(self.invoke("--apply", "--write-policy-proposal", str(proposal), policy=False), refused)
+                    self.assertEqual(self.invoke("--write-policy-proposal", str(proposal)), refused)
+                self.assertFalse(proposal.exists())
+                self.assertEqual(self.snapshot(), before)
+
+    def test_pinned_config_still_requires_policy_and_matches_proposal_bytes(self):
+        self.assertEqual(self.invoke(policy=False), (2, {"legacy_policy_required": 1}))
+        proposal = self.base / "pinned.json"
+        self.assertEqual(self.invoke("--write-policy-proposal", str(proposal))[0], 0)
+        expected = adoption.proposal(json.loads(self.config.read_bytes()),
+                                     capture.digest(self.config.read_bytes()),
+                                     [(row, "received") for row in self.rows[:3]])
+        self.assertEqual(proposal.read_bytes(), capture.encoded(expected) + b"\n")
+
+    def test_null_policy_bootstrap_keeps_preflight_and_pin_refusals(self):
+        self.save_inputs(null_policy=True)
+        config = json.loads(self.config.read_bytes())
+        proposal = self.base / "bad.json"
+        for bad in ("", False, {}, "A" * 64, "z" * 64, "a" * 63):
+            with self.subTest(pin=bad):
+                config["policy_sha256"] = bad
+                self.config.write_bytes(capture.encoded(config))
+                self.assertEqual(self.invoke("--write-policy-proposal", str(proposal), policy=False)[0], 2)
+        del config["policy_sha256"]
+        self.config.write_bytes(capture.encoded(config))
+        self.assertEqual(self.invoke("--write-policy-proposal", str(proposal), policy=False),
+                         (2, {"legacy_config_invalid": 1}))
+        self.assertFalse(proposal.exists())
+        self.save_inputs(null_policy=True)
+        Path(self.rows[1]["source_path"]).chmod(0o600)
+        Path(self.rows[1]["source_path"]).write_bytes(b"x" * self.rows[1]["size"])
+        Path(self.rows[1]["source_path"]).chmod(0o400)
+        self.assertEqual(self.invoke("--write-policy-proposal", str(proposal), policy=False)[0], 3)
+        self.assertFalse(proposal.exists())
+
+    def test_guide_bootstrap_contract(self):
+        guide = (Path(__file__).resolve().parents[2] / "docs" / "RECORDS-LEGACY-ADOPTION.md").read_text()
+        for text in ("legacy_policy_required", "\"policy_sha256\": null", "G approves", "pin", "enable"):
+            self.assertIn(text, guide)
+        self.assertLess(guide.index("Bootstrap order"), guide.index("Attended T8 order"))
+
+
+
+
+    RO = staticmethod(lambda: patch.object(adoption.os, "fstatvfs", return_value=type("V", (), {"f_flag": os.ST_RDONLY})()))
+
+    def make(self, name, data=b"report data", mode=0o400):
+        path = self.export / "received" / name
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        path.write_bytes(data)
+        path.chmod(mode)
+        return {"sha256": capture.digest(data), "size": len(data), "source_path": str(path)}
+
+    def report(self, rows, *extra, policy=False, root=None, null_policy=True):
+        self.rows = rows
+        self.save_inputs(null_policy=null_policy)
+        out, err = io.StringIO(), io.StringIO()
+        args = ["--root", str(root or self.base), "--config", str(self.config), "--manifest", str(self.manifest),
+                "--report-sources", *(["--policy", str(self.policy)] if policy else []), *extra]
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            status = adoption.main(args)
+        self.assertEqual(err.getvalue(), "")
+        for secret in (str(self.sources), "fictional", "report data", "received"):
+            self.assertNotIn(secret, out.getvalue())
+        lines = [json.loads(line) for line in out.getvalue().splitlines()]
+        return status, lines
+
+    def codes(self, rows):
+        status, lines = self.report(rows)
+        return status, [line["code"] for line in lines[:-1]], lines[-1]
+
+    def tree(self):
+        result = {}
+        for path in sorted(self.sources.rglob("*")) + sorted(self.base.rglob("*")):
+            info = path.lstat()
+            result[str(path)] = (info.st_mode, os.readlink(path) if path.is_symlink() else
+                                 (path.read_bytes() if path.is_file() else None))
+        return result
+
+    def test_report_each_source_rule_first_failure(self):
+        good = self.make("ok.bin")
+        hard = self.make("multi.bin")
+        os.link(hard["source_path"], str(self.export / "received" / "multi-alias"))
+        real = self.export / "received" / "realdir"
+        real.mkdir(mode=0o700)
+        inside = real / "inner.bin"
+        inside.write_bytes(b"inner")
+        inside.chmod(0o400)
+        (self.export / "received" / "linkdir").symlink_to(real)
+        (self.export / "received" / "leaflink").symlink_to(inside)
+        fifo = self.export / "received" / "pipe"
+        os.mkfifo(fifo, 0o600)
+        (self.export / "received" / "afile").write_bytes(b"x")
+        wrong = self.make("wrong.bin", b"abcdef")
+        rows = [
+            ("ok", good), ("source_missing", dict(good, source_path=str(self.export / "received" / "gone"))),
+            ("source_missing", dict(good, source_path=str(self.export / "received" / "nodir" / "f"))),
+            ("source_not_regular", dict(good, source_path=str(real))),
+            ("source_not_regular", dict(good, source_path=str(fifo))),
+            ("source_not_regular", dict(good, source_path=str(self.export / "received" / "afile" / "f"))),
+            ("source_symlink_component", dict(good, source_path=str(self.export / "received" / "linkdir" / "inner.bin"))),
+            ("source_symlink_component", dict(good, source_path=str(self.export / "received" / "leaflink"))),
+            ("source_multi_link", hard),
+            ("source_mode_bits", self.make("m640.bin", mode=0o640)),
+            ("source_mode_bits", self.make("m604.bin", b"other", mode=0o604)),
+            ("source_size_mismatch", dict(good, size=good["size"] + 1)),
+            ("source_size_mismatch", dict(good, size=good["size"] - 1)),
+            ("source_sha256_mismatch", dict(wrong, sha256="c" * 64)),
+        ]
+        with self.RO():
+            for code, row in rows:
+                self.assertEqual(self.codes([row])[2], {"totals": {code: 1}}, code)
+                self.assertEqual(self.codes([row])[1], [code])
+            with patch.object(adoption.os, "getuid", return_value=os.getuid() + 1):
+                self.assertEqual(adoption.diagnose_source(good), "source_not_owner")
+        self.assertEqual(self.codes([good])[1], ["source_not_readonly_fs"])
+
+    def test_report_lists_every_physical_row_and_exact_totals(self):
+        a, b = self.make("a.bin", b"aaa"), self.make("b.bin", b"bbb")
+        dup = dict(b, source_path=str(self.export / "received" / "b-copy.bin"))
+        Path(dup["source_path"]).write_bytes(b"bbb")
+        Path(dup["source_path"]).chmod(0o400)
+        missing = dict(a, source_path=str(self.export / "received" / "gone"))
+        rows = [missing, b, a, dup]
+        with self.RO():
+            status, lines = self.report(rows)
+        self.assertEqual(status, 1)
+        self.assertEqual([line["row"] for line in lines[:-1]], [1, 2, 3, 4])
+        self.assertEqual([line["code"] for line in lines[:-1]], ["source_missing", "ok", "ok", "ok"])
+        for line, row in zip(lines, rows):
+            self.assertEqual(set(line), {"row", "sha256_prefix", "code"})
+            self.assertEqual(line["sha256_prefix"], row["sha256"][:12])
+        self.assertEqual(lines[-1], {"totals": {"ok": 3, "source_missing": 1}})
+        config = json.loads(self.config.read_bytes())
+        self.assertEqual(len(adoption.parse_manifest(self.manifest.read_bytes(), config)), 2)
+        with self.RO():
+            self.assertEqual(self.report([b, a])[0], 0)
+
+    def test_report_precedence_and_source_races(self):
+        both = self.make("both.bin", mode=0o644)
+        os.link(both["source_path"], str(self.export / "received" / "both-alias"))
+        rw = dict(self.make("rw.bin"), sha256="d" * 64)
+        with self.RO():
+            self.assertEqual(self.codes([both])[1], ["source_multi_link"])
+        self.assertEqual(self.codes([rw])[1], ["source_not_readonly_fs"])
+        good = self.make("race.bin")
+        fifo = self.export / "received" / "fifo"
+        os.mkfifo(fifo, 0o600)
+        opened, closed, reads = [], [], []
+        real_open, real_close, real_read = os.open, os.close, os.read
+        def tracking_open(*a, **k):
+            fd = real_open(*a, **k)
+            opened.append((fd, k.get("dir_fd") is not None, a[1] & os.O_NOFOLLOW))
+            return fd
+        def tracking_close(fd):
+            closed.append(fd)
+            return real_close(fd)
+        def tracking_read(fd, n):
+            reads.append(n)
+            return real_read(fd, n)
+        with self.RO(), patch.object(adoption.os, "open", tracking_open), patch.object(adoption.os, "close", tracking_close), \
+                patch.object(adoption.os, "read", tracking_read):
+            self.assertEqual([adoption.diagnose_source(row) for row in (dict(good, source_path=str(fifo)), good)],
+                             ["source_not_regular", "ok"])
+        self.assertEqual(sorted(fd for fd, *_ in opened), sorted(closed))
+        self.assertTrue(all(nofollow for *_, nofollow in opened) and reads and max(reads) <= 1024 * 1024)
+        self.assertEqual(sum(1 for _fd, relative, _n in opened if not relative), 2)  # only the two anchors
+        values = iter(range(100))
+        with self.RO(), patch.object(adoption.capture, "fingerprint", side_effect=lambda _v: [next(values)]):
+            self.assertEqual(adoption.diagnose_source(good), "source_sha256_mismatch")
+
+    def test_report_malformed_manifest_refuses_before_any_source(self):
+        good = self.make("ok.bin")
+        line = lambda *v: "\t".join(map(str, v)) + "\n"
+        header = "sha256\tsize\tsource_path\n"
+        base = [good["sha256"], good["size"], good["source_path"]]
+        cases = {
+            "header": ("bad\n" + line(*base), "legacy_manifest_invalid"),
+            "hash": (header + line("X" * 64, 1, good["source_path"]), "legacy_adoption_refused"),
+            "size": (header + line(good["sha256"], "-1", good["source_path"]), "legacy_manifest_invalid"),
+            "control": (header + line(good["sha256"], 1, good["source_path"] + "\x01"), "legacy_manifest_invalid"),
+            "class": (header + line(good["sha256"], 1, str(self.export / "nope" / "f")), "legacy_source_class_unknown"),
+            "root": (header + line(good["sha256"], 1, "/etc/fictional"), "legacy_source_root_not_admitted"),
+            "dup": (header + line(*base) * 2, "legacy_manifest_duplicate"),
+            "conflict": (header + line(*base) + line(good["sha256"], 99, good["source_path"] + "2"), "legacy_manifest_conflict"),
+            "many": (header + "".join(
+                line(good["sha256"], good["size"], good["source_path"] + str(i)) for i in range(10001)), "legacy_manifest_invalid"),
+        }
+        for name, (text, code) in cases.items():
+            self.manifest.write_text(text)
+            self.manifest.chmod(0o600)
+            self.rows = []
+            self.save_inputs(null_policy=True)
+            self.manifest.write_text(text)
+            self.manifest.chmod(0o600)
+            value = json.loads(self.config.read_bytes())
+            value["manifest_sha256"] = capture.digest(text.encode())
+            self.config.chmod(0o600)
+            self.config.write_bytes(capture.encoded(value))
+            self.config.chmod(0o600)
+            out = io.StringIO()
+            with patch.object(adoption, "diagnose_source", side_effect=AssertionError), contextlib.redirect_stdout(out):
+                status = adoption.main(["--root", str(self.base), "--config", str(self.config),
+                                        "--manifest", str(self.manifest), "--report-sources"])
+            self.assertEqual((status, json.loads(out.getvalue())), (2, {code: 1}), name)
+        self.rows = [good]
+        self.save_inputs(null_policy=True)
+        self.manifest.write_text(self.manifest.read_text() + "\n")
+        self.manifest.chmod(0o600)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            status = adoption.main(["--root", str(self.base), "--config", str(self.config),
+                                    "--manifest", str(self.manifest), "--report-sources"])
+        self.assertEqual((status, json.loads(out.getvalue())), (2, {"legacy_manifest_hash_mismatch": 1}))
+
+    def test_report_null_policy_and_mixed_mode_matrix(self):
+        good = self.make("ok.bin")
+        with self.RO():
+            self.assertEqual(self.report([good])[0], 0)
+            self.assertEqual(self.report([good], null_policy=False, policy=True)[0], 0)
+        self.rows = [good]
+        def run(*extra, policy=False, null_policy=True):
+            self.save_inputs(null_policy=null_policy)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                status = adoption.main(["--root", str(self.base), "--config", str(self.config), "--manifest",
+                    str(self.manifest), *(["--policy", str(self.policy)] if policy else []), *extra])
+            return status, json.loads(out.getvalue().splitlines()[-1])
+        self.assertEqual(run(), (2, {"legacy_policy_required": 1}))
+        self.assertEqual(run("--apply"), (2, {"legacy_policy_required": 1}))
+        self.assertEqual(run("--report-sources", policy=True), (2, {"legacy_policy_required": 1}))
+        self.assertEqual(run("--report-sources", "--apply"), (2, {"legacy_config_invalid": 1}))
+        proposal = self.base / "proposal.json"
+        self.assertEqual(run("--report-sources", "--write-policy-proposal", str(proposal)), (2, {"legacy_config_invalid": 1}))
+        self.assertEqual(run("--report-sources", null_policy=False), (2, {"legacy_policy_required": 1}))
+        self.assertFalse(proposal.exists())
+
+    def test_report_privacy_no_writes_and_repeatability(self):
+        rows = [self.make("a.bin", b"aaa"), dict(self.make("b.bin", b"bbb"), size=1)]
+        elsewhere = self.sources / "no-such-root"
+        self.rows = rows
+        self.save_inputs(null_policy=True)
+        before = self.tree()
+        ban = patch.multiple(adoption, root_lock=unittest.mock.DEFAULT, preflight=unittest.mock.DEFAULT,
+                             apply_batch=unittest.mock.DEFAULT, write_proposal=unittest.mock.DEFAULT)
+        with self.RO(), ban as banned, patch.object(store, "ledger", side_effect=AssertionError), \
+                patch.object(store, "checked_path", side_effect=AssertionError):
+            first = self.report(rows, root=elsewhere)
+            second = self.report(rows, root=elsewhere)
+        self.assertEqual(first, second)
+        self.assertEqual(first[0], 1)
+        for mock in banned.values():
+            mock.assert_not_called()
+        self.assertFalse(elsewhere.exists())
+        self.assertEqual(self.tree(), before)
+
+    def test_report_empty_and_unavailable_sources_continue(self):
+        with self.RO():
+            self.assertEqual(self.report([]), (0, [{"totals": {}}]))
+        good = self.make("ok.bin")
+        gone = dict(good, source_path=str(self.export / "received" / "gone"))
+        with self.RO():
+            status, lines = self.report([gone, dict(gone, source_path=gone["source_path"] + "2")])
+        self.assertEqual((status, lines[-1]), (1, {"totals": {"source_missing": 2}}))
+        for name in ("fstatvfs", "read"):
+            with self.RO(), patch.object(adoption.os, name, side_effect=OSError("canary-path")):
+                self.assertEqual(adoption.diagnose_source(good), "source_missing", name)
+        later = self.make("later.bin", b"later")
+        with patch.object(adoption.os, "fstatvfs", side_effect=OSError("canary-path")):
+            status, lines = self.report([good, later])
+        self.assertEqual((status, lines[-1]), (1, {"totals": {"source_missing": 2}}))
+
+    def test_old_modes_and_parent_proposal_are_unchanged(self):
+        self.save_inputs()
+        status, counts = self.invoke()
+        self.assertEqual((status, counts["eligible"], counts["hash_mismatch"]), (0, 3, 0))
+        self.assertEqual(self.invoke("--apply")[1], {"local_capture_requires_readonly_source": 1})
+        Path(self.rows[0]["source_path"]).chmod(0o640)
+        self.assertEqual(self.invoke(), (2, {"legacy_source_unsafe": 1}))
+        Path(self.rows[0]["source_path"]).chmod(0o400)
+        proposal = self.base / "p.json"
+        self.save_inputs(null_policy=True)
+        self.assertEqual(self.invoke("--write-policy-proposal", str(proposal), policy=False)[0], 0)
+        self.assertTrue(proposal.exists())
+
+    def test_guide_report_sources_contract(self):
+        guide = (Path(__file__).resolve().parents[2] / "docs" / "RECORDS-LEGACY-ADOPTION.md").read_text()
+        for code in ("--report-sources", "source_missing", "source_not_regular", "source_symlink_component",
+                     "source_not_owner", "source_multi_link", "source_mode_bits", "source_not_readonly_fs",
+                     "source_size_mismatch", "source_sha256_mismatch", "sha256_prefix", "current observation"):
+            self.assertIn(code, guide)
+
+    def build(self, out=None, *, config=None):
+        out = out or self.sources / "out" / "manifest-out.tsv"
+        out.parent.mkdir(mode=0o700, exist_ok=True)
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            status = adoption.main(["manifest", "--root", str(self.base), "--config", str(config or self.config),
+                                    "--out", str(out)])
+        self.assertNotIn(str(self.base), buffer.getvalue())
+        self.assertNotIn("fictional", buffer.getvalue())
+        return status, json.loads(buffer.getvalue()), out
+
+    def tsv_rows(self, out):
+        lines = out.read_text().splitlines()
+        self.assertEqual(lines[0], "sha256\tsize\tsource_path")
+        return [tuple(line.split("\t")) for line in lines[1:]]
+
+    def test_manifest_matches_exact_pending_originals(self):
+        copy = self.supplement / "copy.txt"
+        copy.write_bytes(b"synthetic original")  # a second path for original 0
+        copy.chmod(0o400)
+        stranger = self.export / "received" / "nobody.pdf"
+        stranger.write_bytes(b"synthetic pdx")  # same size as the pdf original, other digest
+        stranger.chmod(0o400)
+        status, counts, out = self.build()
+        self.assertEqual((status, counts), (0, {"matched": 4, "duplicates": 1, "unmatched_pending": 0, "skipped_unsafe": 0}))
+        wanted = sorted((r["sha256"], str(r["size"]), r["source_path"])
+                        for i, r in enumerate(self.rows) if i not in (3, 4))
+        self.assertEqual(self.tsv_rows(out), wanted)  # json, csv left out; first sorted path wins
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+        Path(self.rows[2]["source_path"]).unlink()  # a pending original with no file is counted
+        self.assertEqual(self.build(self.sources / "out" / "again.tsv")[1],
+                         {"matched": 3, "duplicates": 1, "unmatched_pending": 1, "skipped_unsafe": 0})
+
+    def test_manifest_leaves_out_already_bound_originals(self):
+        from types import SimpleNamespace
+        with patch.object(capture.os, "fstatvfs", return_value=SimpleNamespace(f_flag=os.ST_RDONLY)):
+            self.assertEqual(self.invoke("--apply")[0], 0)
+        status, counts, out = self.build()
+        self.assertEqual((status, counts), (0, {"matched": 1, "duplicates": 0, "unmatched_pending": 0, "skipped_unsafe": 0}))
+        self.assertEqual([row[0] for row in self.tsv_rows(out)], [self.rows[5]["sha256"]])
+
+    def test_manifest_skips_and_counts_unsafe_entries(self):
+        received = self.export / "received"
+        (received / "link.txt").symlink_to(self.rows[0]["source_path"])
+        os.mkfifo(received / "pipe.bin", 0o600)
+        loose = received / "loose.pdf"
+        loose.write_bytes(b"synthetic pdf")
+        loose.chmod(0o644)
+        (self.export / "stray.txt").write_bytes(b"x")  # directly under the export root: no class
+        (self.export / "stray.txt").chmod(0o600)
+        (self.supplement / "dirlink").symlink_to(self.export, target_is_directory=True)
+        status, counts, out = self.build()
+        self.assertEqual((status, counts), (0, {"matched": 4, "duplicates": 0, "unmatched_pending": 0, "skipped_unsafe": 5}))
+        self.assertNotIn("link", out.read_text())
+
+    def test_manifest_nested_checkouts_are_never_listed_or_read(self):
+        project = self.export / "received" / "project"
+        project.mkdir(mode=0o700)
+        original = Path(self.rows[1]["source_path"])
+        source = project / "input.pdf"
+        original.rename(source)
+        marker = project / ".git"
+        real_listdir, real_open = os.listdir, os.open
+        identity = (project.stat().st_dev, project.stat().st_ino)
+
+        def guarded_listdir(fd):
+            info = os.fstat(fd)
+            self.assertNotEqual((info.st_dev, info.st_ino), identity, "checkout listed")
+            return real_listdir(fd)
+
+        def guarded_open(name, *args, **kwargs):
+            self.assertNotIn(str(name), (".git", "input.pdf", str(source)), "checkout content opened")
+            return real_open(name, *args, **kwargs)
+
+        for kind in ("directory", "file"):
+            with self.subTest(marker=kind):
+                if kind == "directory":
+                    marker.mkdir(mode=0o700)
+                else:
+                    marker.write_text("gitdir: synthetic-unused\n")
+                try:
+                    with patch.object(adoption.os, "listdir", guarded_listdir), \
+                            patch.object(adoption.os, "open", guarded_open):
+                        status, counts, out = self.build(self.sources / "out" / (kind + ".tsv"))
+                    self.assertEqual((status, counts), (0, {"matched": 3, "duplicates": 0,
+                        "unmatched_pending": 1, "skipped_unsafe": 1}))
+                    self.assertNotIn(self.rows[1]["sha256"], [row[0] for row in self.tsv_rows(out)])
+                finally:
+                    marker.rmdir() if kind == "directory" else marker.unlink()
+
+    def test_manifest_checkout_roots_and_ancestors_refuse_before_listing(self):
+        real_listdir = os.listdir
+        forbidden = set()
+
+        def guarded_listdir(fd):
+            info = os.fstat(fd)
+            self.assertNotIn((info.st_dev, info.st_ino), forbidden, "checkout root listed")
+            return real_listdir(fd)
+
+        for parent in (self.export, self.supplement, self.sources):
+            for kind in ("directory", "file"):
+                with self.subTest(parent=parent.name, marker=kind):
+                    forbidden = {(path.stat().st_dev, path.stat().st_ino)
+                                 for path in (self.export, self.supplement)
+                                 if path.is_relative_to(parent)}
+                    marker = parent / ".git"
+                    if kind == "directory":
+                        marker.mkdir(mode=0o700)
+                    else:
+                        marker.write_text("gitdir: synthetic-unused\n")
+                    try:
+                        with patch.object(adoption.os, "listdir", guarded_listdir):
+                            status, counts, out = self.build()
+                        self.assertEqual((status, counts), (2, {"legacy_source_unsafe": 1}))
+                        self.assertFalse(out.exists())
+                    finally:
+                        marker.rmdir() if kind == "directory" else marker.unlink()
+
+    def test_manifest_size_limit_and_empty_result(self):
+        with patch.dict(capture.folder.LIMITS, source_bytes=5):
+            status, counts, out = self.build()
+        self.assertEqual((status, counts), (0, {"matched": 0, "duplicates": 0, "unmatched_pending": 4, "skipped_unsafe": 6}))
+        self.assertEqual(out.read_text(), "sha256\tsize\tsource_path\n")
+        self.assertEqual(adoption.parse_manifest(out.read_bytes(), json.loads(self.config.read_bytes())), [])
+
+    def test_manifest_round_trips_through_parse_and_dry_run(self):
+        status, counts, out = self.build()
+        config = json.loads(self.config.read_bytes())
+        parsed = adoption.parse_manifest(out.read_bytes(), config)
+        self.assertEqual(len(parsed), counts["matched"])
+        self.rows = [row for row, _kind in parsed]
+        self.save_inputs()
+        self.assertEqual(self.manifest.read_bytes(), out.read_bytes())
+        status, dry = self.invoke()
+        self.assertEqual((status, dry["eligible"], dry["format_unknown"]), (0, 3, 1))
+
+    def test_manifest_refuses_existing_output_and_unsafe_locations(self):
+        out = self.sources / "out" / "manifest-out.tsv"
+        out.parent.mkdir(mode=0o700)
+        out.write_text("keep")
+        self.assertEqual(self.build(out)[:2], (2, {"legacy_adoption_refused": 1}))
+        self.assertEqual(out.read_text(), "keep")
+        link = self.sources / "out" / "dangling.tsv"
+        link.symlink_to(self.sources / "out" / "nowhere")
+        self.assertEqual(self.build(link)[:2], (2, {"legacy_adoption_refused": 1}))
+        self.assertFalse((self.sources / "out" / "nowhere").exists())
+        inside = self.export / "received" / "inventory.tsv"
+        self.assertEqual(self.build(inside)[:2], (2, {"legacy_adoption_refused": 1}))
+        self.assertFalse(inside.exists())
+        with patch.object(capture.folder, "private_file", side_effect=OSError("canary-path")):
+            self.assertEqual(self.build(self.sources / "out" / "failed.tsv")[:2], (2, {"legacy_adoption_refused": 1}))
+        self.assertFalse((self.sources / "out" / "failed.tsv").exists())
+
+    def test_manifest_output_is_private_under_open_umask(self):
+        old = os.umask(0)
+        try:
+            out = self.build()[2]
+        finally:
+            os.umask(old)
+        self.assertEqual(out.stat().st_mode & 0o777, 0o600)
+
+    def test_manifest_opens_ledger_read_only_and_refuses_bad_inputs(self):
+        before = self.helper.database.read_bytes()
+        opened = []
+        real = store.ledger
+        def spy(path, *, readonly=False):
+            opened.append(readonly)
+            return real(path, readonly=readonly)
+        with patch.object(adoption.store, "ledger", spy):
+            self.assertEqual(self.build()[0], 0)
+        self.assertEqual(opened, [True])
+        self.assertEqual(self.helper.database.read_bytes(), before)
+        self.config.chmod(0o644)
+        out = self.sources / "out" / "bad.tsv"
+        self.assertEqual(self.build(out)[:2], (2, {"legacy_input_mode": 1}))
+        self.assertFalse(out.exists())
+        self.save_inputs()
+        self.export.rename(self.sources / "moved")
+        self.assertEqual(self.build(out)[:2], (2, {"legacy_config_invalid": 1}))
+        self.assertFalse(out.exists())
+
+    def test_guide_manifest_contract(self):
+        guide = (Path(__file__).resolve().parents[2] / "docs" / "RECORDS-LEGACY-ADOPTION.md").read_text()
+        for word in ("legacy_adoption manifest", "unmatched_pending", "skipped_unsafe", "duplicates", "0600"):
+            self.assertIn(word, guide)
