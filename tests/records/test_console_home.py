@@ -81,6 +81,18 @@ class Home(unittest.TestCase):
         for text in ("BODY-SENTINEL-1", "person@example.invalid", "PACKET-TEXT-SENTINEL-1", "LINE-TEXT-SENTINEL", "@", "<form"):
             self.assertNotIn(text, page)
 
+    def test_approval_anchor_banner_follows_the_heading_and_defaults_to_unknown(self):
+        model = self.model()  # live source: no pinned export
+        self.assertEqual((model["approval_anchor"], model["approval_anchor_pinned"]), ("unknown", False))
+        page = home.render_home(model, "")
+        fragment = '<p role="status" id="approval-anchor">Approval anchor state: unknown (no pinned export).</p>'
+        self.assertLess(page.index("<h1>Home</h1>"), page.index(fragment))
+        self.assertLess(page.index(fragment), page.index("need your decision"))
+        old = {k: v for k, v in model.items() if not k.startswith("approval_anchor")}  # a model without the new fields
+        page = home.render_home(old, "")
+        self.assertIn("unknown — approvals are recorded but DEFERRED until the trust anchor is available.", page)
+        self.assertNotIn("approvals verify", page)
+
     def test_layout_labels_and_review_links(self):
         model = self.model()
         rows = home.decision_rows(model, NOW.date())

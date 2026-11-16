@@ -1,7 +1,7 @@
 """Read-only outgoing switches for the private loopback console; no transports."""
 import os
 
-from . import console_layout, console_snapshot, followup_clock, mail_send, public_packets, public_updates
+from . import approval_anchor_status, console_layout, console_snapshot, followup_clock, mail_send, public_packets, public_updates
 from .outcomes.reading import esc
 
 
@@ -11,7 +11,9 @@ def _row(label, value):
 
 def render(project, send_config=None, drafts_config=None, source=None):
     source = source or console_snapshot.LiveSource(project)
-    out = ['<h1>Settings</h1><p>Read-only. Changes are owner-only steps outside this page.</p>']
+    out = ['<h1>Settings</h1><p>Read-only. Changes are owner-only steps outside this page.</p>'
+           '<p role="status" id="approval-anchor">%s</p>' % esc(approval_anchor_status.paragraph(
+               approval_anchor_status.from_source(source), approval_anchor_status.pinned(source)))]
     config = None
     if send_config is None:
         out.append(_row('Send config', 'not given to the console'))
