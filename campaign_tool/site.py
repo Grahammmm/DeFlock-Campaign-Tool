@@ -2410,7 +2410,7 @@ class Site:
                         for f, c, _ in rows)
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
                 f'<h2>{self.t("heading.corrections")}</h2></div><p>{self.t("intro.corrections")}</p></div>'
-                + policy_html(self.site["contact_email"])
+                + policy_html(self.site["contact_email"], labels=self.labels)
                 + (f'<ul>{items}</ul>' if items else f'<p>{self.t("notice.no_corrections")}</p>') + self.correction_counts_html() + '</section>\n')
         return self.page("findings", self.labels["title.corrections"], self.labels["title.corrections_description"], "/corrections.html", main)
 

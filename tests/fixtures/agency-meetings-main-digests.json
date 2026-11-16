@@ -1,5 +1,5 @@
 {
- "_note": "SHA-256 of every public file built by checked main 8db44dde (before DF1622-10) from a temp copy of examples/fictional-campaign, build day 2026-10-20. Scenarios mirror tests/test_site_agency_meetings_ics.py SCENARIOS. Digests are stored as eight space-separated 8-hex groups so the credential scan does not flag them; the test joins the groups.",
+ "_note": "SHA-256 of every public file built by checked main 8db44dde (before DF1622-10) from a temp copy of examples/fictional-campaign, build day 2026-10-20. Scenarios mirror tests/test_site_agency_meetings_ics.py SCENARIOS. Digests are stored as eight space-separated 8-hex groups so the credential scan does not flag them; the test joins the groups. DF0652-09 amendment 2026-11-15, builder base 67d04d8d: only corrections.html in all four scenarios at the same build day and normalization; all other historical digests retained.",
  "day": "2026-10-20",
  "scenarios": {
   "default": {
@@ -11,7 +11,7 @@
    "agency-cards.js": "95d2218d a220b6ec 4ecd3033 42c0aaa0 90f5ea49 99b0ffd0 5b3454c4 6719ca00",
    "app.js": "ab63767d e14fee87 03a11531 e24ebcfc 4a8b845f 98620877 2f242ef8 d447db9e",
    "cameras.html": "e45aed1f 3d6680fe 3d85af8b 8ac2dac4 a66ad050 ddd150d3 5bcdd97f 5f1caba3",
-   "corrections.html": "bef03b3e 16c1af4b 02b023ea 31da7afd f318383e 6e890a58 4dbefd2f cbb43d38",
+   "corrections.html": "c9d3c21c b8af057e 81b35bcc 1a1bedf1 76fb6233 8e4b330f 88b13ab7 d78aa887",
    "corrections.xml": "23f51eff 261d70f0 837a0dcb 1c463558 e1420602 c32b9176 4b3b4abe f963f0ac",
    "data.html": "b681588d 76ad11ac 7cd783b2 48ba3ab8 15b30076 57b8afb8 59feab6f 5da8ea03",
    "data/agencies.csv": "de226f37 600fdaac 36bacba1 8473551b 0a724fa8 9dcd3c8a 743a7442 cf1bb477",
@@ -61,7 +61,7 @@
    "agency-cards.js": "95d2218d a220b6ec 4ecd3033 42c0aaa0 90f5ea49 99b0ffd0 5b3454c4 6719ca00",
    "app.js": "ab63767d e14fee87 03a11531 e24ebcfc 4a8b845f 98620877 2f242ef8 d447db9e",
    "cameras.html": "e45aed1f 3d6680fe 3d85af8b 8ac2dac4 a66ad050 ddd150d3 5bcdd97f 5f1caba3",
-   "corrections.html": "bef03b3e 16c1af4b 02b023ea 31da7afd f318383e 6e890a58 4dbefd2f cbb43d38",
+   "corrections.html": "c9d3c21c b8af057e 81b35bcc 1a1bedf1 76fb6233 8e4b330f 88b13ab7 d78aa887",
    "corrections.xml": "23f51eff 261d70f0 837a0dcb 1c463558 e1420602 c32b9176 4b3b4abe f963f0ac",
    "data.html": "36b83406 cb88304c d96b3907 116464d2 6ea31ee0 2aa9d344 d9e31783 b419aead",
    "data/agencies.csv": "de226f37 600fdaac 36bacba1 8473551b 0a724fa8 9dcd3c8a 743a7442 cf1bb477",
@@ -114,7 +114,7 @@
    "agency-cards.js": "95d2218d a220b6ec 4ecd3033 42c0aaa0 90f5ea49 99b0ffd0 5b3454c4 6719ca00",
    "app.js": "ab63767d e14fee87 03a11531 e24ebcfc 4a8b845f 98620877 2f242ef8 d447db9e",
    "cameras.html": "e45aed1f 3d6680fe 3d85af8b 8ac2dac4 a66ad050 ddd150d3 5bcdd97f 5f1caba3",
-   "corrections.html": "bef03b3e 16c1af4b 02b023ea 31da7afd f318383e 6e890a58 4dbefd2f cbb43d38",
+   "corrections.html": "c9d3c21c b8af057e 81b35bcc 1a1bedf1 76fb6233 8e4b330f 88b13ab7 d78aa887",
    "corrections.xml": "23f51eff 261d70f0 837a0dcb 1c463558 e1420602 c32b9176 4b3b4abe f963f0ac",
    "data.html": "73735241 db0a3719 ace025f2 99d079b0 7166f5c4 c762d9ff 8885e4c3 1e9962fc",
    "data/agencies.csv": "de226f37 600fdaac 36bacba1 8473551b 0a724fa8 9dcd3c8a 743a7442 cf1bb477",
@@ -164,7 +164,7 @@
    "agency-cards.js": "95d2218d a220b6ec 4ecd3033 42c0aaa0 90f5ea49 99b0ffd0 5b3454c4 6719ca00",
    "app.js": "ab63767d e14fee87 03a11531 e24ebcfc 4a8b845f 98620877 2f242ef8 d447db9e",
    "cameras.html": "d5164408 4cd3d530 b02f63f3 971b7fe2 91148ab5 04f17d4c 003e34ff c7e1433e",
-   "corrections.html": "564d1339 d72461bf 1a2405af 4c901634 538a8cdf 89934d8a c28d5cf1 df7656e2",
+   "corrections.html": "bf809ed6 5be14098 1679dd10 ae5739de 4653ecb5 647e2a9d a89ed9be ebafc1a3",
    "corrections.xml": "23f51eff 261d70f0 837a0dcb 1c463558 e1420602 c32b9176 4b3b4abe f963f0ac",
    "data.html": "e697e0ad cc39e23c 91f5d958 dd7e6d9c d1658fb3 4e59f47f a4d63748 4cb2cb79",
    "data/agencies.csv": "de226f37 600fdaac 36bacba1 8473551b 0a724fa8 9dcd3c8a 743a7442 cf1bb477",

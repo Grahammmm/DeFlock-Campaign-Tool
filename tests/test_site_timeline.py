@@ -608,7 +608,9 @@ class TimelineTests(unittest.TestCase):
 MAIN_TIMELINE_DIGEST = "efa29cd2bb4b6da62d6e72a69410785a5dc93ddd8bc6700954e5f6295bf55abc"  # pragma: allowlist secret -- public rendered-file SHA-256
 # DF1109-10: the populated build now writes data/officials.*, so data.html and data/datapackage.json list them (main pin 7bd8a5ce).
 # DF1109-09 recaptured MAIN_POPULATED_OTHER_DIGEST on top of that: its tree holds search.html/search.js, which now also search agencies and meetings.
-MAIN_POPULATED_OTHER_DIGEST = "dd95244327a919543f7086328004ed586f44c9070f7fbd26d71e0d3ae8a694c6"  # pragma: allowlist secret -- public rendered-file SHA-256
+# DF0652-09 amendment 2026-11-15, builder base 67d04d8d: only corrections.html changes in
+# the populated TODAY tree; preserve timeline exclusion and packet normalization.
+MAIN_POPULATED_OTHER_DIGEST = "046cc1b4365fb4918cbd4ea51dc20685c20c11a75b857e40a0ae9c3a4cbbda59"  # pragma: allowlist secret -- public rendered-file SHA-256
 COUNCIL = "ca-cedar-city-council"
 NEW_KINDS = ("finding_update", "statement", "coverage")
 
