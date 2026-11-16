@@ -17,6 +17,8 @@ from tests.test_site_packet import strip_packet_counterevidence
 
 TODAY = date(2026, 10, 1)
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "site-structured-data" / "no-base-main.json"
+# DF0652-09 amendment 2026-11-15, builder base 67d04d8d: only corrections.html at TODAY,
+# both omitted/null base_url scenarios, same packet normalization; all other historical digests retained.
 OPEN = '<script type="application/ld+json">'
 BLOCK = re.compile(r'<script type="application/ld\+json">(.*?)</script>', re.S)
 FINDING = "findings/cedar-policy-posted.html"

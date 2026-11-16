@@ -106,6 +106,44 @@ class Relink(unittest.TestCase):
         self.assertEqual(console_apply.outcome(self.project, self.relink_entry(row, "req-b", "relink", sig)), "APPLIED")  # replay
         self.assertEqual(len(self.lines()), 2)
 
+    def test_signed_relink_separates_legacy_final_line_without_lf(self):
+        self.tie_first("req-a")
+        (original,) = self.lines()
+        self.links.write_bytes(original)  # a valid legacy final line need not end in LF
+        self.assertEqual(unmatched.read_links(self.project), ({self.message: ("caltrans", "req-a")}, 0))
+        row, current = self.wrong()
+        self.assertEqual(current, line_hash(original))
+        signed = self.relink_entry(row, "req-b", "legacy-relink")
+        self.assertEqual(console_apply.outcome(self.project, signed), "APPLIED")
+        self.assertEqual(unmatched.read_links(self.project), ({self.message: ("caltrans", "req-b")}, 0))
+        old, new = self.lines()
+        self.assertEqual(old, original)
+        self.assertEqual(json.loads(new)["supersedes"], current)
+        kept = self.links.read_bytes()
+        self.assertEqual(console_apply.outcome(self.project, signed), "APPLIED")
+        self.assertEqual(self.links.read_bytes(), kept)
+        self.assertEqual(self.run_outputs("next-run")[0], 0)
+        item = json.loads((self.outcomes("next-run") / "received-items.json").read_text())["items"][0]
+        self.assertEqual((item["agency_id"], item["request_id"]), ("caltrans", "req-b"))
+
+    def test_unterminated_line_separator_counts_toward_size_cap(self):
+        self.tie_first("req-a")
+        (original,) = self.lines()
+        self.links.write_bytes(original)
+        fingerprint = line_hash(original)
+        replacement = {"schema": unmatched.LINK_SCHEMA, "message_sha256": self.message, "request_id": "req-b",
+                       "agency_id": "caltrans", "actor": "operator", "at": "2041-02-03T00:00:00Z", "supersedes": fingerprint}
+        expected = original + b"\n" + (unmatched._canon(replacement) + "\n").encode()
+        with mock.patch.object(unmatched.time, "strftime", return_value=replacement["at"]):
+            with mock.patch.object(unmatched, "MAX_FILE", len(expected) - 1):
+                with self.assertRaisesRegex(ValueError, "^message_links_file$"):
+                    unmatched.append_link(self.project, self.message, "caltrans", "req-b", "operator", supersedes=fingerprint)
+                self.assertEqual(self.links.read_bytes(), original)
+            with mock.patch.object(unmatched, "MAX_FILE", len(expected)):
+                self.assertTrue(unmatched.append_link(self.project, self.message, "caltrans", "req-b", "operator", supersedes=fingerprint))
+                self.assertEqual(self.links.read_bytes(), expected)
+                self.assertEqual(unmatched.read_links(self.project), ({self.message: ("caltrans", "req-b")}, 0))
+
     def test_changed_current_line_makes_queued_relink_stale(self):
         self.tie_first("req-a")
         row, h1 = self.wrong()
@@ -595,7 +633,7 @@ class Timeline(unittest.TestCase):
                 pass
         base = Export()
         base.setUp()
-        base.addCleanup(base.doCleanups)
+        self.addCleanup(base.doCleanups)  # base is never run by unittest; its setUp patches must be undone here
         unmatched.append_link(base.live, self.m1, "alpha-pd", "L-R-1", "t")
         dest, _, model = base.export()
         self.assertEqual(model["queue.json"]["message_links"], unmatched.link_fingerprints(base.live))

@@ -152,7 +152,7 @@ def append_link(project, message_sha256, agency_id, request_id, actor, *, supers
                 "agency_id": agency_id, "actor": str(actor)[:80], "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
         if supersedes is not None:
             line["supersedes"] = supersedes
-        data = (_canon(line) + "\n").encode()
+        data = (b"\n" if raw and not raw.endswith(b"\n") else b"") + (_canon(line) + "\n").encode()
         _need(len(raw) + len(data) <= MAX_FILE, "message_links_file")
         view = memoryview(data)
         while view:
@@ -189,17 +189,60 @@ def _sender_domain(db, sha):
     return None
 
 
-def _candidates(db, agency_id, domain):
-    base = ("SELECT r.id,r.agency_id FROM requests r %s ORDER BY (r.determination_at IS NOT NULL OR r.production_at IS NOT NULL), "
-            "r.submitted_at DESC, r.id LIMIT %d")
+def _subject(db, sha):
+    """The one Subject string of the message's verified stored headers, else None (no mail row, malformed or unbound
+    headers, parser defects, a duplicate or non-string Subject). Same mail relation as _sender_domain; read-only."""
+    if not sha:
+        return None
+    rows = db.execute("SELECT eml_sha256,headers FROM mail_messages WHERE eml_sha256=? ORDER BY id", (sha,)).fetchall()
+    if not rows:
+        rows = db.execute("SELECT m.eml_sha256,m.headers FROM occurrences o JOIN occurrences p ON o.parent_occurrence_id=p.id "
+                          "JOIN mail_messages m ON m.id=p.id WHERE o.original_sha256=? ORDER BY m.id", (sha,)).fetchall()
+    for eml, headers in rows[:1]:
+        try:
+            data = json.loads(headers)
+            if (data.get("schema") != "verified-eml-headers-v1" or data.get("source_original_sha256") != eml
+                    or data.get("parser_defects") != []):
+                return None
+            values = [v for k, v in data["fields"] if str(k).lower() == "subject"]
+        except (ValueError, TypeError, AttributeError, KeyError, RecursionError):
+            return None
+        return values[0] if len(values) == 1 and isinstance(values[0], str) else None
+    return None
+
+
+def _candidates(db, agency_id, domain, message_sha256=None):
+    """Up to MAX_CANDIDATES {request_id, agency_id, why}: requests whose own external_ref (3-40 chars) is a whole token
+    of the message Subject first, then the agency's requests, else requests of the agency whose portal host matches the
+    sender domain. A request found twice keeps its strongest reason."""
+    order = "ORDER BY (r.determination_at IS NOT NULL OR r.production_at IS NOT NULL), r.submitted_at DESC, r.id"
+    found = {}
+    subject = _subject(db, message_sha256)
+    if subject:
+        for rid, agency, ref in db.execute("SELECT r.id,r.agency_id,r.external_ref FROM requests r " + order).fetchall():
+            if (isinstance(ref, str) and 3 <= len(ref) <= 40
+                    and re.search(r"(?<!\w)" + re.escape(ref) + r"(?!\w)", subject, re.IGNORECASE)):
+                found.setdefault(rid, {"request_id": rid, "agency_id": agency, "why": "reference %s in the subject" % ref})
+    limit = MAX_CANDIDATES + len(found)
     if agency_id:
-        rows = db.execute(base % ("WHERE r.agency_id=?", MAX_CANDIDATES), (agency_id,)).fetchall()
+        rows = db.execute("SELECT r.id,r.agency_id FROM requests r WHERE r.agency_id=? %s LIMIT %d" % (order, limit),
+                          (agency_id,)).fetchall()
+        why = "same agency"
     elif domain:
-        rows = db.execute(base % ("JOIN agencies a ON a.id=r.agency_id WHERE a.portal_host IS NOT NULL AND a.portal_host!='' "
-                                  "AND (a.portal_host=? OR ? LIKE '%.'||a.portal_host)", MAX_CANDIDATES), (domain, domain)).fetchall()
+        rows = db.execute("SELECT r.id,r.agency_id FROM requests r JOIN agencies a ON a.id=r.agency_id WHERE "
+                          "a.portal_host IS NOT NULL AND a.portal_host!='' AND (a.portal_host=? OR ? LIKE '%%.'||a.portal_host) "
+                          + order + " LIMIT %d" % limit, (domain, domain)).fetchall()
+        why = "portal domain"
     else:
-        rows = []
-    return [{"request_id": r[0], "agency_id": r[1]} for r in rows]
+        rows, why = [], None
+    for rid, agency in rows:
+        found.setdefault(rid, {"request_id": rid, "agency_id": agency, "why": why})
+    return list(found.values())[:MAX_CANDIDATES]
+
+
+def _choice_lines(options):
+    return ["%d. request %s (agency %s)%s" % (n, c["request_id"], c["agency_id"], " \u2014 " + c["why"] if c.get("why") else "")
+            for n, c in enumerate(options, 1)]
 
 
 def collect(db, received, *, run_id):
@@ -215,7 +258,7 @@ def collect(db, received, *, run_id):
         domain = _sender_domain(db, sha)
         entries.append({"message_sha256": sha, "received_date": (item.get("received_at") or "")[:10] or None,
                         "sender_domain": domain, "attachment_count": attachments,
-                        "candidates": _candidates(db, item.get("agency_id"), domain),
+                        "candidates": _candidates(db, item.get("agency_id"), domain, sha),
                         "agency_id": item.get("agency_id")})
     entries.sort(key=lambda e: e["message_sha256"])
     return {"schema": SCHEMA, "run_id": run_id, "review_required": True, "messages": entries}
@@ -227,7 +270,7 @@ def _draft(entry):
              "Message %s received %s from %s with %d attachment(s). It could not be tied to a request."
              % (entry["message_sha256"][:12], entry["received_date"] or "on an unknown date",
                 entry["sender_domain"] or "an unknown sender", entry["attachment_count"])]
-    lines += ["%d. request %s (agency %s)" % (n, c["request_id"], c["agency_id"]) for n, c in enumerate(options, 1)]
+    lines += _choice_lines(options)
     if not options:
         lines.append("No candidate request was found; you can only mark it as not a response.")
     return {"item_id": entry["message_sha256"], "agency_id": entry["agency_id"] or "unmatched", "request_id": "unmatched",
@@ -242,7 +285,7 @@ def _relink_draft(current, supersedes, entry):
              "Message %s is currently tied to request %s (agency %s). Approving a different request replaces that tie from the "
              "next run on; the earlier link line and the message's evidence are kept." % (
                  entry["message_sha256"][:12], current["request_id"], current["agency_id"])]
-    lines += ["%d. request %s (agency %s)" % (n, c["request_id"], c["agency_id"]) for n, c in enumerate(options, 1)]
+    lines += _choice_lines(options)
     if not options:
         lines.append("No other candidate request was found; you can only leave the tie as it is.")
     return {"item_id": entry["message_sha256"], "agency_id": current["agency_id"], "request_id": "unmatched",

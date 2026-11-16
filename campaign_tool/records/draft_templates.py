@@ -177,7 +177,7 @@ def render(item):
             sent_on=EDIT.format("date the request was sent"), channel=EDIT.format("channel"),
             denied_on=item.get("received_at") or EDIT.format("received date not recorded"), status="draft",
             stated=f"The agency wrote, as quoted from page {item['kind_basis']['page']}:\n{quoted}\n\n",
-            first_ask=kit_track.ASK_REST, citations="")
+            first_ask=kit_track.ASK_REST, former_note="", current_ask="", citations="")
         refs = _references(findings)
         text = (_header(item, kind, why) + body
                 + ("\nReferences supplied with the item (review required):\n" + "\n".join(refs) + "\n" if refs else "")

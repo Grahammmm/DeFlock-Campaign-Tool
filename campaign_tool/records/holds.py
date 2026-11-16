@@ -22,6 +22,8 @@ import stat
 import sys
 
 from . import native_extract as ne
+from . import preserve_routes
+from .runtime_fds import receive_runtime_fds, RuntimeSocketError, RUNTIME_SOCKET_UNSAFE
 
 SCHEMA = "records-holds-v1"
 RUN_ID_RE = re.compile(r"^run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}$")
@@ -97,8 +99,11 @@ def latest_run_id(processing):
     return max((name for name in names if RUN_ID_RE.fullmatch(name)), default=None)
 
 
-def collect(processing, listed):
-    """Every held extract document, coded with the run outcome list ``listed`` when given; raises ``Unreadable``."""
+def collect(processing, listed, *, router=None):
+    """Every held extract document, coded with the run outcome list ``listed`` when given; raises ``Unreadable``.
+
+    ``router`` (``preserve_routes.Classifier``, ``--routes`` only) adds ``route`` and ``clearing_command`` to
+    each PRESERVE_PENDING item inside the same snapshot."""
     from .run_stages import LedgerBusy, snapshot_ro
     items = []
     try:
@@ -114,6 +119,9 @@ def collect(processing, listed):
                                             "AND stage='preserve'", (subject,))
                     item.update(code=ne.PRESERVE_PENDING, first_run=_stamp(seen[0]["first_seen_at"]),
                                 detail_code="preserve_" + _code(state[0]["status"] if state else "missing"))
+                    if router is not None:
+                        route = router.route(snapshot, subject)
+                        item.update(route=route, clearing_command=preserve_routes.clearing_command(route))
                 else:
                     outcome, row, holds = _alert_hold(snapshot, subject)
                     run = listed.get(subject) if listed else None
@@ -170,14 +178,21 @@ def compare(counts, needs, extract_needs):
     return mismatches, {c: n for (s, c), n in sorted(needs.items()) if s == "adoption" and c in ADOPTION}
 
 
-def build(project, report_path=None, code=None):
-    """The document; baseline: ``--report``'s needs_g, else the newest run outcome list (its needs_g source)."""
+def build(project, report_path=None, code=None, *, routes=False, mail_history=None):
+    """The document; baseline: ``--report``'s needs_g, else the newest run outcome list (its needs_g source).
+
+    ``routes`` (with ``mail_history``) adds the clearing route of each PRESERVE_PENDING original and
+    ``route_counts`` over all of them, before ``code`` filters the items."""
     from .run_stages import EXTRACT_NEEDS
     processing = Path(project) / "processing-v1"
     report = load_report(report_path) if report_path else None
     run_id = report[0] if report else latest_run_id(processing)
     listed = _run_list(processing, run_id) if run_id else None
-    items = collect(processing, listed)
+    if routes:
+        with preserve_routes.Classifier(mail_history) as router:
+            items = collect(processing, listed, router=router)
+    else:
+        items = collect(processing, listed)
     counts = dict(Counter(item["code"] for item in items))
     tally = Counter(run[0] for run in (listed or {}).values())
     needs = report[1] if report else None if listed is None else {("extract", c): tally[o] for o, c, _ in EXTRACT_NEEDS}
@@ -185,9 +200,12 @@ def build(project, report_path=None, code=None):
     mismatches, gaps = compare(counts, needs, EXTRACT_NEEDS) if needs is not None else ([], {})
     baseline = dict(source=source, run_id=run_id if source else None, mismatches=mismatches, not_in_ledger=gaps,
                     report_file="none" if not report_path else "read" if report else "unreadable")
-    return {"schema": SCHEMA, "counts": counts, "items": [i for i in items if code in (None, i["code"])],
-            "report": baseline, "run_list_used": listed is not None,
-            "note": "listing only; clears nothing; review-required"}
+    doc = {"schema": SCHEMA, "counts": counts, "items": [i for i in items if code in (None, i["code"])],
+           "report": baseline, "run_list_used": listed is not None,
+           "note": "listing only; clears nothing; review-required"}
+    if routes:
+        doc["route_counts"] = preserve_routes.route_counts(i["route"] for i in items if "route" in i)
+    return doc
 
 
 def findings(doc):
@@ -212,14 +230,19 @@ def _age_days(stamp, now):
 
 def render(doc, now=None):
     now = now or datetime.now(timezone.utc)
-    lines = ["sha256_prefix code attempts age_days last_run detail_code preserved disposition internal"]
+    routed = "route_counts" in doc
+    lines = ["sha256_prefix code attempts age_days last_run detail_code preserved disposition internal"
+             + (" route clearing_command" if routed else "")]
     for i in doc["items"]:
         internal = i.get("internal")
         lines.append(" ".join(str(v) for v in (
             i["sha256_prefix"], i["code"], i["attempts"], _age_days(i["first_run"], now), i["last_run"] or "-",
             i["detail_code"] or "-", "yes" if i["preserved"] else "no", i["disposition"],
-            f"{internal['type']}@{internal['where']}" if internal else "-")))
+            f"{internal['type']}@{internal['where']}" if internal else "-")
+            + ((i.get("route", "-"), i.get("clearing_command", "-")) if routed else ())))
     lines.append("counts " + (" ".join(f"{c}={n}" for c, n in doc["counts"].items()) or "none"))
+    if routed:
+        lines.append("route_counts " + " ".join(f"{r}={doc['route_counts'][r]}" for r in preserve_routes.ROUTES))
     return lines + findings(doc) + [doc["note"]]
 
 
@@ -253,10 +276,20 @@ def candidates(snapshot, code):
     return chosen, other
 
 
-def _report(path, processing, now):
+def _report(path, processing, now, *, reports_fd=None):
     """``(run_id, sha256)`` of the newest run's report, no older than ``REPORT_MAX_AGE``."""
     try:
-        data = Path(path).read_bytes()
+        if reports_fd is None:
+            data = Path(path).read_bytes()
+        else:
+            name = os.fspath(path)
+            if not name or name in (".", "..") or any(c in name for c in ("/", "\\", "\0")):
+                raise ValueError("bare_filename_required")
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=reports_fd)
+            with os.fdopen(fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError("regular_file_required")
+                data = stream.read()
         run_id = parse_report(data)[0]
         stamp = datetime.strptime(run_id[4:19], "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
     except (OSError, TypeError, ValueError):
@@ -286,15 +319,17 @@ def _receipt_dir(value, project):
 
 
 @contextlib.contextmanager
-def _locked(processing, runtime_lock):
+def _locked(processing, runtime_lock, *, runtime_fd=None):
     """The wrapper's ``run-records.lock`` (required; opened, never created), then the extract stage's root
     lock. The wrapper holds the first across preflight and every stage, the extract stage only the second,
     so the first is what keeps an apply out of an active run; without it the apply fails closed."""
     from .run import RunError, root_lock
-    if runtime_lock is None:
+    if runtime_lock is None and runtime_fd is None:
         raise Refused(2, "RUNTIME_LOCK_REQUIRED")
     try:
-        fd = os.open(runtime_lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        fd = (os.open(runtime_lock, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC) if runtime_fd is None else
+              os.open("run-records.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                      dir_fd=runtime_fd))
     except OSError:
         raise Refused(2, "RUNTIME_LOCK_UNREADABLE") from None
     try:
@@ -323,12 +358,14 @@ def _write_receipt(path, text):
         os.fsync(stream.fileno())
 
 
-def _commit(processing, selected, code, directory, report_sha, now):
+def _commit(processing, selected, code, directory, report_sha, now, *, runtime_source=None):
     """Receipt staged and fsynced before the single ledger transaction; published by rename after commit."""
     from .ledger import store
     lines = "".join(json.dumps({"schema": RELEASE_SCHEMA, "sha256_prefix": subject[:12], "code": code,
                                 "attempts_before": max(n for _, n in alerts), "released_at": now.isoformat(),
-                                "run_report_sha256": report_sha}, sort_keys=True) + "\n" for subject, alerts in selected)
+                                "run_report_sha256": report_sha,
+                                **({"runtime_source": runtime_source} if runtime_source else {})}, sort_keys=True) + "\n"
+                    for subject, alerts in selected)
     name = f"holds-release-{now:%Y%m%dT%H%M%SZ}-{os.urandom(4).hex()}.jsonl"
     staged = directory / ("." + name + ".tmp")
     try:
@@ -357,9 +394,21 @@ def _commit(processing, selected, code, directory, report_sha, now):
     return name
 
 
-def release(project, code, *, apply=False, limit=None, receipt=None, report=None, runtime_lock=None, now=None):
+@contextlib.contextmanager
+def _runtime(socket_path):
+    try:
+        with receive_runtime_fds(socket_path) if socket_path is not None else contextlib.nullcontext() as runtime:
+            yield runtime
+    except RuntimeSocketError as error:
+        raise Refused(2, error.code) from None
+
+
+def release(project, code, *, apply=False, limit=None, receipt=None, report=None, runtime_lock=None,
+            runtime_socket=None, now=None):
     """The ``records-holds-release-v1`` document. Never deletes, moves or re-extracts anything."""
     from .run_stages import LedgerBusy, snapshot_ro
+    if runtime_socket is not None and runtime_lock is not None:
+        raise Refused(2, RUNTIME_SOCKET_UNSAFE)
     if code in (ne.PRESERVE_PENDING, "EXTRACT_PRESERVE_PENDING"):
         raise Refused(2, "CODE_CUSTODIAN")
     if code not in RELEASABLE:
@@ -370,28 +419,36 @@ def release(project, code, *, apply=False, limit=None, receipt=None, report=None
     doc = {"schema": RELEASE_SCHEMA, "mode": "apply" if apply else "dry_run", "code": code, "released": 0,
            "receipt_file": None, "run_id": None, "runtime_lock": "not_checked"}
     for value, missing in ((limit, "MAX_REQUIRED"), (receipt, "RECEIPT_REQUIRED"), (report, "REPORT_REQUIRED"),
-                           (runtime_lock, "RUNTIME_LOCK_REQUIRED")):
+                           (runtime_lock if runtime_socket is None else runtime_socket, "RUNTIME_LOCK_REQUIRED")):
         if apply and value is None:
             raise Refused(2, missing)
-    # Both locks are held from the report check through the receipt's publication: no run starts in between.
-    with _locked(processing, runtime_lock) if apply else contextlib.nullcontext("not_checked") as lock:
-        if apply:
-            doc["run_id"], report_sha = _report(report, processing, now)
-            directory = _receipt_dir(receipt, project)
-        try:
-            with snapshot_ro(processing / "ledger.sqlite") as db:
-                db.row_factory = sqlite3.Row
-                chosen, other = candidates(_Snapshot(db), code)
-        except LedgerBusy:
-            raise Refused(3, "LEDGER_BUSY") from None
-        except (sqlite3.Error, OSError, ValueError, KeyError, TypeError) as error:
-            raise Refused(2, "LEDGER_UNREADABLE " + ("missing" if "database_missing" in str(error) else "error")) from None
-        selected = chosen[:limit] if limit else chosen
-        doc.update(eligible=len(chosen), held_by_other_code=other, runtime_lock=lock,
-                   items=[{"sha256_prefix": s[:12], "attempts": max(n for _, n in a)} for s, a in selected])
-        if apply and selected:
-            doc["receipt_file"] = _commit(processing, selected, code, directory, report_sha, now)
-            doc["released"] = len(selected)
+    with _runtime(runtime_socket) as runtime:
+        if runtime:
+            doc["runtime_source"] = "socket"
+        # Both locks are held from the report check through the receipt's publication: no run starts in between.
+        locks = (contextlib.nullcontext("not_checked") if not apply else
+                 _locked(processing, runtime_lock) if runtime is None else
+                 _locked(processing, None, runtime_fd=runtime.runtime_fd))
+        with locks as lock:
+            if apply:
+                doc["run_id"], report_sha = (_report(report, processing, now, reports_fd=runtime.reports_fd)
+                                              if runtime else _report(report, processing, now))
+                directory = _receipt_dir(receipt, project)
+            try:
+                with snapshot_ro(processing / "ledger.sqlite") as db:
+                    db.row_factory = sqlite3.Row
+                    chosen, other = candidates(_Snapshot(db), code)
+            except LedgerBusy:
+                raise Refused(3, "LEDGER_BUSY") from None
+            except (sqlite3.Error, OSError, ValueError, KeyError, TypeError) as error:
+                raise Refused(2, "LEDGER_UNREADABLE " + ("missing" if "database_missing" in str(error) else "error")) from None
+            selected = chosen[:limit] if limit else chosen
+            doc.update(eligible=len(chosen), held_by_other_code=other, runtime_lock=lock,
+                       items=[{"sha256_prefix": s[:12], "attempts": max(n for _, n in a)} for s, a in selected])
+            if apply and selected:
+                doc["receipt_file"] = (_commit(processing, selected, code, directory, report_sha, now, runtime_source="socket")
+                                           if runtime else _commit(processing, selected, code, directory, report_sha, now))
+                doc["released"] = len(selected)
     return doc
 
 
@@ -402,17 +459,19 @@ def release_main(argv):
     parser.add_argument("--project", required=True, help="records project (processing-v1/ledger.sqlite)")
     parser.add_argument("--code", required=True, help="EXTRACT_ERROR or EXTRACT_TIMEOUT")
     parser.add_argument("--apply", action="store_true",
-                        help="write; needs --max, --receipt, --report and --runtime-lock")
+                        help="write; needs --max, --receipt, --report and one runtime source")
     parser.add_argument("--max", type=int, help=f"release at most N documents (1..{MAX_PER_CALL})")
     parser.add_argument("--receipt", help="owner-only receipt directory outside the project")
     parser.add_argument("--report", help="the newest run's run report, younger than 24 h")
-    parser.add_argument("--runtime-lock", help="the wrapper's RUNTIME_DIR/run-records.lock (required with "
-                        "--apply; held from the report check to the receipt)")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--runtime-socket", help="one-use live host directory handoff socket")
+    source.add_argument("--runtime-lock", help="the wrapper's RUNTIME_DIR/run-records.lock (path source; "
+                        "held from the report check to the receipt)")
     parser.add_argument("--json", action="store_true", help="print one records-holds-release-v1 document")
     args = parser.parse_args(argv)
     try:
         doc = release(args.project, args.code, apply=args.apply, limit=args.max, receipt=args.receipt,
-                      report=args.report, runtime_lock=args.runtime_lock)
+                      report=args.report, runtime_lock=args.runtime_lock, runtime_socket=args.runtime_socket)
     except Refused as error:
         print(error.args[1], file=sys.stderr)
         return error.args[0]
@@ -422,6 +481,8 @@ def release_main(argv):
                  f"{doc['runtime_lock']}; the next run retries them" if args.apply else
                  "DRY_RUN nothing changed (apply: --apply --max N --receipt DIR --report RUN-REPORT "
                  "--runtime-lock RUNTIME_DIR/run-records.lock)")
+    if args.runtime_socket is not None:
+        lines.append("runtime_source socket")
     print(json.dumps(doc, indent=1, sort_keys=True) if args.json else "\n".join(lines))
     return 0
 
@@ -436,9 +497,15 @@ def main(argv=None):
     parser.add_argument("--report", help="run report: compare with its needs_g (default: newest run outcome list)")
     parser.add_argument("--code", help="list only items with this code (counts stay complete)")
     parser.add_argument("--json", action="store_true", help="print one records-holds-v1 document")
+    parser.add_argument("--routes", action="store_true", help="name the clearing route (R1, R2, R2s, R3, R4, R5 or "
+                        "unavailable) and its next step for each PRESERVE_PENDING original; needs --mail-history")
+    parser.add_argument("--mail-history", help="mail-history root whose objects/ is read (never written) for --routes")
     args = parser.parse_args(argv)
+    if args.routes != (args.mail_history is not None):
+        print("ROUTES_OPTIONS (--routes and --mail-history go together)", file=sys.stderr)
+        return 2
     try:
-        doc = build(args.project, args.report, args.code)
+        doc = build(args.project, args.report, args.code, routes=args.routes, mail_history=args.mail_history)
     except Unreadable as error:
         print(f"LEDGER_UNREADABLE {error.args[0]}", file=sys.stderr)
         return 2

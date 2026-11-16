@@ -253,6 +253,13 @@ Rules:
   that breaks this blocks the whole apply (section 8.2, steps 1-2). The row
   keeps the `policy_sha256` of the policy that created it.
 
+> **Implemented proposal writer.** `adopt-mail --write-resolution-policy-proposal`
+> now builds a policy proposal offline from a census (see
+> `RECORDS-MAIL-ADOPTION.md`). It is not approval: G approves the exact
+> proposal SHA-256, and installing, pinning and applying stay separate. It
+> projects `proposed` entries only and omits fixed bindings, so it is not a
+> successor-policy generator; the carry-forward requirement above still holds.
+
 ## 5. Eligibility (all must hold, per distinct original)
 
 Eligibility is checked once per distinct original O in a receipt R, not once

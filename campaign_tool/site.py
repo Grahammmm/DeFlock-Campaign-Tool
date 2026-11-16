@@ -66,7 +66,7 @@ GENERATED_TOP_LEVEL = {"requests", "index.html", "agencies.html", "sources.html"
 ANALYTICS_NAMES = ("gtag", "analytics", "plausible", "matomo", "umami")  # a built script with one of these refuses privacy.html
 # DF2207-10: the open-data files press.html may link, only when this build emits them (map files come from the copy plan).
 PRESS_DATA_FILES = tuple(f"data/{name}.{ext}" for name in ("findings", "sources", "agencies", "meetings") for ext in ("json", "csv")) + (
-    "data/cameras.geojson", "data/officials.json", "data/officials.csv", DESCRIPTOR)  # DF1622-11: the roster exports, only when emitted
+    "data/cameras.geojson", "data/officials.json", "data/officials.csv", "data/suspected-locations.json", DESCRIPTOR)  # only when emitted
 # CLASSIFICATION_LABELS/CONFIDENCE_LABELS/KIND_LABELS (labels.py) stay English for feed.xml; HTML pages use Site.t().
 # methods.html (DF2037-14) defines each label; keys must equal the label tables (checked at import and at render).
 CLASSIFICATION_DEFINITIONS, CONFIDENCE_DEFINITIONS = LABEL_CLASSIFICATION_DEFINITIONS, LABEL_CONFIDENCE_DEFINITIONS
@@ -646,6 +646,7 @@ class Site:
             listed.sort(key=lambda m: utc_moment(m["starts_at"]), reverse=True)
         self.city_agencies = [a for a in model["agencies"] if a["kind"] in CITY_KINDS]
         self.map = model["map"]
+        self.suspected = model.get('suspected_locations')
         self.maplibre = "maplibre-gl.js" in model["vendor"]
         self.labels = model.get("labels") or DEFAULTS  # content/labels.json merged over the English defaults
         # DF0137-14: the js.* labels passed to the scripts, or None (today's English scripts) when none differs.
@@ -965,6 +966,8 @@ class Site:
             parts.append(f'<p><a href="/elsewhere.html">{self.t("footer.elsewhere")}</a></p>')
         if self.events:  # DF1107-08: appended last, so every earlier footer paragraph is unchanged
             parts.append(f'<p><a href="/events.html">{self.t("footer.events")}</a></p>')
+        if self.suspected is not None:
+            parts.append('<p><a href="/suspected.html">Suspected locations</a></p>')
         return '  <footer class="site-footer">' + "".join(parts) + '</footer>\n'
 
     def share(self, title, description, path, kind, published, modified):
@@ -1194,6 +1197,14 @@ class Site:
         if not self.map:
             return ""
         fallback = self.t("map.unavailable" if not self.maplibre else "map.loading")
+        suspected_ui = ''
+        if self.suspected:
+            from .content_suspected import NOTICE
+            suspected_ui = ('<div class="suspected-key"><label for="suspected-toggle">'
+                            '<input id="suspected-toggle" type="checkbox" checked> Suspected locations</label>'
+                            '<p>? — Suspected locations (not confirmed cameras)</p>'
+                            f'<p>{NOTICE} <a href="/suspected.html">Read the suspected locations list</a>.</p>'
+                            '<p id="suspected-unavailable" role="status">Suspected location overlay unavailable until the map loads.</p></div>')
         return ('    <section class="hero" id="map"><div class="hero-map-wrap">'
                 f'<div id="county-map" class="map" role="region" aria-label="{self.t("map.region_label")}"></div>'
                 f'<p class="map-fallback">{fallback} {self.t("map.still_choose")} '
@@ -1204,7 +1215,7 @@ class Site:
                 f'<div class="county-map-legend"><span class="camera-dot"></span><span id="map-selection-count">{self.t("map.count", count=self.map["camera_count"])}</span></div>'
                 f'<p class="county-map-hint">{self.t("map.hint")}</p></div>'
                 f'<p class="map-credit">{e(self.map["attribution"])}</p>{self.picker()}</div>'
-                f'<p class="map-date">{self.map_date_line()}</p></section>\n')
+                f'<p class="map-date">{self.map_date_line()}</p>{suspected_ui}</section>\n')
 
     def map_date_line(self):
         """The OpenStreetMap data day from map/snapshot.json; never the build date."""
@@ -2399,7 +2410,7 @@ class Site:
                         for f, c, _ in rows)
         main = (f'    <section class="section" id="content"><div class="section-heading"><div><p class="eyebrow">{self.t("eyebrow.findings")}</p>'
                 f'<h2>{self.t("heading.corrections")}</h2></div><p>{self.t("intro.corrections")}</p></div>'
-                + policy_html(self.site["contact_email"])
+                + policy_html(self.site["contact_email"], labels=self.labels)
                 + (f'<ul>{items}</ul>' if items else f'<p>{self.t("notice.no_corrections")}</p>') + self.correction_counts_html() + '</section>\n')
         return self.page("findings", self.labels["title.corrections"], self.labels["title.corrections_description"], "/corrections.html", main)
 
@@ -3015,7 +3026,11 @@ class Site:
             boot = ("document.addEventListener(\"DOMContentLoaded\",function(){"
                     "document.querySelectorAll(\".city-choice\").forEach(function(b){b.addEventListener(\"click\",function(){chooseCity(b.getAttribute(\"data-city\")||null);});});"
                     "chooseCity(null);initMap();});\n")
-            return "// Generated by campaign_tool build. Map controller plus page bootstrap.\n" + controller + boot
+            companion = ''
+            if self.suspected:
+                companion = (Path(__file__).parent / 'assets/suspected-map.js.tmpl').read_text(encoding='utf-8')
+                boot = boot.replace('initMap();', 'initMap();initSuspectedLayer();')
+            return "// Generated by campaign_tool build. Map controller plus page bootstrap.\n" + controller + companion + boot
         return ("// Generated by campaign_tool build. Agency picker without a map.\n"
                 "function chooseCity(slug){document.querySelectorAll(\".city-choice\").forEach(function(b){"
                 "var active=slug?b.getAttribute(\"data-city\")===slug:b.id===\"reset-county-map\";"
@@ -3025,6 +3040,30 @@ class Site:
                 "chooseCity(null);});\n")
 
     # -- metadata files --------------------------------------------------------
+    def suspected_html(self):
+        from .content_suspected import NOTICE, PREFIX
+        groups = {}
+        for row in self.suspected:
+            groups.setdefault(row.get('agency_id'), []).append(row)
+        def group_key(agency_id):
+            return (agency_id is None, self.agencies_by_id[agency_id]['name'] if agency_id else '', agency_id or '')
+        main = f'<section class="section"><h1>Suspected locations</h1><p>{NOTICE}</p>'
+        main += '<p><a href="/data/suspected-locations.json">Suspected locations (JSON)</a> · <a href="/data.html">Open data catalogue</a></p>'
+        if not groups:
+            main += '<p>No suspected locations are listed.</p>'
+        for agency_id in sorted(groups, key=group_key):
+            name = self.agencies_by_id[agency_id]['name'] if agency_id else 'Agency not specified'
+            main += f'<h2>{e(name)}</h2><ul>'
+            for row in sorted(groups[agency_id], key=lambda r: r['id']):
+                source = row['source']
+                href = f'/sources/{source}.html' if PREFIX.fullmatch(source) else source
+                rel = '' if PREFIX.fullmatch(source) else ' rel="noopener noreferrer"'
+                main += (f'<li id="location-{row["id"]}"><strong>{e(row["place_label"])}</strong> '
+                         f'({row["latitude"]}, {row["longitude"]}); {e(row["source_kind"])}; '
+                         f'<a href="{e(href)}"{rel}>Source</a>; as of {row["as_of"]}</li>')
+            main += '</ul>'
+        return self.page('', 'Suspected locations', NOTICE, '/suspected.html', '<main id="content">' + main + '</section></main>\n')
+
 
     def csp(self):
         connect = ["'self'"]
@@ -3060,6 +3099,7 @@ class Site:
                  "/methods.html", "/privacy.html", "/search.html", "/findings/packet-all.html", "/timeline.html",
                  "/requests.html", "/data.html"]  # DF1103-13; DF2207-12
         paths += ["/cameras.html"]  # DF1952-10: always, an empty page without a map
+        paths += ['/suspected.html'] if self.suspected is not None else []
         paths += ["/glossary.html"] if self.glossary else []
         paths += ["/faq.html"] if self.faq else []  # DF0022-01
         paths += ["/events.html"] if self.events else []  # DF1107-08: the page only, never its fragment anchors
@@ -3573,7 +3613,8 @@ def _asset_plan(model):
         if any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}", part) for part in relative.parts):
             raise ContentError(f"public-assets/{relative}: use plain file and folder names")
         if (relative.parts[0] in GENERATED_TOP_LEVEL or relative.parts[0] in page_files
-                or (model.get("topics") and relative.parts[0] == "topics")):  # DF1952-06: reserved only with topics
+                or (model.get("topics") and relative.parts[0] == "topics")
+                or ('suspected_locations' in model and relative.parts[0] == 'suspected.html')):
             raise ContentError(f"public-assets/{relative}: collides with a generated path")
         check_asset(source, relative, ASSET_MAX_BYTES)
         check_doc_asset(source, relative, ASSET_MAX_BYTES)  # PDF/SVG: active content, revisions, author fields
@@ -3581,7 +3622,7 @@ def _asset_plan(model):
     return plan
 
 
-PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "statements", "map", "elsewhere", "events")
+PRIVACY_GATE_PARTS = ("meetings", "pages", "newsletters", "topics", "glossary", "supporters", "officials", "statements", "map", "elsewhere", "events", "suspected_locations")
 # Fields an organizer fills with a contact on purpose, or that are never published: not scanned. A library entry is scanned
 # through its public projection only (never note, fragment or the full hash); an agency without its private contact and notes.
 PRIVACY_GATE_SKIP = {"how", "contact_email", "privacy_contact"}
@@ -3692,6 +3733,8 @@ def _plan(root, today=None, notes=None, *, require_linked_assets=False, private_
         pages["sharing.html"] = site.sharing_html()
     if site.elsewhere:  # DF1107-04: no file, no page; the slug is reserved, so nothing else can own this path
         pages["elsewhere.html"] = site.elsewhere_html()
+    if site.suspected is not None:
+        pages['suspected.html'] = site.suspected_html()
 
     if model["newsletters"]:  # DF1952-09: newest first; the slug is reserved, so nothing else can own these paths
         pages["newsletters.html"] = site.newsletters_html()
@@ -3734,6 +3777,9 @@ def _plan(root, today=None, notes=None, *, require_linked_assets=False, private_
         "data/agencies.csv": public_records_csv(agencies_text, "agencies", PUBLIC_AGENCY_FIELDS + PUBLIC_AGENCY_OPTIONAL),
     })
     officials_text = site.officials_json()  # DF1622-11: None without anyone on content/officials.json; its CSV is read back from it
+    if site.suspected is not None:
+        from .content_suspected import export
+        files['data/suspected-locations.json'] = export(site.suspected)
     if officials_text is not None:
         files.update({"data/officials.json": officials_text, "data/officials.csv": officials_csv(officials_text)})
     if site.finding_filter():  # written only when the findings index loads it

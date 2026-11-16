@@ -151,7 +151,20 @@ def _inside(path, root):
     return path == root or path.startswith(root.rstrip("/") + "/")
 
 
-def backup_roots(project):
+def named_account(name, *, euid=None):
+    """(pw_name, pw_dir) of the account ``name`` for a root auditor, else ProfileIncomplete (no name is echoed)."""
+    if (os.geteuid() if euid is None else euid) != 0:
+        raise ProfileIncomplete("PROFILE_INCOMPLETE", reason="roots_user_requires_root")
+    try:
+        if type(name) is not str or not name or "\0" in name:
+            raise KeyError
+        entry = pwd.getpwnam(name)
+    except (KeyError, ValueError, OverflowError):
+        raise ProfileIncomplete("PROFILE_INCOMPLETE", reason="roots_user_unknown") from None
+    return entry.pw_name, entry.pw_dir
+
+
+def backup_roots(project, *, roots_user=None):
     """The roots a backup of ``project`` reads, in order: the project, then each declared ``EXTRA_ROOTS`` entry that
     exists. Path safety as for the project: absolute, resolved (no symlink anywhere), no ``..``, a real directory,
     neither inside nor around another root. The quiescence evidence must name exactly these roots."""
@@ -159,8 +172,9 @@ def backup_roots(project):
     if root.is_symlink() or not root.is_dir() or ";" in str(root):
         raise ProfileIncomplete("PROFILE_INCOMPLETE")
     roots = [str(root)]
+    home = _home() if roots_user is None else named_account(roots_user)[1]
     for rel in EXTRA_ROOTS:
-        path = os.path.join(_home(), rel)
+        path = os.path.join(home, rel)
         if not os.path.lexists(path):
             continue  # a declared store that does not exist here is not read; a row naming it is still refused
         if (not os.path.isabs(path) or os.path.realpath(path) != path or ".." in Path(path).parts or ";" in path

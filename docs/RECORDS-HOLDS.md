@@ -19,6 +19,45 @@ python3 -B -m campaign_tool.records holds --project PROJECT [--report RUN-REPORT
 
 It never opens an original, an evidence payload, unit text, a mail receipt or a message. It prints no
 path, file name, subject or address: each item is a 12-hex prefix of the original's sha256 plus fixed codes.
+(Only `--routes` below also streams candidate mail object bytes, to check a content-addressed copy's size and
+sha256; nothing of them is printed, and local sources and receipts stay unopened.)
+
+## Clearing routes (`--routes`, DF0652-07)
+
+```
+python3 -B -m campaign_tool.records holds --project PROJECT --routes --mail-history MAIL [--code CODE] [--json]
+```
+
+`--routes` and `--mail-history` go together (either alone: `ROUTES_OPTIONS`, exit 2, nothing opened). Without
+them the output is byte-identical to the plain listing. With them each `PRESERVE_PENDING` item adds `route` and
+`clearing_command` (text: two more columns, `- -` on other rows) and the document adds `route_counts`
+(`R1 R2 R2s R3 R4 R5 unavailable`, zeroes included; text: a `route_counts` line). Totals cover every
+`PRESERVE_PENDING` original before `--code` filters, one route per full original. Read-only: the ledger snapshot
+and `MAIL/objects` are opened without writing; no proposal, manifest or report is produced. It only PRINTS the
+workflow: it clears nothing, approves nothing and runs nothing.
+
+Precedence (first match; only the ledger and `MAIL/objects` are read, never a local source path):
+
+1. `R1` a regular file named by the original's sha256 in `MAIL/objects` with equal size and sha256 (no
+   symlink followed). A copy is a candidate, not proof the adoption receipt or policy accepts it.
+2. `R3` xlsx with a retained `storage_path` and the phrase `pending trusted validation` in its preservation
+   status or preserve-stage reason: custodian validation, no clearing command.
+3. A retained `storage_path` otherwise: `unavailable`.
+4. No occurrence evidence at all (and no mail copy): `R5`, "no source recorded in the supplied ledger and mail
+   history", not "no bytes exist anywhere". `G scope decision`.
+5. `R4` json or csv with occurrence evidence: `G scope decision`.
+6. `R2` / `R2s` from the class of the first legacy local occurrence path (stable lexical order), by whole
+   path component: `received`, `received-user-files`, `portal-intake`, `productions` give `R2`; `archive` or
+   `research` give `R2s` (prepare an approved source under the configured `supplement_root` first). Anything
+   else is `unavailable`.
+
+A missing, unsafe (symlink, non-directory) or unreadable `MAIL` or `MAIL/objects`, a candidate that cannot be
+verified (symlink, FIFO, directory, wrong size or hash, changed while read), malformed occurrence evidence
+or an unclassifiable row is `unavailable`, never `R5`; with no inspectable mail history every row is
+`unavailable`. Commands are fixed placeholders (ROOT, CFG, OUT, MANIFEST, POLICY, MAIL, INV, APPROVAL): with a
+pinned config the manifest and `--policy POLICY` must match it; with `policy_sha256` null the report-only run
+omits `--policy POLICY`. Qualification of sources stays with `--report-sources`. `tools/run_report_backlog.py`
+names the same routes (it cannot count them from a run report).
 
 ## Which documents are listed
 
@@ -85,7 +124,8 @@ python3 -B -m campaign_tool.records holds release --project PROJECT --code EXTRA
   --apply --max N --receipt DIR --report RUN-REPORT.json --runtime-lock RUNTIME_DIR/run-records.lock
 ```
 
-`--runtime-lock` is required with `--apply`: it is the records wrapper's overlap lock, which the wrapper
+Exactly one of `--runtime-lock` or `--runtime-socket` is required with `--apply`.
+`--runtime-lock` names the records wrapper's overlap lock, which the wrapper
 holds across its preflight and every stage. The extract stage's own `processing-v1/run.lock` is held only
 while extraction runs, so it alone cannot keep an apply out of an active run.
 
@@ -140,3 +180,74 @@ Live use [ATTENDED, operator, between slots]: dry run first and record the count
 report shows `EXTRACT_ERROR` falling by the number that now extract; the rest come back as
 `EXTRACT_ERROR` with internal codes for a diagnosis card. If a clear would need deleting or
 re-extracting an original into another path, stop: that is a G data decision, not this command.
+
+## Attended host runtime handoff (DF0652-12)
+
+### Ownership amendment: backup-reader integration
+
+The COMPLETE owned-file list in the DF0652-12 build spec is extended to include
+`campaign_tool/records/records_backup.py`, solely for `_evidence` to admit the
+existing exact audit schema plus the fixed `runtime_source: "socket"` metadata.
+Authority is the explicit SCOPE-3 grant in build card `t_4f464af3`, reaffirmed in
+fix card `t_0ada8044` for PR #1624, addressing RETURN item 1 from `t_ebee560c`.
+This records the authorized file expansion in the versioned feature contract,
+not merely in the PR description; all other owned-file boundaries remain intact.
+
+The spec's named quiet-socket-audit backup acceptance requires this integration:
+main's reader requires an exact key set and therefore does not already accept
+the additive source field. The only additional admitted shape is that same key
+set plus `runtime_source` equal to `"socket"`. Unknown source values and extra
+keys remain refused. Digest binding, exact roots, audit identity, freshness and
+all-writers-stopped requirements are unchanged; this amendment authorizes no
+other admission change, runtime capture, publication or live backup action.
+
+### Attended operation
+
+When the container cannot see the host runtime and report directories, the operator
+can run this standalone Linux helper on the host. These are generic forms, not
+approval for a live release or backup:
+
+```
+python3 tools/records_runtime_fds.py --runtime RUNTIME --reports REPORTS --socket-dir SHARED_PRIVATE -- python3 -B -m campaign_tool.records holds release --project PROJECT --code EXTRACT_ERROR --apply --max 10 --receipt RECEIPTS --report newest.json --runtime-socket {socket} --json
+python3 tools/records_runtime_fds.py --runtime RUNTIME --reports REPORTS --socket-dir SHARED_PRIVATE -- python3 -B -m campaign_tool.records quiescence-audit --project PROJECT --runtime-socket {socket} --units-file UNITS --out AUDIT.json
+```
+
+`SHARED_PRIVATE` must already exist, belong to the invoking uid and have no group
+or other permission bits (0700). The socket is 0600. Host and consumer must have
+matching effective uids and see that directory at the same absolute pathname;
+the operator can substitute container-exec argv for the command when those
+prerequisites hold. No shell is used; every literal `{socket}` in command argv is
+replaced. This does not install mounts, change templates or solve separate
+`/proc`, root-visibility or substantive acceptance findings.
+
+The helper opens only the runtime and report directories, not the lock or their
+contents. The first connection consumes the sole attempt, even when its uid is
+refused. The helper unlinks its socket after that connection or command exit,
+whichever comes first, and returns the command's exit status. A second action
+requires a new helper session. Abrupt death can leave a dead socket inode, but
+never acceptable evidence. There is no capture, state file or replay fallback.
+
+In socket mode, release opens the existing `run-records.lock` itself relative to
+the received runtime directory, takes its own nonblocking exclusive flock before
+checking the report, and holds that lock and the project lock through receipt
+publication—even if the helper exits or is killed after handoff. Another run
+holding that lock is `LEDGER_BUSY` (exit 3), before report freshness is considered.
+`--report` must be a single bare filename in REPORTS (no slash, backslash, dot,
+dotdot or symlink). The same bytes are parsed and hashed, with the unchanged age,
+clock-skew and newest-project-run checks. Explicit socket dry runs validate the
+handoff but neither take apply locks nor inspect the report or write receipts.
+Ordinary dry runs still require no runtime source. Mixed source flags are refused.
+
+Audit checks the lock and `arrival.pending` live at audit time, not helper start.
+Its other unit, process, root, freshness and output checks remain in force.
+`--units-file` remains the ordinary units input and `--out` the result of the live
+audit; neither is an alternative runtime source. A held lock or pending arrival
+produces normal failing audit evidence (exit 1).
+
+Transport failures print fixed codes only (exit 2): `RUNTIME_SOCKET_UNSAFE` for
+wrong ownership, permissions, type, uid or descriptor protocol;
+`RUNTIME_SOCKET_UNAVAILABLE` for a missing/dead/refused listener, timeout or EOF
+before handoff. They leave the ledger, receipts and any existing audit output
+unchanged. Socket-mode release JSON, each receipt row and audit JSON add
+`runtime_source: "socket"`; release text adds `runtime_source socket`. Path-mode
+operational output and receipts are unchanged.

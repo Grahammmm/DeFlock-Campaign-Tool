@@ -1,9 +1,24 @@
 # Corrections and takedown process (organizer duties)
 
-`corrections.html` opens with "How to ask for a correction or takedown". Every published
-finding links to it ("Ask for a correction"). The text is fixed in
-`campaign_tool/corrections_policy.py`; it is not editable from `site.json`. The site sends
-nothing and stores nothing: there is no form, script, inbox or tracker.
+`corrections.html` opens with two fixed-structure sections:
+
+- **Ask for a correction** (`corrections.html#request`): factual fixes, with email subject
+  `Correction request`. Every published finding links to this anchor. Include the page link,
+  what is wrong and a source if available; do not send personal information about anyone else.
+- **Copyright concerns** (`corrections.html#copyright`): identify the copyrighted work, the page
+  link containing the material, contact details and a good-faith statement that the use is not
+  authorized by the copyright owner, its agent or the law. Email subject: `Copyright notice`.
+  An organizer reviews these concerns; this guidance is not legal advice and is not a complete
+  statutory notice or automatic takedown process.
+
+Both use the same `contact_email` address, privately by email. Without an address both show
+the existing sentence saying correction requests cannot be made through this site yet.
+Community-mapped camera points are corrected in OpenStreetMap; the factual section links to
+the map guide's existing [OpenStreetMap ALPR page](https://wiki.openstreetmap.org/wiki/Tag:surveillance:type=ALPR),
+not to a campaign submission form. The tool does not edit OpenStreetMap.
+Text comes from `corrections_policy.*` labels (`content/labels.json`), escaped as text in
+`campaign_tool/corrections_policy.py`; the anchors and destinations are fixed, not editable
+from `site.json`. The site sends nothing and stores nothing: there is no form, script, inbox or tracker.
 
 ## What the public text promises
 

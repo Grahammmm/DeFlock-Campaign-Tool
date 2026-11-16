@@ -11,10 +11,17 @@ of disk fit). No send, publication, image/engine-pin change or key in Git.
    DEFERRED-capable engine through the existing reviewed REPIN process; keep
    decision application paused using the wrapper's existing rollback until then.
    Set `RECIPE` to the clean, current-main checkout's `container/flock-ocr`, `ENGINE`
-   to the wrapper's exact in-container `ENGINE_DIR`, `TAG` to the unchanged running
+   to the wrapper's in-container engine, `TAG` to the unchanged running
    image tag, `PREV` to the verified run that built that image, and `PRIVATE` to its
    existing owner-private parent. Set `PROJECT` to the private in-container project,
    and `WRAPPER` to the existing host records wrapper (read-only input; no pin edit).
+   The wrapper's `ENGINE_DIR=` is the host source tree, not this engine: `ENGINE` is the
+   single `/workspace/.../engine-<sha>` value of its container `PYTHONPATH=` lines, and
+   `<sha>` must be a prefix of its `RELEASE_COMMIT=`. The swap tool derives the same
+   value and refuses on none, two distinct values or a mismatch, and its dry-run
+   refuses unless the mounts holding both `ENGINE` and its work directory (which also
+   holds pylib-pillow, records-project and sandbox) are snapshotted and no excluded
+   mount lies inside that work directory.
    Do not guess these values, print container Env, or commit runtime settings.
    Check activation and record its timestamp on the execution card:
    ```sh

@@ -5,6 +5,7 @@ Nothing here raises or blocks: a flag is a ``review-required`` note for the pers
 whether a violation happened, only whether OUR wording asserts one.
 
 DF2007-15 adds a second, separate tier beside it: ADVISORY wording warnings (``intent``, ``undated-count``), see ``legal_advisories``.
+DF0652-11 adds the dated, finite ``not-law`` advisory category to that tier.
 They are ``warning:`` notes, never errors or refusals, and never part of ``legal_claims``.
 """
 import datetime
@@ -188,8 +189,67 @@ def _undated_count(sentence):
     return any(not ADV_NEGATED.search(text[:m.start()]) for m in COUNT.finditer(text)) and not (QUALIFIER.search(text) or _dated(text))
 
 
+# Historical observations supplied by RESEARCH-ALPR-LAW-1, not a current-law database.
+# Recheck the official sources before each use; no runtime status fetch occurs.
+NOT_LAW_TABLE = (
+    {"id": "sb-274-2025", "kind": "bill", "label": "SB 274", "matcher": re.compile(r"\bSB\s*274\b", re.I),
+     "what_it_is": "2025–2026 ALPR bill; vetoed 2025-10-01, veto sustained 2026-03-02; not enacted",
+     "source_url": "https://leginfo.legislature.ca.gov/faces/billStatusClient.xhtml?bill_id=202520260SB274",
+     "read_date": "2026-11-09",
+     "fix": "SB 274 was vetoed; say what it would have done and that it is not law"},
+    {"id": "sb-1013-2025", "kind": "bill", "label": "SB 1013", "matcher": re.compile(r"\bSB\s*1013\b", re.I),
+     "what_it_is": "2025–2026 ALPR bill; not chaptered on the status page read 2026-11-09",
+     "source_url": "https://leginfo.legislature.ca.gov/faces/billStatusClient.xhtml?bill_id=202520260SB1013",
+     "read_date": "2026-11-09",
+     "fix": "SB 1013 was not chaptered as of 2026-11-09; describe it as a bill, not law, and re-check its official status"},
+    {"id": "carpenter-2018", "kind": "case", "label": "Carpenter", "matcher": re.compile(r"\bCarpenter\b", re.I),
+     "what_it_is": "Carpenter v. United States, No. 16-402, decided 2018-06-22; historical cell-site location records, not an ALPR holding",
+     "source_url": "https://www.supremecourt.gov/opinions/17pdf/16-402_h315.pdf",
+     "read_date": "2026-11-09",
+     "fix": "Carpenter concerns cell-site records, not an ALPR holding; do not say it requires an ALPR warrant or held ALPR is a search"},
+    {"id": "yang-2020", "kind": "case", "label": "Yang", "matcher": re.compile(r"\bYang\b", re.I),
+     "what_it_is": "United States v. Yang, No. 18-10341, filed 2020-05-04; standing on expired-rental facts, not a general ALPR search/warrant holding",
+     "source_url": "https://cdn.ca9.uscourts.gov/datastore/opinions/2020/05/04/18-10341.pdf",
+     "read_date": "2026-11-09",
+     "fix": "Yang is a standing holding on its facts; do not say it requires an ALPR warrant or held ALPR is a search"},
+)
+_NOT_LAW_PREDICATES = {
+    "bill": re.compile(r"\b(?:requires|limits|bans|is\s+the\s+law)\b", re.I),
+    "case": re.compile(r"\b(?:requires\s+a\s+warrant\s+for\s+ALPR|held\s+(?:that\s+)?ALPR\s+is\s+a\s+search)\b", re.I),
+}
+_NOT_LAW_CUE = re.compile(r"\b(?:whether|if|unless|alleg\w*|according\s+to|claims?\s+that|claimed\s+that|"
+                          r"asserts?\s+that|argues?\s+that|would\s+have|proposed|pending)\b", re.I)
+# Keep the finite full case-name alias `v.` together without changing either older scanner.
+_NOT_LAW_SENTENCE = re.compile(r"(?<!\bv\.)(?<=[.!?])\s+|\n+", re.I)
+
+
+def _not_law_rows(text):
+    """Matching rows, once each in table order, from unquoted governed claims. No truth determination."""
+    found = set()
+    for sentence in _NOT_LAW_SENTENCE.split(_blank_quotes(text if isinstance(text, str) else "")):
+        attributed = False
+        for segment in SEGMENT_SPLIT.split(sentence):
+            covered = bool(LEADING.match(segment))
+            for n, clause in enumerate(JOINER_SPLIT.split(" " + segment)):
+                if covered or (attributed and n == 0) or NEUTRAL.search(clause):
+                    continue
+                anchors = sorted((m.start(), m.end(), i) for i, row in enumerate(NOT_LAW_TABLE)
+                                 for m in row["matcher"].finditer(clause))
+                for a, (start, end, i) in enumerate(anchors):
+                    stop = anchors[a + 1][0] if a + 1 < len(anchors) else len(clause)
+                    # Bound the predicate to this citation, but keep governing qualification from the whole clause.
+                    prefix = clause[:start]
+                    governed = clause[end:stop]
+                    for predicate in _NOT_LAW_PREDICATES[NOT_LAW_TABLE[i]["kind"]].finditer(governed):
+                        before = prefix + " " + governed[:predicate.start()]
+                        if not (_NOT_LAW_CUE.search(before) or ADV_NEGATED.search(before)):
+                            found.add(i)
+            attributed = attributed or bool(ATTRIBUTION.search(segment))
+    return [row for i, row in enumerate(NOT_LAW_TABLE) if i in found]
+
+
 def legal_advisories(text):
-    """-> sorted advisory categories ("intent", "undated-count") of text; [] for empty or non-string input. Advice only: never a
+    """-> sorted advisory categories ("intent", "not-law", "undated-count"); [] for empty or non-string input. Advice only: never a
     refusal. A scan fault returns ["guard-error"] (also advice) instead of raising or reporting a clean result."""
     if not isinstance(text, str) or not text:
         return []
@@ -200,6 +260,8 @@ def legal_advisories(text):
                 found.add("intent")
             if _undated_count(sentence):
                 found.add("undated-count")
+        if _not_law_rows(text):
+            found.add("not-law")
         return sorted(found)
     except Exception:  # noqa: BLE001 - advice only: a broken scan asks for a human, it never stops the run
         return ["guard-error"]
@@ -207,12 +269,16 @@ def legal_advisories(text):
 
 def advisory_notes(items):
     """items: iterable of (where, text) -> ["warning: <where>: wording advisory (<category>). Fix: <fixed wording>", ...] in item
-    order then sorted category. Names the place and the category, never the text, a number or an exception. NOT errors: never
+    order then sorted category (not-law rows in table order). Only fixed labels/dates, never submitted text or an exception. NOT errors: never
     add them to an error list, a refusal or an exit code, and never read them as permission to publish or send."""
     notes = []
     try:
         for where, text in items:
             for category in legal_advisories(text):
+                if category == "not-law":
+                    notes.extend("warning: %s: wording advisory (not-law). Fix: %s" % (where, row["fix"])
+                                 for row in _not_law_rows(text))
+                    continue
                 note = ADVISORY_GUARD_ERROR if category == "guard-error" else \
                     "warning: %s: wording advisory (%s). Fix: %s" % (where, category, ADVISORY_FIX[category])
                 if note not in notes or category != "guard-error":

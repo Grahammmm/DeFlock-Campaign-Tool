@@ -122,6 +122,41 @@ recovery or write (D24). A pinned missing/invalid policy reports
 loaded artifact changed under the lock. Config/gate changes refuse with
 `adoption_gate_changed`. No hash match supplies missing human authorization.
 
+### Policy proposal writer (offline; a proposal is not approval)
+
+```
+records adopt-mail --root <ROOT> --mail-history <MAIL> \
+  --write-resolution-policy-proposal <OUT> --from-inventory <INV> \
+  --approval-record <FILE>
+```
+
+`INV` is the file written by `--legacy-resolution-inventory`; `FILE` is an
+opaque operator-supplied approval record. `--from-inventory` and
+`--approval-record` are required with, and only with, the proposal flag; the
+mode is exclusive with `--apply` and `--legacy-resolution-inventory`, and
+`--config` is refused. Inputs must be owner-only regular files (INV at most
+32 MiB, FILE at most 2 MiB) with no symlinks, and INV must be the census
+writer's canonical bytes. `--root`/`--mail-history` only name trees that OUT
+must stay outside; they are not opened.
+
+- Only census entries whose `proposal.state` is `proposed` enter `originals`,
+  with the census binding copied unchanged. `held` entries go to `held` by
+  digest; `fixed` entries are omitted (counted, never re-authorized).
+- `inventory_sha256` is the SHA-256 of INV's bytes and `approval_sha256` that
+  of FILE's exact bytes. The result is validated by
+  `ApprovedMailResolutionPolicy` before OUT is written.
+- OUT is created exclusively with mode 0600 in an existing owner-only
+  directory outside Git and both trees; an existing OUT is never overwritten.
+  Nothing else is written: no install, pin, lock, database open or apply.
+- Stdout is one JSON line with counts and `proposal_sha256` only.
+
+A proposal is not an approval and the approval record is not authenticated.
+G approves the exact `proposal_sha256`; installation, pinning, the dry run
+and apply remain separate attended steps. Review the census gaps and
+warnings first: a valid proposal can still yield a blocked plan. This is a
+first-policy bootstrap, not a successor-policy generator (fixed bindings are
+omitted here).
+
 ### All-state legacy resolution planner (S3b, synthetic qualification only)
 
 `mail_resolution_plan.plan` is the shared pure snapshot planner. Every policy
