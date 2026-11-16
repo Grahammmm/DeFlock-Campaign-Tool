@@ -123,6 +123,20 @@ def parse_events(text):
     return events
 
 
+SINGLETON_PROPERTIES = ("UID", "DTSTART", "STATUS")
+
+
+def _check_singletons(events):
+    """RF0520-1: refuse a feed whose VEVENT repeats UID, DTSTART or STATUS (identical repeats too).
+
+    Runs on every raw event before revision selection or filtering, so the first-listed value is never silently chosen.
+    The message is fixed and never repeats feed text.
+    """
+    for event in events:
+        if any(len(event.get(name, ())) > 1 for name in SINGLETON_PROPERTIES):
+            raise MeetingsError("feed has repeated UID, DTSTART or STATUS in one VEVENT; nothing was written")
+
+
 def _check_components(text):
     """RF1835-4: refuse a feed that is not one complete VCALENDAR of balanced, well-named components.
 
@@ -299,7 +313,9 @@ class IcsClient:
         _check_components(text)
         self.skipped = dict.fromkeys(SKIP_KEYS, 0)
         meetings, seen = [], set()
-        events = _revisions(parse_events(text))
+        events = parse_events(text)
+        _check_singletons(events)
+        events = _revisions(events)
         for event in events:
             uid = _uid(event)
             if any(k in event for k in ("RRULE", "RDATE", "RECURRENCE-ID")):
