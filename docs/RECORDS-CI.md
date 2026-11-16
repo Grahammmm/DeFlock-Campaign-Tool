@@ -95,6 +95,98 @@ Public-tree, pattern, Node secret and detect-secrets scans are security gates,
 not substitutes for source tests. Existing per-workflow security scans remain
 in place, including their deliberately separate scanner implementations.
 
+## Bounded source-executor candidate (AUDINV-FIX-144)
+
+`affected` and `full` now each use `strategy.max-parallel: 1` and
+`ci_affected.py --jobs 2`. Their event predicates are mutually exclusive, so at
+most two source-test **executor children per workflow run** can be live at once.
+All five PR shards and all two-shard × three-Python full entries remain; matrices
+queue sequentially rather than removing coverage. Parent SERIAL tests run only
+after children finish. Nested subprocesses deliberately launched by individual
+tests are outside this executor-child bound. The selector's general jobs API,
+workflow concurrency identity, failure aggregation and security scans are unchanged.
+
+This is not a host-global or repository-global semaphore: other workflows and
+separate PR/main runs can overlap. There are no runner or repository-variable
+changes. Sequential matrices can regress duration, especially with the existing
+full-tier timeout history. Synthetic acceptance is not production contention
+closure, a CI speedup, legal/semantic acceptance or authority for live processing.
+The merged runtime-built Basic Auth fixture and credential scanning remain intact.
+
+### Isolated comparison receipt
+
+Checked main: `8c10b9fe186d54c233d89de4862eb4383a83e440` (newer than the spec's
+checked head; the two uncapped commands and unbounded matrix concurrency remain).
+The unchanged selector source SHA-256 is
+`4a1605a05299ac8663a57151d1772aaedec2191e88c50e506585b2c0cceb4b48`.
+The candidate workflow diff consists only of two `--jobs 0` → `--jobs 2`
+arguments and two `max-parallel: 1` keys. Candidate file SHA-256 values:
+
+- `.github/workflows/records.yml`: `37affc5e9ab64700b26c659bee4ca68c90035847f07150b5e648ff5f98ad7ded`.
+- `tests/test_ci_contention_cap.py`: `74e1c1f4220583e9c74eeef95c054d958289f291bb113015a104b27335a2a624`.
+
+The initial measurement below used test source
+`1e57f38ccc3e23f6e59d9c22a3f96c390fa3711db1008f184b8ca03c771761c1`;
+the final candidate adds only printing ordinary control rows to that source.
+Source and candidate hashes bind the receipt without a self-referential document
+or commit hash. All selected acceptance modules are rerun on the final candidate.
+
+Reproduction from the checkout, with the provisioned pinned-dependency interpreter
+(`repo-python` means that environment's Python 3.12.3, importing this checkout):
+
+```sh
+memcap -- repo-python -B -W error::ResourceWarning -m unittest tests.test_ci_contention_cap tests.test_ci_affected_parallel tests.test_ci_affected_timing tests.test_ci_affected_packing -q
+```
+
+The harness invokes the same `run_shard` with jobs 0 (CPU discovery fixed at four)
+and jobs 2. Four deterministic `ci_contention_fixture.test_0` through `test_3`
+modules each execute `Case.test_a` and `Case.test_b`. Every test writes, fsyncs,
+reads and SHA-256-verifies a 4 MiB payload under its isolated scratch directory.
+The payload hash is
+`2b07811057df887086f06a67edc6ebf911de8b6741156e7a2eb1416a4b8b1b2e`;
+each green module's source hash is
+`f39e70c599edc151bc33dfe528c217348488665cef24a589f75a74a38b673bd7`.
+A pipe barrier releases children only after launch fan-out is complete, making
+live-PID observation deterministic without sleep-as-workload. Timings include
+launch/barrier/interpreter overhead. Temporary files are isolated from the
+repository and removed; no campaign input or network is used. `fsync` does not
+prove physical disk throughput (scratch may be memory-backed or cached).
+
+Initial local run: Python 3.12.3, GCC 13.3.0;
+Linux-7.0.0-42-generic-x86_64-with-glibc2.39. Monotonic elapsed seconds, in actual
+alternating execution order:
+
+| Order | jobs | Elapsed seconds | Peak live executor children | Expected/ran | Exit | failures/errors/skips |
+|---|---:|---:|---:|---|---:|---|
+| 1 | 0 | 0.077329 | 4 | 8/8 | 0 | 0/0/0 |
+| 2 | 2 | 0.096431 | 2 | 8/8 | 0 | 0/0/0 |
+| 3 | 2 | 0.086892 | 2 | 8/8 | 0 | 0/0/0 |
+| 4 | 0 | 0.078853 | 4 | 8/8 | 0 | 0/0/0 |
+| 5 | 0 | 0.092341 | 4 | 8/8 | 0 | 0/0/0 |
+| 6 | 2 | 0.092776 | 2 | 8/8 | 0 | 0/0/0 |
+
+Medians: jobs 0 **0.078853 s**, jobs 2 **0.092776 s**. The candidate was slower
+in this synthetic sample; no minimum speed improvement is required or inferred.
+Every ordinary comparison asserts identical module IDs, module/payload hashes,
+individual test IDs, expected/ran counts, failure/error/skip counts and exit status.
+The six-run receipt is printed as `CI_CONTENTION_COMPARISON` on every rerun.
+
+Controls cover CPU discovery 1/2/4/16 and 1/2/4 modules, empty-suite refusal,
+real assertion failure, import failure, skip, ResourceWarning promoted to error,
+and SIGKILL. Both settings preserve ordinary pass/fail/skip outcomes. Import
+failure yields a counted loader error, not execution of the absent module's I/O
+tests. Workload event IDs identify tests entered, not proof they completed.
+SIGKILL remains red: the initial baseline completed 6/8 versus candidate 4/8;
+different chunk grouping loses different counts. This is explicitly **not equal
+completed coverage**. Both emit missing-count errors and exit 1. Forged stdout,
+missing/malformed record-channel verdicts and child TMPDIR cleanup retain the
+existing parallel regressions. SERIAL ordering and isolated per-child roots are
+also checked. The unchanged shell aggregator is exercised with success, failure,
+cancelled, skipped, expired, stale and empty results; only success passes.
+
+Initial acceptance output: `Ran 30 tests in 4.042s`, `OK`, exit 0. The receipt
+is candidate-only; no hosted CI or full live pipeline was executed for measurement.
+
 ## Evidence to record for a candidate
 
 Record repository, exact head SHA, each Actions run and check ID, conclusion,
