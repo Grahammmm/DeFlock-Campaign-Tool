@@ -944,7 +944,7 @@ FUNCTION_LEVEL_MODULES = {"findings", "kit", "kit_track", "kit_assign", "kit_und
                           "meeting_comments", "correction_requests", "supporters", "meeting_speakers"}
 _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
-        records.schedule_snapshot
+        records.schedule_snapshot records.site_prs
         records.admin_panel records.agency_reconciliation records.analysis_bridge records.analysis_config records.analysis_packets records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links records.finding_review records.finding_review_apply
         records.catalog_stage records.console_calendar records.console_documents records.console_export records.contained_resume records.e2e_proof records.container_host records.export_clearance
         records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes records.first_request
@@ -1181,6 +1181,7 @@ MODULE_FUNCTIONS = {
     'records.runtime': ('check',),
     'records.schedule': ('render',),
     'records.schedule_snapshot': ('main',),  # validated metadata-only host snapshot, mode 0600 + atomic replace
+    'records.site_prs': ('_write', 'snapshot',),  # DF2007-09: validated captured-PR metadata only, mode 0600 + atomic replace
     'records.systemd_control': ('_begin_locked', '_fence', '_prepare', 'stop_post',),
     'records.unattended': ('UnattendedPipeline._save_advance_resume', '_private_bytes',),
     'records.understanding.cli': ('_write', 'run',),
