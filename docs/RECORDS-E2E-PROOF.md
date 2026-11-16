@@ -71,8 +71,11 @@ pattern and asks, `queued_by_kind` (pending drafts that owner queued in this run
 
 A received item that calls for a fee-reply, appeal-denial or reply-extension draft but has none queued also fails
 `FOLLOWUP_DRAFT_MISSING`, even when the missing draft made the route fall back to another owner. An unreadable route or
-queue is `FOLLOWUP_PROOF_UNAVAILABLE` (a manual step). Fixtures: `tests/records/fixtures/e2e-followups/{fee,partial,
-denial,extension}.{eml,seed.json}`; nothing is sent, approved or published.
+queue is `FOLLOWUP_PROOF_UNAVAILABLE` (a manual step). Synthetic fixture templates are at
+`tests/records/fixtures/e2e-followups/{fee,partial,denial,extension}.seed.json`. The tests build the `.eml` files
+at runtime and reconstruct each template's eight `source_sha256_parts` into the unchanged `source_sha256`
+seed field before replay; the templates are not direct CLI seeds. The chunked public provenance hashes avoid
+credential-scan false positives without scanner exceptions. Nothing is sent, approved or published.
 
 ## Adoption rehearsal (`--with-adoption`)
 

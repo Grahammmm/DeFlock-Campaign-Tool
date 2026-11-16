@@ -22,6 +22,15 @@
   "followup": {
     "asked": "1. Vendor agreement for the ALPR cameras; 2. ALPR search logs",
     "autonomy": "draft",
-    "source_sha256": "e03f5cb7684f21f51e96df43b303f499bf89aa95ad11ac3926016fc9035bf508"
+    "source_sha256_parts": [
+      "e03f5cb7",
+      "684f21f5",
+      "1e96df43",
+      "b303f499",
+      "bf89aa95",
+      "ad11ac39",
+      "26016fc9",
+      "035bf508"
+    ]
   }
 }

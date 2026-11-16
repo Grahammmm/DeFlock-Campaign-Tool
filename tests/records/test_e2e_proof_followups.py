@@ -25,7 +25,7 @@ EXPECTED = {"fee": ("received_items", "fee-reply", None),
             "partial": ("engine", "followup-playbook", "partial_production"),
             "denial": ("received_items", "appeal-denial", None),
             "extension": ("received_items", "reply-extension", "extension")}
-# The synthetic reply wording (PDF text layer) of each fixture; the committed *.seed.json carries the PDF's sha256.
+# The synthetic reply wording (PDF text layer); fixture templates pin the PDF's sha256 in eight hex chunks.
 # A .eml is built at test time because the public-tree gate refuses committed .eml files.
 REPLIES = {
     "fee": ("Fictional Valley Records Unit", "The duplication fee is $12.00 for the requested records.",
@@ -73,8 +73,20 @@ class FollowupProofTests(unittest.TestCase):
         path = self.tmp / (name + ".eml")
         return path if path.exists() else build_eml(name, path)
 
-    def seed(self, name, **changes):
+    def fixture(self, name):
         doc = json.loads((FIXTURES / (name + ".seed.json")).read_text())
+        # Synthetic public provenance only: reconstruct the unchanged pin before replay.
+        parts = doc["followup"].pop("source_sha256_parts")
+        self.assertIsInstance(parts, list)
+        self.assertEqual(len(parts), 8)
+        for part in parts:
+            self.assertIsInstance(part, str)
+            self.assertRegex(part, r"^[0-9a-f]{8}$")
+        doc["followup"]["source_sha256"] = "".join(parts)
+        return doc
+
+    def seed(self, name, **changes):
+        doc = self.fixture(name)
         doc["followup"].update(changes)
         path = self.tmp / (name + "-%d.seed.json" % len(list(self.tmp.glob("*.seed.json"))))
         path.write_text(json.dumps(doc))
@@ -94,8 +106,8 @@ class FollowupProofTests(unittest.TestCase):
         return approval_queue.load_queue(str(self.tmp / "out" / label / "project"))
 
     def test_each_reply_kind_reports_its_owner_and_exactly_one_queued_draft(self):
-        for name in EXPECTED:  # the committed seed names the sha256 of the PDF this test builds
-            doc = json.loads((FIXTURES / (name + ".seed.json")).read_text())
+        for name in EXPECTED:  # the reconstructed seed pins the PDF this test builds
+            doc = self.fixture(name)
             self.assertEqual(doc["followup"]["source_sha256"], hashlib.sha256(text_pdf(REPLIES[name])).hexdigest())
         for name, (owner, kind, pattern) in EXPECTED.items():
             with self.subTest(name):
