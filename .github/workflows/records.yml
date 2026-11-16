@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         shard: [0, 1, 2, 3, 4]
     steps:
@@ -36,7 +37,7 @@ jobs:
       - name: Changed-area source tests (disjoint shards)
         env:
           TMPDIR: /var/tmp
-        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier pr --shard ${{ matrix.shard }} --shards 5 --jobs 0
+        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier pr --shard ${{ matrix.shard }} --shards 5 --jobs 2
   full:
     # Main/nightly source coverage in two disjoint shards per Python. One 4-CPU job ran 20-35 min and hit the old
     # 35-minute offline timeout on slow runners (main runs 43768448222, 43769348646, 43772136816: 'cancelled').
@@ -45,6 +46,7 @@ jobs:
     timeout-minutes: 35
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         python: ['3.11', '3.12', '3.13']
         shard: [0, 1]
@@ -59,7 +61,7 @@ jobs:
       - name: Full source coverage minus explicitly owned integration suites (disjoint shards)
         env:
           TMPDIR: /var/tmp
-        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier full --shard ${{ matrix.shard }} --shards 2 --jobs 0
+        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier full --shard ${{ matrix.shard }} --shards 2 --jobs 2
   offline:
     # Preserve the required check name, and fail closed on any failed shard.
     needs: [affected, full]
