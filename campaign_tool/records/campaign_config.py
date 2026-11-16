@@ -1,5 +1,6 @@
 """Bounded, read-only per-campaign configuration (names, law package, public URL, mailbox label, clock)."""
 from dataclasses import dataclass
+import ipaddress
 import json
 import re
 import urllib.parse
@@ -17,6 +18,7 @@ DEFAULT_DISPLAY_NAME = "Records project"
 DEFAULT_LAW_PACKAGE = "us-ca"
 _ID = re.compile(r"[a-z0-9-]{2,40}")
 _LAW = re.compile(r"[a-z]{2}-[a-z]{2}")
+_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _KEYS = {"schema_version", "campaign_id", "display_name", "law_package", "public_base_url",
          "records_mailbox_label", "timezone"}
 
@@ -76,13 +78,42 @@ def _text(config, key, error):
     return value
 
 
+def _authority(netloc, error):
+    """Syntax-only check of host[:port]; never resolves a name."""
+    if not netloc or any(c in netloc for c in "\\%@?# \t\r\n\x0b\x0c"):
+        raise ValueError(error)
+    if netloc.startswith("["):
+        literal, close, rest = netloc[1:].partition("]")
+        if not close or (rest and not rest.startswith(":")):
+            raise ValueError(error)
+        if not isinstance(ipaddress.ip_address(literal), ipaddress.IPv6Address):
+            raise ValueError(error)
+        port = rest[1:] if rest else None
+    else:
+        host, colon, port = netloc.partition(":")
+        port = port if colon else None
+        if ":" in (port or "") or "[" in host or "]" in host:
+            raise ValueError(error)
+        name = host[:-1] if host.endswith(".") else host
+        labels = name.split(".")
+        if not name or len(name) > 253 or not all(_LABEL.fullmatch(label) for label in labels):
+            raise ValueError(error)
+        if all(label.isdigit() for label in labels):
+            ipaddress.IPv4Address(name)  # numeric-only names must be real IPv4
+    if port is not None and (not (port.isascii() and port.isdigit()) or not 1 <= int(port) <= 65535):
+        raise ValueError(error)
+
+
 def _base_url(value, error):
     if not isinstance(value, str) or not value.isascii() or not value.isprintable() or len(value) > 200:
+        raise ValueError(error)
+    if "?" in value or "#" in value:
         raise ValueError(error)
     parts = urllib.parse.urlsplit(value)
     if (parts.scheme != "https" or not parts.hostname or parts.path not in ("", "/") or parts.query
             or parts.fragment or parts.username is not None or parts.password is not None):
         raise ValueError(error)
+    _authority(parts.netloc, error)
     return "https://" + parts.netloc
 
 
