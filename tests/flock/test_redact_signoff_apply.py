@@ -171,6 +171,44 @@ class RefusedReplay(Replay):
         self.assertEqual(len(self.receipts()), 2)
         self.assertFalse(self.signoff_path().exists())
 
+    def test_recovery_revalidates_inputs_changed_while_waiting_for_the_lock(self):
+        import fcntl
+
+        self.journal()
+        self.replay()
+        signoff = self.signoff_path().read_bytes()
+        (self.dir / redact.RECEIPTS).unlink()  # interrupted after install, before receipt
+        real_flock = fcntl.flock
+        value = json.loads(self.proposal)
+        value["created_at"] = "2020-01-01T00:00:00Z"
+        changed_proposal = redact.encode(value)
+        for path, changed, refusal in (
+                (self.folder / "PROPOSAL.json", changed_proposal, "STALE_PROPOSAL"),
+                (self.source, self.raw + b"x", "refused source_mismatch")):
+            with self.subTest(path=path.name):
+                self.source.write_bytes(self.raw)
+                self.folder.joinpath("PROPOSAL.json").write_bytes(self.proposal)
+                (self.dir / redact.RECEIPTS).unlink(missing_ok=True)
+                after_change = []
+
+                def acquire(fd, operation):
+                    path.write_bytes(changed)  # inputs were loaded; the lock is not yet acquired
+                    after_change.append(self.snapshot())
+                    return real_flock(fd, operation)
+
+                self.verify.reset_mock()
+                with mock.patch.object(fcntl, "flock", side_effect=acquire) as locked:
+                    self.assertIn(refusal, self.replay(expected=1))
+                locked.assert_called_once()
+                self.verify.assert_not_called()
+                self.assertEqual(self.snapshot(), after_change[0])
+                self.assertEqual(self.signoff_path().read_bytes(), signoff)
+                self.assertNotIn("APPLIED", [r["outcome"] for r in self.receipts()])
+                if path == self.source:
+                    self.assertEqual(self.receipts(), [])
+                else:
+                    self.assertEqual([r["outcome"] for r in self.receipts()], ["STALE_PROPOSAL"])
+
     def test_an_install_time_change_rolls_back_only_our_signoff(self):
         self.journal()
         real = redact.record._bytes
