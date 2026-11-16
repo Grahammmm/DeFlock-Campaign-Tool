@@ -222,10 +222,15 @@ def verify(data, signature):
             or "-----BEGIN SSH SIGNATURE-----" not in signature:
         raise ApprovalError("approval requires an SSH signature, not a name")
     anchor_status()
-    with tempfile.TemporaryDirectory(prefix="deflock-approval-") as tmp:
-        sig = Path(tmp) / "approval.sig"
-        sig.write_text(signature, encoding="utf-8")
+    # Workspace creation, write and teardown failures are unavailability, never a raw OSError.
+    try:
+        workspace = tempfile.TemporaryDirectory(prefix="deflock-approval-")
+    except OSError as exc:
+        raise TrustUnavailable("signature check could not run") from exc
+    try:
+        sig = Path(workspace.name) / "approval.sig"
         try:
+            sig.write_text(signature, encoding="utf-8")
             found = subprocess.run([str(SSH_KEYGEN), "-Y", "find-principals", "-s", str(sig), "-f", str(TRUSTED_SIGNERS)],
                                    capture_output=True, text=True, timeout=30, check=False)
             names = found.stdout.split()
@@ -235,6 +240,17 @@ def verify(data, signature):
                                    "-n", NAMESPACE, "-s", str(sig)], input=data, capture_output=True, timeout=30, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
             raise TrustUnavailable("signature check could not run") from exc
+    except BaseException:
+        # One cleanup attempt; a secondary OSError never replaces the active primary exception.
+        try:
+            workspace.cleanup()
+        except OSError:
+            pass
+        raise
+    try:
+        workspace.cleanup()
+    except OSError as exc:
+        raise TrustUnavailable("signature check could not run") from exc
     if done.returncode != 0:
         raise ApprovalError("signature does not match the approved text")
     return names[0]
