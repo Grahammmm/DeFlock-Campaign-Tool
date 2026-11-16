@@ -57,8 +57,26 @@ LF line endings are accepted, as before. `VTIMEZONE` (with `STANDARD`/`DAYLIGHT`
 still allowed when balanced, and are still ignored: their `SUMMARY`, `DTSTART`, `UID` or `STATUS` never become an
 event's. A complete calendar with no events is a valid, empty source.
 
-This is a structure check only. It does not require `VERSION`, and does not tighten how dates, UIDs or other properties
-are read; skip counts and the duplicate-UID revision rules are unchanged.
+The structure check does not require `VERSION`, and does not tighten how dates, UIDs or other properties are read; skip
+counts and the duplicate-UID revision rules are unchanged. A second, separate check follows it (below).
+
+## Repeated UID, DTSTART or STATUS in one event
+
+After the structure check and before any revision selection or filtering, the importer looks at every `VEVENT` in the
+feed. If one has more than one direct `UID`, `DTSTART` or `STATUS` property, the **whole feed** is refused. This covers
+older revisions, recurring events, past or non-matching events, repeats with parameters or folded lines, and identical
+repeats (`STATUS:CANCELLED` twice is refused too). The importer never picks the first or last value. The refusal is one
+fixed line that never repeats text from the feed:
+
+```text
+feed has repeated UID, DTSTART or STATUS in one VEVENT; nothing was written
+```
+
+Only properties directly inside the `VEVENT` count; those inside a `VALARM` do not. Several separate `VEVENT` blocks with
+the same `UID` are still normal revisions, and repeatable properties such as `ATTACH`, `SUMMARY` or `DESCRIPTION` are
+unchanged. Nothing else is validated. `kit/meetings.json` is handled exactly as for a structure refusal: with one feed it
+stays byte-for-byte the same with the same file mode (or is not created), and with several sources the bad feed is
+reported `failed` and its previous meetings are kept, marked `stale`.
 
 ## What happens to `kit/meetings.json`
 
