@@ -339,8 +339,8 @@ def _approve_block(row, pub, token):
     payload = (pub.get("line_payloads") or {}).get(row["id"])
     if payload is None or not row.get("revision"):
         return ""
-    if row.get("approved_revision") == row["revision"]:
-        note = "Signed by %s for this exact text; it posts at the next advancement, even with auto-post OFF." % row.get("approved_by")
+    if row.get("signed_revision") == row["revision"]:
+        note = "Signed by %s for this exact text; it posts at the next advancement, even with auto-post OFF." % row.get("signed_by")
     else:
         note = "Not approved. G's signature over the exact payload below lets this one line post at the next advancement while auto-post is OFF."
     form = ""

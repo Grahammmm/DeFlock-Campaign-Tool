@@ -206,7 +206,7 @@ def fold(events):
             elif kind == "refused":
                 row.update(state="refused", refusal=ev["code"])
             elif kind == "line_approval":  # safe metadata only; the signature stays in the private journal
-                row.update(approved_revision=ev["revision"], approved_by=ev["principal"], approved_at=ev["ts"])
+                row.update(signed_revision=ev["revision"], signed_by=ev["principal"], signed_at=ev["ts"])
     return lines, switch, alerts
 
 

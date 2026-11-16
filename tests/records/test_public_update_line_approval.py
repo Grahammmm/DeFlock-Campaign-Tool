@@ -142,7 +142,7 @@ class SignedLineTests(Base):
         (a,) = self.propose(*cands())
         self.approve(a)
         row = self.row(a)
-        self.assertEqual((row["approved_revision"], row["approved_by"]), (pu.line_revision(row), self.signer.principal))
+        self.assertEqual((row["signed_revision"], row["signed_by"]), (pu.line_revision(row), self.signer.principal))
         self.assertNotIn("signature", json.dumps(row))
 
     def test_kill_file_blocks_an_approved_line_and_kill_after_the_file_is_removed_stays(self):
