@@ -13,6 +13,22 @@ records panel --project PROJECT --run-id RUN_ID ... --render out.html     # stat
 
 ## Review-only agency summaries and corrections (CONDRAFT-02)
 
+### Implementation scope amendment
+
+The CONDRAFT-02 fix task `t_e19fbb3e` applies the operator's SCOPE-3 standing
+file-scope grant to the following two additions to the frozen owned-file list:
+
+- `campaign_tool/records/mail_preview.py`: the review-copy-only preview avoids
+  mail lookup/configuration and shows no mail recipient, sender or subject.
+- `campaign_tool/records/mail_send.py`: the explicit `review_copy_not_mail`
+  refusal prevents either review-copy kind from entering send preparation.
+
+These narrowly scoped additions implement the existing requirement that agency
+summaries and corrections are not email, including after copy approval. This
+amendment records file ownership only; it does not authorize a send, change the
+approval chain, relax source/privacy/redaction checks, or change what may be
+published. The existing refusal behavior is retained unchanged by this fix.
+
 `records draft-import --project PROJECT --file INPUT [--apply]` also accepts one
 `records-console-draft-input-v1` instance of kind `draft-agency-summary` or
 `draft-correction-notice`. Dry-run remains the default; apply adds only one pending
