@@ -633,7 +633,7 @@ class Timeline(unittest.TestCase):
                 pass
         base = Export()
         base.setUp()
-        base.addCleanup(base.doCleanups)
+        self.addCleanup(base.doCleanups)  # base is never run by unittest; its setUp patches must be undone here
         unmatched.append_link(base.live, self.m1, "alpha-pd", "L-R-1", "t")
         dest, _, model = base.export()
         self.assertEqual(model["queue.json"]["message_links"], unmatched.link_fingerprints(base.live))
