@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import pwd
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,7 @@ from .recovery.records_profile import ProfileIncomplete, backup_roots, build_pro
 
 DIGESTS = "backup-digests.jsonl"
 EVIDENCE_KEYS = {"schema", "basis", "roots", "observed_utc", "all_writers_stopped", "checks", "auditor"}
+OPTIONAL_EVIDENCE_KEYS = {"roots_user", "runtime_source"}
 MAX_EVIDENCE = MAX_LIST = 1024 * 1024
 
 
@@ -47,7 +49,13 @@ def _evidence(path, trusted, roots):
     if trusted is not None and digest != trusted:
         raise ValueError("evidence_digest_mismatch")
     doc = json.loads(raw)
-    keys = EVIDENCE_KEYS | {"runtime_source"} if type(doc) is dict and doc.get("runtime_source") == "socket" else EVIDENCE_KEYS
+    keys = EVIDENCE_KEYS | (set(doc) & OPTIONAL_EVIDENCE_KEYS if type(doc) is dict else set())
+    if type(doc) is dict:
+        if "runtime_source" in doc and doc["runtime_source"] != "socket":
+            raise ValueError("evidence_invalid")
+        if "roots_user" in doc and (type(doc["roots_user"]) is not str or not doc["roots_user"]
+                                    or doc["roots_user"] != pwd.getpwuid(os.getuid()).pw_name):
+            raise ValueError("evidence_invalid")  # metadata names the backup caller; it never selects roots
     if (type(doc) is not dict or set(doc) != keys or doc["schema"] != "records-quiescence-v1" or
             doc["basis"] != "independent_all_writer_audit" or doc["auditor"] != "records quiescence-audit" or
             type(doc["checks"]) is not dict or tuple(doc["roots"]) != roots or doc["all_writers_stopped"] is not True):
