@@ -21,6 +21,17 @@ The current CLI remains an offline starter. SLO production code has not yet been
 
 Use one codex/<task> branch and PR per task; never push to main. Before each push, run a credential scan and review all staged paths; report the command and checked scope in the PR. Never transfer private repo history.
 
+## Records-test pre-push interpreter
+
+When the pre-push selector includes records tests, check the repository's own provisioned `.venv/bin/python` first, before inspecting any alternate runtime.
+
+- Managed canonical checkout: `/home/user/repos/DeFlock-Campaign-Tool/.venv/bin/python`. In another clone, prefer that clone's own already-provisioned `.venv/bin/python`; the host path is an example, not a universal prerequisite.
+- Pins live in `requirements-records-test.txt`, `requirements-records-parsers.txt` and `requirements-runner.txt` (currently pypdf 6.10.0). Probe the interpreter with an external script file that prints `sys.executable`, the pypdf/openpyxl versions and `campaign_tool.__file__`; never use interpreter one-liners or command-line PYTHONPATH overrides.
+- A detached worktree may reuse the canonical checkout's interpreter for its installed parser packages, but run with cwd at the candidate checkout and confirm `campaign_tool.__file__` is under that cwd. On an import-source mismatch, report it; do not silently test the donor checkout.
+- Apply the interpreter prefix to the repository's existing workflow/selector checks, not a reduced suite. `<repo-python> -B -m unittest tests.records.test_fa100 -q` is only a smoke check, not full pre-push acceptance. Parser-independent starter tests need no extra dependency.
+- Only after that probe, inspect alternate runtimes, or report ENVIRONMENT with the actual missing path, import or version. If the venv is absent or broken, record that fact. Do not create a venv, download or upgrade packages, treat parser-dependent skips as green, or run the runtime doctor/run against private records.
+- Credential scans and staged-path review above still apply.
+
 For each extraction, rebuild the pilot from a pinned engine version and compare its output against the accepted asset hashes. List every intentional difference. Do not rewrite findings, dates, policy claims or consent wording as an incidental refactor.
 
 Staging deployment to the pilot's existing staging Worker is authorized. Production deployment, DNS, Access and Brevo list changes require explicit owner approval in chat. No account values or owner identities belong in a public fixture.
@@ -33,3 +44,38 @@ composed candidate tree before requesting review, including single-lane candidat
 An isolated-green head is not a composed-tree receipt. Follow the
 [composed-tree test workflow and review receipt](docs/RUN-STAGES-PRE-REVIEW.md);
 record every admitted constituent and rerun after any head/tree change.
+
+## Import-manifest pin refresh checklist
+
+Authors and independent code reviewers: if a PR changes any file in this table,
+the matching manifest entry and the scanner approval of that whole manifest must
+be refreshed in the same PR. Focused intake/gate functional tests alone do not
+catch a stale pin: stale manifest or scanner pins can fail the package, shell,
+WP5, intake or detect-secrets checks even when the narrow tests pass.
+
+| Affected file | Manifest whose matching entry must refresh |
+|---|---|
+| `campaign_tool/records/intake/folder.py` | `docs/records-intake-import.json` |
+| `campaign_tool/records/intake/repair_intake.py` | `docs/records-intake-import.json` |
+| `campaign_tool/records/intake/scope_quarantine.py` | `docs/records-intake-import.json` |
+| `tests/records/test_intake.py` | `docs/records-intake-import.json` |
+| `campaign_tool/records/gates/batch_report.py` | `docs/records-gates-import.json` |
+| `campaign_tool/records/gates/collect_reviews.py` | `docs/records-gates-import.json` |
+| `campaign_tool/records/gates/reconcile_coverage.py` | `docs/records-gates-import.json` |
+| `campaign_tool/records/gates/validate_findings.py` | `docs/records-gates-import.json` |
+| `campaign_tool/records/gates/tests/test_gate.py` | `docs/records-gates-import.json` |
+
+Order, all in the same PR:
+
+1. Hash the changed file's final bytes into the matching manifest entry's `engine_sha256`.
+   Keep the historical `source_sha256` and `schema_sha256` unless a real source or schema change justifies it.
+2. After the manifest bytes are final, hash the entire manifest file and update only its
+   corresponding `APPROVED_MANIFESTS` entry in `tools/check_secret_report.py`. A manifest-only
+   byte change also invalidates the whole-file approval, and so does any later formatting or
+   newline change. If both groups change, refresh both manifests and both approvals.
+3. Do not copy stale hashes, strip fields, add a blanket allowlist or weaken the scanner.
+4. Run `python3 -B -m unittest tests.test_provenance_scan -v` in addition to the relevant
+   functional tests and the repository credential/privacy scans. That module is not a complete
+   secret scan, and a correct pin is not publication clearance or independent review.
+
+If no pinned file changed, say so in the PR body with a not-applicable rationale.

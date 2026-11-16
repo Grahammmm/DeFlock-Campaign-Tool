@@ -8,6 +8,7 @@ import re
 import sys
 
 from . import approval_queue as aq, case_builder, followup_advisories, followup_clock, followup_drafter
+from . import followup_findings
 from . import followup_route, followup_state as fs, mail_drafts, playbook
 from .outcomes import received_items
 
@@ -60,12 +61,18 @@ def _identity(route, state, ratings, thread_id):
             ids.update(str(e[k]) for k in ("item_id", "finding_id", "event_id") if e.get(k))
     identity = [route[k] for k in ("agency_key", "request_id", "pattern", "extra_patterns", "asks_for")]
     identity += [thread_id, sorted(ids), state["state"], sorted(state["flags"])]
+    if route.get("finding"):  # contradiction rows only: legacy identity serialization is unchanged
+        identity += [[route["finding"][k] for k in ("finding_id", "finding_sha256", "evidence_sha256")]]
     raw = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "route:" + hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
-def run(project, run_id, *, apply=False, as_of=None):
-    routes = followup_route.route_run(project, run_id)
+def run(project, run_id, *, apply=False, as_of=None, analysis_root=None):
+    # One load per invocation: the same descriptors serve the route and the case (never a second, different read).
+    findings = None
+    if analysis_root is not None:
+        findings = followup_findings.load_reviewed_contradictions(project, run_id, analysis_root)
+    routes = followup_route.route_run(project, run_id, findings=findings)
     states = fs.classify_run(project, run_id)
     if as_of is not None and as_of != states["as_of"]:
         raise ValueError("followup_engine_as_of_stale")
@@ -114,10 +121,15 @@ def run(project, run_id, *, apply=False, as_of=None):
         if qid in existing:
             summary["duplicate"] += 1
             continue
-        if not route["asks_for"]:
+        if not route["asks_for"] and not route.get("finding"):
             summary["no_open_asks"] += 1
             continue
-        case = case_builder.build(route, requests[key], items, asks_rows=case_builder._asks(project, key[0]))
+        descriptor = None
+        if route.get("finding"):  # the exact descriptor the route chose; a mismatch refuses before any write
+            descriptor = next((d for d in findings or () if followup_findings.locator(d) == route["finding"]
+                               and (d["agency_key"], d["request_id"]) == key), None)
+        case = case_builder.build(route, requests[key], items, asks_rows=case_builder._asks(project, key[0]),
+                                  finding=descriptor)
         draft = followup_drafter.draft(book, case, ())  # No policy section is selected implicitly.
         if not draft["open_asks"]:
             summary["no_open_asks"] += 1
@@ -130,6 +142,8 @@ def run(project, run_id, *, apply=False, as_of=None):
         advice = followup_advisories.notes(draft["body"])  # Advice only: stored beside the letter, never edits it.
         if advice:
             evidence["limits"] = advice
+        if route.get("finding"):
+            evidence["finding"] = route["finding"]
         planned.append(dict(item_id=ident, kind=KIND, agency_id=key[0], request_id=key[1],
                             body=draft["body"], evidence=evidence, source_run_id=run_id))
         existing.add(qid)
@@ -147,9 +161,13 @@ def main():
     parser.add_argument("--project", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--analysis-root", help="explicit analysis root holding signed finding reviews (default: none)")
     args = parser.parse_args()
     try:
-        summary = run(args.project, args.run_id, apply=args.apply)
+        summary = run(args.project, args.run_id, apply=args.apply, analysis_root=args.analysis_root)
+    except followup_findings.FindingsUnavailable as exc:
+        print(exc.args[0], file=sys.stderr)
+        return 2
     except (OSError, ValueError, KeyError, TypeError, AttributeError, aq.ApprovalQueueError, playbook.PlaybookError):
         print("followup_engine_invalid_input", file=sys.stderr)
         return 2
