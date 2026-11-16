@@ -9,6 +9,7 @@ import contextlib
 import os
 import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -69,31 +70,76 @@ def recipient_ids(pubkey):
     return fingerprints[0], key_ids
 
 
+def _owned(partial, identity):
+    """True while ``partial`` is still the regular file this invocation created (non-following stat)."""
+    try:
+        info = os.stat(partial, follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == identity
+
+
+def _require_owned(partial, identity):
+    if not _owned(partial, identity):
+        raise _error("encrypted archive staging changed; nothing published") from None
+
+
 def encrypt(plain, out, pubkey):
     """Encrypt ``plain`` to ``pubkey`` into a new ``out`` (never replaced); returns the recipient fingerprint."""
     out = Path(out)
     fingerprint, key_ids = recipient_ids(pubkey)
     partial = out.parent / f".{out.name}.{secrets.token_hex(6)}.partial"
+    # Nothing is owned until this exclusive create succeeds: a collision propagates and deletes nothing.
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError("not a regular file")
+        identity = (info.st_dev, info.st_ino)
+    except BaseException as exc:
+        os.close(fd)  # ownership not established: the pathname is left alone
+        if isinstance(exc, OSError):
+            raise _error("encrypted archive staging could not be verified; nothing published") from None
+        raise
+    # ``fd`` pins the inode (so its number cannot be recycled) until the cleanup decision below.
+    primary = None
     try:
         with tempfile.TemporaryDirectory(prefix="deflock-gpg-") as home:
-            fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "wb") as handle:
+            writer = os.dup(fd)
+            try:
+                handle = os.fdopen(writer, "wb")
+            except BaseException:
+                os.close(writer)
+                raise
+            with handle:
                 result = _gpg(["--homedir", home, "--no-autostart", "--trust-model", "always",
                                "--recipient-file", str(pubkey), "--output", "-", "--encrypt", str(plain)],
                               timeout=LONG_TIMEOUT, stdout=handle)
             if result.returncode != 0:
                 raise _error("gpg encryption failed")
+            _require_owned(partial, identity)
             listed = _gpg(["--homedir", home, "--no-autostart", "--list-only", "--list-packets", str(partial)])
         packets = [line.split() for line in listed.stdout.decode("utf-8", "replace").splitlines()
                    if line.startswith(":pubkey enc packet:")]
         if listed.returncode != 0 or not any(word.upper() in key_ids for packet in packets for word in packet):
             raise _error("encrypted archive is not addressed to the --encrypt-to key")
+        _require_owned(partial, identity)
         try:
             os.link(partial, out)
         except FileExistsError:
             raise _error("archive appeared during encryption; choose a new file name") from None
+    except BaseException as exc:
+        primary = exc
+        raise
     finally:
-        partial.unlink(missing_ok=True)
+        try:
+            if _owned(partial, identity):
+                partial.unlink(missing_ok=True)
+        except OSError:
+            if primary is None:
+                raise
+        finally:
+            os.close(fd)
     return fingerprint
 
 
