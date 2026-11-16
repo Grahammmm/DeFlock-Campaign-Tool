@@ -1054,7 +1054,7 @@ MODULE_FUNCTIONS = {
     'recent': ('_write_new', 'run_cli',),
     'records.agency_reconciliation': ('run',),
     'records.analysis_bridge': ('_log', '_merge_csv', '_place', 'receive',),  # retained 0600 run store, append-only ledger and review-input files under the operator analysis root; writes no fact, sends nothing
-    'records.analysis_config': ('main', 'write_config',),  # one 0600 review-config.json under the operator analysis root, only when flock_review --check passes; no store, sends nothing
+    'records.analysis_config': ('_create_candidate', 'main', 'write_config',),  # one 0600 review-config.json under the operator analysis root, only when flock_review --check passes; --scaffold adds only an exclusive 0600 profiles/S.json.candidate; no store, sends nothing
     'records.arrival': ('consume', 'main', 'mark_pending', 'scan_drop_status', 'stamp',),
     'records.arrival_summary': ('capture_baseline',),
     'records.bounded_resume': ('_worker',),
