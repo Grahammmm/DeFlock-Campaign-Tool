@@ -150,8 +150,8 @@ def build(data, repo, now):
     rows = validate(parse(data), repo)
     doc = {"schema": SCHEMA, "repository": repo, "captured_at": now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "prs": rows}
-    out = (json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=True) + "\n").encode("ascii")
-    if len(out) > 4 * MAX_BYTES:
+    out = (json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8", errors="backslashreplace")
+    if len(out) > MAX_BYTES:  # Never replace a snapshot with bytes that load() would refuse.
         _fail("too_large")
     return out
 
