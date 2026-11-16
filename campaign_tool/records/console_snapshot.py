@@ -344,4 +344,3 @@ class SnapshotSource:
         if isinstance(doc, str):
             return console_followups.unavailable(run_id)
         return doc if console_followups.validate(doc, run_id) is not None else console_followups.unavailable(run_id)
-

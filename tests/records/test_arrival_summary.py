@@ -286,10 +286,66 @@ class ComposeTests(unittest.TestCase):
         self.assertIn("No work attempted", text)
         self.assertIn("Came in: unavailable.", text)
 
+    LABEL = "Needs G (pre-decision state): "
+
+    def needs_line(self, text):
+        return next(line for line in text.splitlines() if line.startswith("Needs G"))
+
+    def test_label_on_every_non_preflight_branch(self):
+        cases = [
+            ({"received_by_kind": None, "pending_drafts": 14}, "14 draft(s) waiting for approval"),
+            ({"received_by_kind": None, "pending_drafts": 0}, "0 draft(s) waiting for approval"),
+            ({"received_by_kind": None, "pending_drafts": None}, "drafts waiting for approval: unavailable"),
+            (None, "drafts waiting for approval: unavailable"),
+        ]
+        for block, drafts in cases:
+            report = self.report(block)
+            text = self.notify.compose(report, "x", 0)
+            self.assertTrue(self.needs_line(text).startswith(self.LABEL + drafts + "; "), text)
+
+    def test_warn_and_fail_keep_label_and_codes(self):
+        report = self.report({"received_by_kind": None, "pending_drafts": 3})
+        report["stages"][2]["status"] = "fail"
+        report["stages"][2]["error_code"] = "STAGE_FAILED"
+        text = self.notify.compose(report, "x", 4)
+        self.assertIn("(exit 4)", text)
+        self.assertIn("STAGE_FAILED", text)
+        self.assertIn(self.LABEL + "3 draft(s) waiting for approval", text)
+        report["stages"][2]["status"] = "warn"
+        self.assertIn(self.LABEL + "3 draft(s)", self.notify.compose(report, "x", 0))
+
+    def test_preflight_refusal_has_no_label_or_count(self):
+        report = self.report(None)
+        code = next(iter(self.notify.PREFLIGHT_MESSAGES))
+        report["stages"][0].update(status="fail", error_code=code)
+        text = self.notify.compose(report, "x", 1)
+        self.assertNotIn("pre-decision", text)
+        self.assertTrue(text.endswith("Came in: unavailable.\nNeeds G: drafts pending unavailable."))
+
+    def test_snapshot_14_stays_visible_after_queue_drops_to_13(self):
+        rows = [{"status": "pending"} for _ in range(14)]
+        with mock.patch("campaign_tool.records.approval_queue.load_queue", side_effect=lambda project: list(rows)):
+            captured = summary.pending_count("p")
+        rows.pop()
+        with mock.patch("campaign_tool.records.approval_queue.load_queue", side_effect=lambda project: list(rows)):
+            self.assertEqual(summary.pending_count("p"), 13)
+        report = self.report({"received_by_kind": None, "pending_drafts": captured})
+        before = copy.deepcopy(report)
+        text = self.notify.compose(report, "x", 0)
+        self.assertEqual(captured, 14)
+        self.assertIn(self.LABEL + "14 draft(s) waiting for approval", text)
+        self.assertNotIn("13", self.needs_line(text))
+        self.assertEqual(report, before)
+        self.assertLessEqual(len(text.splitlines()), 6)
+        self.assertLess(len(text.encode()), 4096)
+        self.assertNotIn(SENTINEL, self.notify.compose(report, SENTINEL, 0))
+        self.assertIn("coverage", text.splitlines()[-1].lower())
+
     def test_scheduled_run_keeps_legacy_text(self):
         report = json.loads(EXAMPLE.read_text(encoding="utf-8"))
         text = self.notify.compose(report, "label", 0)
         self.assertNotIn("Came in", text)
+        self.assertNotIn("pre-decision", text)
 
 
 class TriggerCrossesContainerTests(unittest.TestCase):

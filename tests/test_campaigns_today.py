@@ -14,13 +14,15 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 from campaign_tool import cli, registry, today  # noqa: E402
+from campaign_tool.records import campaign_summary, console_home, console_snapshot  # noqa: E402
+from tests.records.test_campaign_summary import real_export  # noqa: E402
 from tests import test_today  # noqa: E402  (its synthetic tree builder; its tests are not re-run here)
 
 AS_OF = "2026-03-15"
@@ -303,6 +305,96 @@ class CampaignsToday(unittest.TestCase):
             self.assertEqual(self.today_all()[0], 3)
             self.assertEqual(self.today_all("--json")[0], 3)
         self.assertEqual(snapshot(self.base), before)  # bytes, paths and modes, absent optional files included
+
+
+    def bind(self, name, export_root, pid):
+        entries = json.loads(self.register.read_text())
+        next(e for e in entries if e["name"] == name)["records"] = {"export_root": str(export_root), "source_project_id": pid}
+        self.register.write_text(json.dumps(entries))
+
+    def two_counties(self):
+        """Cedar (site-kit work plus a genuine export) and Pine (no export at all), both fictional."""
+        made = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(hours=3)
+        exports = self.base / "exports-sandbox"
+        exports.mkdir()
+        self.addCleanup(self.unlock, exports)
+        root, pin = real_export(exports, made)
+        cedar, pine = self.campaign("cedar", full=True), self.campaign("pine")
+        self.bind("cedar", root, pin.source_project_id)
+        self.bind("pine", self.base / "no-such-export-root", "b" * 16)
+        model = console_home.load(pin.path, pin.run_id, now=made, source=console_snapshot.SnapshotSource(pin))
+        queue = [r for r in model["queue"]["rows"] if r["status"] == "pending"]
+        decisions = console_home.decision_rows(model, made.date())
+        want = {"drafts_waiting": sum(r["kind"] != "message_link" for r in queue),
+                "messages_to_tie": sum(r["kind"] == "message_link" for r in queue),
+                "requests_overdue": sum(bool(r["overdue"]) for r in model["waiting"]["rows"]),
+                "holds_needing_decision": sum(r["source"] in ("public", "packets") for r in decisions)}
+        return cedar, made, want
+
+    @staticmethod
+    def unlock(root):
+        for base, dirs, names in os.walk(root):
+            os.chmod(base, 0o700)
+
+    def test_records_row_per_bound_campaign_additive_and_matching_home(self):
+        cedar, made, want = self.two_counties()
+        with mock.patch.object(registry, "_utcnow", return_value=made + timedelta(hours=5)):
+            code, rows, _ = self.today_all("--json")
+            _, lines, _ = self.today_all()
+        records = {r["campaign"]: r for r in rows if r["kind"] == "records_summary"}
+        self.assertEqual(code, 0)  # a readable summary and a normal "no records export" are both exit 0
+        self.assertEqual([r for r in rows if r["kind"] != "records_summary"], self.expected("cedar", cedar))  # rank/order intact
+        self.assertEqual([r["campaign"] for r in rows if r["kind"] == "records_summary"], ["cedar", "pine"])
+        self.assertEqual(rows.index(records["cedar"]), len(self.expected("cedar", cedar)))  # right after its own site-kit rows
+        cedar_row = records["cedar"]
+        self.assertEqual((cedar_row["rank"], cedar_row["kind"], cedar_row["due"], cedar_row["command"]), (None, "records_summary", None, None))
+        self.assertEqual({k: cedar_row["records"][k] for k in campaign_summary.COUNTS}, want)
+        self.assertEqual((cedar_row["records"]["state"], cedar_row["records"]["age_hours"], cedar_row["records"]["stale"],
+                          cedar_row["records"]["unavailable"]), ("ok", 5, False, []))
+        pine = records["pine"]["records"]
+        self.assertEqual((pine["state"], pine["drafts_waiting"], pine["age_hours"]), ("no_export", None, None))
+        self.assertIn(f"campaign | pine | records: no records export{TAIL}", lines)
+        text = next(l for l in lines if l.startswith("campaign | cedar | records:"))
+        for label in ("drafts waiting for review %d" % want["drafts_waiting"], "unmatched messages to tie 0",
+                      "requests overdue (on our records; not a legal finding) %d" % want["requests_overdue"],
+                      "holds needing a decision %d" % want["holds_needing_decision"], "5 hours old"):
+            self.assertIn(label, text)
+
+    def test_stale_export_is_labelled_with_its_age_and_as_of_does_not_backdate(self):
+        cedar, made, want = self.two_counties()
+        with mock.patch.object(registry, "_utcnow", return_value=made + timedelta(hours=49)):
+            code, rows, _ = self.today_all("--json")
+            _, lines, _ = self.today_all()
+        records = next(r["records"] for r in rows if r["campaign"] == "cedar" and r["kind"] == "records_summary")
+        self.assertEqual((code, records["age_hours"], records["stale"]), (0, 49, True))
+        self.assertEqual({k: records[k] for k in campaign_summary.COUNTS}, want)  # the clock never changes the counts
+        self.assertTrue(any("stale (49 hours old)" in l for l in lines))
+
+    def test_unbound_output_unchanged_and_a_bad_export_is_degraded_not_hiding(self):
+        self.campaign("alpha")
+        code, rows, _ = self.today_all("--json")
+        self.assertEqual((code, rows), (0, []))  # unbound: byte-for-byte the legacy empty result
+        cedar, made, _ = self.two_counties()
+        top = next((self.base / "exports-sandbox" / "export-root" / "exports").iterdir())
+        self.unlock(top.parent)
+        target = top / "console-model" / "campaign-summary.json"
+        os.chmod(target, 0o600)
+        target.write_text("{}")  # tampered after the manifest sealed it
+        code, rows, _ = self.today_all("--json")
+        self.assertEqual(code, 3)
+        records = {r["campaign"]: r["records"] for r in rows if r["kind"] == "records_summary"}
+        self.assertEqual((records["cedar"]["code"], records["cedar"]["drafts_waiting"]), ("RECORDS_EXPORT_UNAVAILABLE", None))
+        self.assertEqual(records["pine"]["state"], "no_export")  # the neighbour is still shown
+        self.assertEqual([r for r in rows if r["kind"] != "records_summary"], self.expected("cedar", cedar))
+        _, lines, _ = self.today_all()
+        self.assertFalse(any("Nothing due" in l and "pine" in l for l in lines))  # no false all-clear for a bound campaign
+
+    def test_records_read_changes_nothing_and_never_touches_another_campaign(self):
+        cedar, made, _ = self.two_counties()
+        before = snapshot(self.base)
+        self.today_all("--json")
+        self.assertEqual(snapshot(self.base), before)  # register, campaigns and export tree: bytes and modes unchanged
+        self.assertEqual(registry._denied, ())  # the confinement guard is released
 
 
 # Captured on the pre-change base (origin/main d7b74bdb, after DF1109-03) with the same synthetic tree; not regenerated.

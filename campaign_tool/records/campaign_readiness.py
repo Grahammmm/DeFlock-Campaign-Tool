@@ -304,13 +304,18 @@ def collect(project, *, analysis_root=None, portal_approval_file=None):
     else:
         _issue(issues, "READINESS_PORTAL_APPROVAL_UNSPECIFIED", "portal_approval", "command",
                _CLI + "campaign-readiness --project P --portal-approval-file F")
-    return {"schema": SCHEMA, "campaign_fields": fields, "law_package": law_status, "portal_approval": approval,
-            "agencies": rows, "issues": issues}
+    starters = {"followup_settings": _probe(os.path.join(project, "followup-settings.json"), "file"),
+                "retention_file": _probe(os.path.join(project, "agency-retention.csv"), "file"),
+                "asks_directory": _probe(os.path.join(project, "agency-asks"), "dir"),
+                "coverage_directory": _probe(os.path.join(project, "followup-coverage"), "dir")}
+    return {"schema": SCHEMA, "campaign_fields": fields, "starter_files": starters, "law_package": law_status,
+            "portal_approval": approval, "agencies": rows, "issues": issues}
 
 
 def render(report):
     lines = [report["schema"] + " (inventory only; not permission to send, publish or approve)"]
     lines.append("campaign_fields: " + " ".join("%s=%s" % kv for kv in report["campaign_fields"].items()))
+    lines.append("starter_files: " + " ".join("%s=%s" % kv for kv in report["starter_files"].items()))
     lines.append("law_package: " + report["law_package"])
     lines.append("portal_approval: %s (presence only)" % report["portal_approval"])
     for row in report["agencies"]:

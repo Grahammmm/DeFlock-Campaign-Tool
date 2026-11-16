@@ -208,7 +208,8 @@ class ServedExport(Panel):
 
         def swapping(source):
             if not swapped:
-                swapped.append(self.make_export(RUN2))  # `current` now points at the second export
+                swapped.append(None)  # claim the swap first: the export build now reads the copy through queue_rows too
+                swapped[0] = self.make_export(RUN2)  # `current` now points at the second export
             return original(source)
 
         with mock.patch.object(console_snapshot.SnapshotSource, "queue_rows", swapping):

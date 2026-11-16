@@ -20,6 +20,8 @@ REPO = Path(__file__).resolve().parents[1]
 ENV = "DEFLOCK_CAMPAIGN_REGISTER"
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
 KEYS = {"name", "directory", "added_at"}
+RECORDS_KEYS = {"export_root", "source_project_id"}  # the one optional `records` binding (docs/MULTI-CAMPAIGN.md)
+PROJECT_ID = re.compile(r"[0-9a-f]{16}")
 MAX_BYTES = 1 << 20  # RF1025-6: raw register bytes read, and exact serialized bytes written; a byte budget, not a sandbox
 
 
@@ -101,12 +103,42 @@ def _load(path):
     except RecursionError:  # RF1500-24: the decoder's own exhaustion only; no depth policy, input never shown
         raise ValueError("the register JSON is nested too deeply") from None
     if not isinstance(entries, list) or not all(
-            isinstance(e, dict) and set(e) == KEYS and all(isinstance(v, str) for v in e.values()) for e in entries):
+            isinstance(e, dict) and set(e) in (KEYS, KEYS | {"records"}) and all(isinstance(e[k], str) for k in KEYS)
+            for e in entries):
         raise ValueError("the register must hold only a list of {name, directory, added_at}")
     # RF1900-3: two rows with one decoded (case-sensitive) name are ambiguous; refuse the whole register, never echoed
     if len({e["name"] for e in entries}) != len(entries):
         raise ValueError("the register contains a repeated campaign name")
+    _check_records(entries)
     return entries
+
+
+def _check_records(entries):
+    """An optional `records` binding is {export_root, source_project_id}: an absolute, normalised, link-free host path to
+    the campaign's console export root and the source project's opaque 16-hex id. Nothing on disk is created or probed;
+    a bad binding refuses the whole register without echoing any supplied value."""
+    bound = []
+    for e in entries:
+        if "records" not in e:
+            continue
+        r = e["records"]
+        ok = (isinstance(r, dict) and set(r) == RECORDS_KEYS and all(isinstance(v, str) for v in r.values())
+              and PROJECT_ID.fullmatch(r["source_project_id"]) and os.path.isabs(r["export_root"])
+              and os.path.normpath(r["export_root"]) == r["export_root"] != "/"
+              and os.path.realpath(r["export_root"]) == r["export_root"])
+        if not ok or _within(Path(r["export_root"]), REPO) or _within(REPO, Path(r["export_root"])):
+            raise ValueError("a records binding must be exactly an absolute export_root outside the repository and a "
+                             "16-hex source_project_id")
+        bound.append((e, Path(r["export_root"])))
+    for n, (a, root) in enumerate(bound):
+        for b, other in bound[n + 1:]:
+            if a["records"]["source_project_id"] == b["records"]["source_project_id"]:
+                raise ValueError("two campaigns are bound to the same records project")
+            if _within(root, other) or _within(other, root):
+                raise ValueError("two campaigns' records export roots overlap")
+        for e in entries:  # a root inside its OWN campaign is fine; never inside or around another's directory
+            if e is not a and (_within(root, Path(e["directory"])) or _within(Path(e["directory"]), root)):
+                raise ValueError("a records export root overlaps another campaign's directory")
 
 
 def _store(path, entries):
@@ -167,6 +199,9 @@ def add(name, directory):
         for e in entries:
             if _within(root, Path(e["directory"])) or _within(Path(e["directory"]), root):
                 raise ValueError(f"that directory is the same as, inside or around the one registered as {e['name']!r}")
+            bound = Path(e["records"]["export_root"]) if "records" in e else None
+            if bound and (_within(root, bound) or _within(bound, root)):
+                raise ValueError(f"that directory overlaps the records export root bound to {e['name']!r}")
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         _store(path, entries + [{"name": name, "directory": str(root), "added_at": stamp}])
     return {"name": name, "directory": str(root)}
@@ -254,7 +289,30 @@ def status_lines():
     return (lines or ["campaign | (none registered) | private; review-required"]), current
 
 
-def today_rows(as_of):
+def _records_row(name, binding, now):
+    """The one additive metadata-only `records_summary` row for a records-bound campaign (read-only; counts only)."""
+    from .records import campaign_summary
+    try:
+        records = campaign_summary.read_export(binding, now=now)
+    except Exception:  # fixed code only; never the exception text
+        records = campaign_summary._result("unavailable", "RECORDS_EXPORT_UNAVAILABLE")
+    return {"campaign": name, "rank": None, "kind": "records_summary",
+            "what": "Records work (on our records; not a legal finding)", "due": None, "command": None,
+            "records": records}
+
+
+def _records_degraded(row):
+    records = row["records"]  # a normal no_export is exit 0; an unreadable, old, partial or time-unknown export is exit 3
+    if records["state"] == "no_export":
+        return False
+    return records["state"] != "ok" or records["code"] is not None or bool(records["unavailable"])
+
+
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
+def today_rows(as_of, now=None):
     """DF1109-15: every registered campaign's `today` items in name order, each keeping its own rank, with
     ``--campaign NAME`` selectors; ``(rows, current)``. Each campaign is read alone, confined exactly as for
     ``campaigns status`` (and already before its campaign.json is read); a campaign that cannot be read, or whose
@@ -263,6 +321,7 @@ def today_rows(as_of):
     entries = _load(register_path())  # read once; no lock is held while any campaign is read
     registered = [e["directory"] for e in entries]
     rows, current = [], True
+    now = now or _utcnow()  # one wall-clock instant for every export age; --as-of plans site-kit tasks only
     for entry in sorted(entries, key=lambda e: e["name"]):
         name = entry["name"]
         try:
@@ -272,7 +331,12 @@ def today_rows(as_of):
             items = today.todo(root, as_of, campaign_name=name)
             if any(item["kind"] == "unreadable" for item in items):
                 raise ValueError("a source of this campaign could not be read")  # normalised type; text never shown
-            found = [{"campaign": name, **item} for item in items] or [{"campaign": name, "_nothing": True}]
+            found = [{"campaign": name, **item} for item in items]
+            if "records" in entry:  # only a readable campaign's own export root is opened, still confined
+                found.append(_records_row(name, entry["records"], now))
+                current = current and not _records_degraded(found[-1])
+            elif not found:
+                found = [{"campaign": name, "_nothing": True}]
         except Exception as exc:  # one broken campaign must not hide the others; the type name only, never its text
             found, current = [{"campaign": name, "rank": None, "kind": "not_current",
                                "what": f"NOT CURRENT: {type(exc).__name__}", "due": None, "command": None}], False
@@ -285,8 +349,10 @@ def today_rows(as_of):
 def today_text(rows, day):
     if not rows:
         return "campaign | (none registered) | private; review-required"
+    from .records import campaign_summary
     return "\n".join(f"campaign | {row['campaign']} | " + (
         f"Nothing due on {day.isoformat()}." if row.get("_nothing") else row["what"] if row["kind"] == "not_current"
+        else "records: " + campaign_summary.line(row["records"]) if row["kind"] == "records_summary"
         else f"{row['rank']}. [{row['kind']}] {row['what']} — {row['command']}") + " | private; review-required"
         for row in rows)
 

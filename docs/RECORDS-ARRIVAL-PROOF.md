@@ -11,8 +11,13 @@ non-fatal behaviour are unchanged. Nothing here sends mail, approves, publishes 
   original's SHA-256 was not in `run-outputs/<run_id>/arrival-baseline.json`, captured (owner-only,
   first capture wins) at the start of sync. Duplicate delivery of identical bytes counts zero.
 - `Done`: the seven fixed stage names with report status and counts or error code.
-- `Needs G`: drafts pending in the approval queue at end of run (a backlog count, not newly
-  drafted) and hold groups with issue occurrences (occurrences are not distinct records).
+- `Needs G (pre-decision state)`: drafts pending in the approval queue when the run's outputs stage
+  projected the report (a backlog count, not newly drafted) and hold groups with issue occurrences
+  (occurrences are not distinct records). The projection is captured before the wrapper replays
+  console decisions (decisions-apply), when that optional post-step is configured. The label marks
+  a historical snapshot: it is not a live queue view and not proof that every decision was applied,
+  so the queue may already hold fewer pending drafts when the message is read. Preflight refusals
+  carry no count and keep their own `Needs G: drafts pending unavailable.` wording.
 
 `unavailable` means the source was missing, corrupt or refused; it is never shown as 0. The two
 counts fail independently. Run ids, enums, counts and codes are the only content: no record,

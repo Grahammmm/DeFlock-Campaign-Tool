@@ -526,11 +526,16 @@ def _guard_recorded(row):
                                  else "approval_unverified")
 
 
-def approve(root, id, actor, *, choice=None):
+def approve(root, id, actor, *, choice=None, expected_revision=None, expected_body=None):
     if not (isinstance(actor, dict) and actor.get("kind") == "ssh" and isinstance(actor.get("signature"), str)):
         raise ApprovalQueueError("approval_required")
+    _need(expected_revision is None or (type(expected_revision) is int and expected_revision >= 0), "invalid_draft")
+    _need(expected_body is None or isinstance(expected_body, str), "invalid_draft")
     with _Store(root, True) as store:
         row = _row(root, store, id)
+        _need(expected_revision is None or row["revision"] == expected_revision, "stale_revision")
+        _need(expected_body is None or expected_body.replace("\r\n", "\n") == row["body"].replace("\r\n", "\n"),
+              "approve_unsaved_text")
         tie = row["kind"] == draft_templates.MESSAGE_LINK
         _need(tie or choice is None, "invalid_choice")
         if row["status"] == "approved" and row["approval_evidence"]["signature_sha256"] == \

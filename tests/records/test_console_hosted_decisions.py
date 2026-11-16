@@ -224,6 +224,8 @@ class HostedDecisions(Apply):
                    access_keys=str(self.keys), **kw)
 
     def public(self, method, path, token=None, host=HOST, origin=PUBLIC, **fields):
+        if method == "POST" and path == "/approvals/approve":
+            fields = {**self.approve_fields(fields["id"]), **fields}
         connection = http.client.HTTPConnection("127.0.0.1", self.server.server_port, timeout=10)
         head = {"Host": host, "Content-Type": "application/x-www-form-urlencoded"}
         head.update({"Origin": origin} if origin else {})
