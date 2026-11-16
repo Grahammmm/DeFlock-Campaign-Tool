@@ -51,8 +51,27 @@ def _canon(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
 
 
-def draft_id(item_id, kind):
-    return hashlib.sha256(_canon([item_id, kind]).encode()).hexdigest()
+def link_supersedes(row):
+    """The fingerprint of the link line a ``message_link`` row replaces, taken from its (signed) evidence; None for any
+    other row and for an ordinary tie. A malformed fingerprint refuses with ``invalid_draft``."""
+    if not isinstance(row, dict) or row.get("kind") != draft_templates.MESSAGE_LINK or not isinstance(row.get("evidence"), dict):
+        return None
+    value = row["evidence"].get("supersedes")
+    if value is None:
+        return None
+    _need(isinstance(value, str) and unmatched.HEX64.fullmatch(value), "invalid_draft")
+    return value
+
+
+def draft_id(item_id, kind, *, supersedes=None):
+    """Identity of one decision. Only a message-tie replacement carries ``supersedes`` (the fingerprint of the link line
+    it replaces); without it the identity is exactly ``[item_id, kind]`` as before."""
+    return hashlib.sha256(_canon([item_id, kind] if supersedes is None else [item_id, kind, supersedes]).encode()).hexdigest()
+
+
+def _snapshot_id(snap):
+    """The identity a draft snapshot must have, its replacement discriminator coming only from its own evidence."""
+    return draft_id(snap.get("item_id"), snap.get("kind"), supersedes=link_supersedes(snap))
 
 
 def _strict_load(raw, code):
@@ -298,7 +317,11 @@ def _fold(root, raw, verify=True):
         if kind == "draft":
             snap = ev.get("snapshot")
             _need(row is None and ev["revision"] == 0 and isinstance(snap, dict), "queue_invalid")
-            _need(draft_id(snap.get("item_id"), snap.get("kind")) == ident, "queue_invalid")
+            try:
+                snapshot_id = _snapshot_id(snap)
+            except ApprovalQueueError as error:
+                raise ApprovalQueueError("queue_invalid") from error
+            _need(snapshot_id == ident, "queue_invalid")
             row = {"id": ident, **snap, "status": "pending", "revision": 0, "created_at": ev["at"],
                    "updated_at": ev["at"], "actor": ev["actor"], "origin_evidence": snap.get("evidence")}
             rows[ident] = row
@@ -436,6 +459,7 @@ def _check_draft(item_id, kind, agency_id, request_id, body, evidence, source_ru
     _need(all(isinstance(v, str) and v for v in (item_id, agency_id, request_id, source_run_id)), "invalid_draft")
     _need(isinstance(body, str) and body.strip() and len(body.encode("utf-8")) <= MAX_BODY, "invalid_draft")
     _need(isinstance(evidence, dict), "invalid_draft")
+    link_supersedes({"kind": kind, "evidence": evidence})
     try:
         _canon(evidence)
     except (TypeError, ValueError) as error:
@@ -470,7 +494,7 @@ def _same_source(row, draft):
 
 def _add(root, store, rows, draft):
     """Append-or-return one draft under the writer lock; returns (row, created)."""
-    ident = draft_id(draft["item_id"], draft["kind"])
+    ident = _snapshot_id(draft)
     if ident in rows:
         _need(_same_source(rows[ident], draft), "source_conflict")
         return rows[ident], False
@@ -586,7 +610,7 @@ def queue_message_links(root, run_id, drafts):
         draft = {"item_id": d["item_id"], "kind": draft_templates.MESSAGE_LINK, "agency_id": d["agency_id"],
                  "request_id": d["request_id"], "body": d["body"], "evidence": d["evidence"], "source_run_id": run_id}
         _check_draft(**draft)
-        wanted[draft_id(draft["item_id"], draft["kind"])] = draft
+        wanted[_snapshot_id(draft)] = draft
     with _Store(root, True) as store:
         rows = _fold(root, store.raw(), verify=False)
         new = [_event("draft", ident, 0, PIPELINE_ACTOR, snapshot=draft)
@@ -594,6 +618,22 @@ def queue_message_links(root, run_id, drafts):
         if new:
             store.append(new)
     return {"created": len(new), "existing": len(wanted) - len(new)}
+
+
+def queue_message_relink(root, run_id, draft):
+    """Queue the one replacement decision of a message tie (``draft`` as built by ``unmatched.queue_relink``: its evidence
+    names the fingerprint it replaces). An existing row (pending, approved or rejected) is returned, never reopened.
+    -> (decision id, created)."""
+    full = {"item_id": draft["item_id"], "kind": draft_templates.MESSAGE_LINK, "agency_id": draft["agency_id"],
+            "request_id": draft["request_id"], "body": draft["body"], "evidence": draft["evidence"], "source_run_id": run_id}
+    _check_draft(**full)
+    _need(link_supersedes(full) is not None, "invalid_draft")
+    ident = _snapshot_id(full)
+    with _Store(root, True) as store:
+        if ident in _fold(root, store.raw(), verify=False):
+            return ident, False
+        store.append([_event("draft", ident, 0, PIPELINE_ACTOR, snapshot=full)])
+    return ident, True
 
 
 def queue_received_items(root, run_id, received_path):

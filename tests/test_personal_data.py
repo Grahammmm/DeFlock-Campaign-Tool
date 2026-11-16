@@ -1105,7 +1105,7 @@ MODULE_FUNCTIONS = {
         '_backup_ledger', '_copy_file', '_unpack', '_write_fd', 'build', 'export_main', 'install', 'write_model', 'write_tar',
     ),  # DFGL-16 private console copy: export only reads the project and writes a new tree (a new --out dir or a temp dir streamed to stdout as tar); import writes only a new sealed 0500/0400 export and the relative current pointer under an owner-only 0700 --out root; never copies approvals, packets, public-update or mail journals; sends nothing
     'records.ledger_catalog_acceptance': ('_connect', '_locked',),
-    'records.legacy_adoption': ('apply_batch', 'main', 'write_proposal',),
+    'records.legacy_adoption': ('apply_batch', 'build_manifest', 'legacy_main', 'manifest_main', 'write_manifest', 'write_proposal',),  # build_manifest only serialises in memory, manifest_main calls write_manifest, legacy_main is the old main; write_manifest creates only the one explicit private 0600 inventory file (exclusive; never overwrites)
     'records.mail_adoption': ('_snapshot_db', 'main',),  # main --write-resolution-policy-proposal writes one new 0600 file via mail_resolution_proposal
     'records.mail_arrival': ('main', 'write_state',),  # metadata-only arrival stamps and atomic 0600 mail-poll health state under the private runtime; no mail or project writes
     'records.mail_drafts': ('_Journal.append',),  # approvals/mail-drafts.jsonl placement journal, 0600 append-only; sends nothing

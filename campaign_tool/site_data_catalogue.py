@@ -39,6 +39,7 @@ LOCAL_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.(?:geojson|json)")
 
 # path -> (name, title, description, media type, schema kind); the schema kind of a CSV is its source-record JSON schema.
 DATASETS = {
+    "data/suspected-locations.json": ("suspected-locations-json", "Suspected locations (JSON)", "Organizer-reviewed document predictions, not confirmed cameras.", JSON, "suspected-locations"),
     "data/findings.json": ("findings-json", "Findings (JSON)", "Published findings with classification, confidence, dates and 12-character source prefixes.", JSON, "findings"),
     "data/findings.csv": ("findings-csv", "Findings (CSV)", "The findings as one flat row per finding; every cell is text.", CSV, "findings"),
     "data/sources.json": ("sources-json", "Sources (JSON)", "The source library: hashed records the findings cite, with their agency and received date.", JSON, "sources"),

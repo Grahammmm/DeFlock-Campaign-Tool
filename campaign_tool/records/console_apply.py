@@ -24,7 +24,7 @@ FILE = "decisions-applied.jsonl"
 INTENT = "INTENT"  # write-ahead receipt line (never an outcome): recorded before an entry's live mutation, see ``settle``
 QUEUE_ACTIONS = ("approve", "reject", "edit")
 OCR_ACTIONS = {"ocr_confirm": "confirmed", "ocr_reject": "rejected"}  # OCR-REVIEW-ROUTE-1: the existing ocr_review.mark
-TRANSIENT = {"approval_unavailable", "queue_busy", "queue_io", "journal_busy", "ocr_ledger_busy"}  # not final: the entry stays unreceipted and is tried at the next run
+TRANSIENT = {"approval_unavailable", "queue_busy", "queue_io", "journal_busy", "ocr_ledger_busy", "message_link_ledger_busy"}  # not final: the entry stays unreceipted and is tried at the next run
 # A store that cannot be read at all (a moved or restored project whose approvals name another path, a damaged journal) says
 # nothing about the decision itself: the entry is deferred like a transient fault, never receipted as a final refusal.
 STORE_FAULTS = {"queue_invalid", "journal_invalid", "packets_unavailable", "switch_unavailable", "file_invalid",
@@ -97,7 +97,25 @@ def _link_choice(project, ident, entry):
 def _append_link(project, ident, link):  # as the console does after a message-link approve; the mail-draft placement hook is not run
     done = next(r for r in aq.load_queue(project) if r["id"] == ident)
     aq._need(done.get("status") == "approved" and done.get("approved_choice") == link[1], "approval_required")  # the signed choice only
-    unmatched.append_link(project, done["item_id"], link[0], link[1], done["approved_by"])
+    # a replacement names only the fingerprint inside its signed evidence, never one taken from the journal entry
+    unmatched.append_link(project, done["item_id"], link[0], link[1], done["approved_by"], supersedes=aq.link_supersedes(done))
+
+
+def _precheck_relink(project, ident, link):
+    """A replacement is refused before its approval is recorded when the current link line is no longer the one it replaces."""
+    row = next((r for r in aq.load_queue(project) if r["id"] == ident), None)
+    supersedes = aq.link_supersedes(row)
+    if row is not None and supersedes is not None and row["status"] == "pending":
+        unmatched.require_current(project, row["item_id"], supersedes, link)
+
+
+def _queue_relink(project, entry):
+    """The queue-only action: queue the replacement decision for a tie marked wrong. It appends no link and approves nothing."""
+    sha, supersedes, run_id = entry["target_id"], entry["value"], entry.get("export_run_id")
+    if not (isinstance(sha, str) and isinstance(supersedes, str) and unmatched.HEX64.fullmatch(sha) and unmatched.HEX64.fullmatch(supersedes)
+            and isinstance(run_id, str)):
+        raise ValueError("relink_entry_invalid")
+    unmatched.queue_relink(project, run_id, sha, supersedes)
 
 
 def _apply_ocr(project, entry):
@@ -138,9 +156,13 @@ def _apply(project, entry):
     actor = entry["actor"]
     if action == "approve":
         link = _link_choice(project, ident, entry)
+        if link:
+            _precheck_relink(project, ident, link)  # stale before anything is recorded: neither approval nor link
         aq.approve(project, ident, {"kind": "ssh", "signature": value}, choice=entry.get("choice"))
         if link:
             _append_link(project, ident, link)
+    elif action == "message_link_relink":
+        _queue_relink(project, entry)
     elif action == "reject":
         aq.reject(project, ident, actor, value)
     elif action == "edit":
