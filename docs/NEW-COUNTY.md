@@ -69,6 +69,15 @@ python3 -m campaign_tool.records project-init --project ../humboldt-records --ca
 ```
 
 `project-init` refuses an existing non-empty folder and never replaces a project.
+It also writes disabled starters, only into the new project (all files 0600, folders 0700, never replacing anything):
+`followup-settings.json` (`records-followup-settings-v1`, default autonomy `off`, no agency overrides, no signature,
+so letters keep `[EDIT ME: signature]`), `agency-retention.csv` (header only), and `agency-asks/` and
+`followup-coverage/` holding only a `README.md`. Every current and future agency stays off until a person edits the
+settings; nothing is sent or enabled. Check progress with
+`python3 -m campaign_tool.records campaign-readiness --project ../humboldt-records [--json]`: the four starters show
+`present` while per-agency signature, asks, coverage and retention rows still show `missing`. Initialization has no
+rollback: if it fails part-way (`project_starter_unavailable`) a private partial project may remain, and a rerun
+refuses it as non-empty.
 See `docs/RECORDS-PIPELINE.md` for the stages that run against it.
 
 Before connecting any mailbox, rehearse one synthetic message offline. The

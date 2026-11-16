@@ -194,7 +194,8 @@ class SloShapedTests(Base):
         self.assertEqual((city["analysis_profile"], town["analysis_profile"]), ("proposed", "missing"))
         self.assertEqual((report["law_package"], report["portal_approval"]), ("draft", "present"))
         self.assertTrue(all(v == "present" for v in report["campaign_fields"].values()))
-        self.assertEqual(sorted(report), ["agencies", "campaign_fields", "issues", "law_package", "portal_approval", "schema"])
+        self.assertEqual(sorted(report), ["agencies", "campaign_fields", "issues", "law_package", "portal_approval", "schema",
+                                          "starter_files"])
         for item in report["issues"]:
             self.assertTrue(item["remediation"] and item["code"].startswith("READINESS_"))
         for line in campaign_readiness.render(report).splitlines():
@@ -298,7 +299,26 @@ class CedarProjectInitTests(Base):
                 "READINESS_AUTONOMY_OFF", "READINESS_ASKS_MISSING", "READINESS_COVERAGE_MISSING", "READINESS_RETENTION_MISSING"})
         self.assertTrue(all(i["kind"] in ("command", "human") and i["remediation"] for i in report["issues"]))
         self.assertTrue(any("agency-retention" in i["remediation"] for i in report["issues"]))
-        self.assertNotIn("Cedar", run("campaign_tool.records", "campaign-readiness", "--project", str(self.project)).stdout)
+        self.assertEqual(report["starter_files"], {"followup_settings": "present", "retention_file": "present",
+                                                   "asks_directory": "present", "coverage_directory": "present"})
+        text = run("campaign_tool.records", "campaign-readiness", "--project", str(self.project)).stdout
+        self.assertIn("starter_files: followup_settings=present retention_file=present asks_directory=present "
+                      "coverage_directory=present", text)
+        self.assertNotIn("READINESS_SETTINGS_INVALID", self.codes(report))
+        self.assertNotIn("Cedar", text)
+
+    def test_starter_presence_is_type_only_and_missing_is_reported(self):
+        self.slo()
+        for name in ("agency-asks", "followup-coverage"):
+            shutil.rmtree(self.project / name, ignore_errors=True)
+        report, _ = self.report()
+        self.assertEqual({report["starter_files"][k] for k in ("asks_directory", "coverage_directory")}, {"missing"})
+        (self.project / "agency-asks").write_text("not a dir")
+        os.symlink(self.tmp, self.project / "followup-coverage")
+        report, _ = self.report()
+        self.assertEqual((report["starter_files"]["asks_directory"], report["starter_files"]["coverage_directory"]),
+                         ("invalid", "invalid"))
+        self.assertNotIn(str(self.tmp), json.dumps(report))
 
 
 if __name__ == "__main__":

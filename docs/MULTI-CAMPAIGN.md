@@ -107,6 +107,11 @@ the asks and follow-up coverage tables (`present`, `proposed` when only `ID.prop
 package status (`draft`/`reviewed`) and whether a portal approval file exists. Each gap lists a `command` to run or a
 `human` step, using the literal placeholders `P`, `R`, `S`, `ID`; nothing is executed.
 
+- The report also has an additive `starter_files` map (`followup_settings`, `retention_file`, `asks_directory`,
+  `coverage_directory`; each `present`/`missing`/`invalid`) and a matching `starter_files:` text line. It is physical
+  presence only (no-follow type check): it is not validity, not a confirmed table and not permission to draft. A
+  project made by `project-init` has all four present while every agency still shows autonomy off, signature missing
+  and asks, coverage and retention rows missing. The schema string is unchanged.
 - The analysis root and portal approval file live outside the project, so they are not guessed: without
   `--analysis-root` / `--portal-approval-file` they read `not_configured`, never `missing`.
 - The approval file is checked by presence only (no-follow `stat`); it is never opened, so presence is not approval.

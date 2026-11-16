@@ -1069,7 +1069,7 @@ MODULE_FUNCTIONS = {
     ),
     'records.e2e_proof': ('replay', 'replay.console', 'replay.telegram_text', '_apply_seed', '_private_file',),  # replay writes only under a new --out proof dir (OUT_EXISTS refuses reuse); _apply_seed writes only the replay sandbox ledger and its fact-sheets file (SEED_NOT_SANDBOX refuses any other project); _private_file (--with-adoption, called only by _prepare_adoption after the sandbox-marker guard: ADOPTION_NOT_SANDBOX refuses any other project) writes only the generated synthetic .example.invalid mail export and owner adoption config as new 0600 files under the replay sandbox, or accepts byte-identical existing ones; sends and publishes nothing
     'records.export_clearance': ('clearance',),
-    'records.project_init': ('_write', 'init_project',),  # one new private records project: campaign.json, .campaign-root, empty ledger and queue; refuses an existing root; sends nothing
+    'records.project_init': ('_write', 'init_project',),  # one new private records project: campaign.json, .campaign-root, empty ledger and queue, plus disabled starters (followup-settings.json, header-only agency-retention.csv, README-only agency-asks/ and followup-coverage/); refuses an existing root; sends nothing
     'records.first_request': ('main',),  # prints a draft to stdout; --queue appends only via the approval journal
     'records.extract.ocr': (
         '_hold', '_index', '_link_new', '_page_lock', '_prune_unrecorded', '_publish_blocked_disposition',
