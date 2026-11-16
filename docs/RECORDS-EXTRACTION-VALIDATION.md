@@ -142,6 +142,26 @@ Any PDF reparse is bounded, but occurs during domain acceptance; a dedicated
 runner is appropriate. This small-sample implementation is not a throughput
 benchmark. Retain a later queue/performance acceptance gate before bulk use.
 
+### Reparse timeout refusals
+
+When the validator's independent installed-parser reparse exhausts its existing
+timeout, the refusal names the timeout instead of reporting an incomplete reparse:
+
+| Reparse | Fixed bound | Timeout refusal | Other (unchanged) refusal |
+| --- | --- | --- | --- |
+| PDF (native and OCR-backed) | 20 s | `installed_pdf_reparse_timeout` | `installed_pdf_reparse_incomplete` |
+| `eml`, `msg`, `docx` | 60 s | `installed_reparse_timeout` | `installed_reparse_incomplete` |
+| Qualifying workbook | 60 s | `installed_workbook_reparse_timeout` | `installed_workbook_reparse_mismatch` |
+
+Only a `blocked` reparse result carrying an issue with exact code
+`extraction_timeout` and owner `runtime` is classified; submitted receipt issues,
+substrings and malformed entries are ignored and still fail closed under the
+existing codes. A timeout writes no accepted receipt or authority.
+
+The bounds are unchanged. Raising an operator-pinned bound, rerendering or
+reinstalling, requeueing, and any live replay each need separate scoped review and
+approval; this diagnostic does not grant them.
+
 ## Synthetic acceptance evidence
 
 Tests use the actual WP1 overlay and installed validator implementation. Successful
