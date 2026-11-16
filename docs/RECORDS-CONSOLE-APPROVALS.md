@@ -11,7 +11,7 @@ semantic, legal or privacy acceptance. No approval publishes by itself.
 | Next-step drafts (social post, site update, follow-up probe) | `/next-steps` → `/approvals/approve` | Records a signed decision only. An approved `next-site-update` may separately become a `site_update` packet via `public_packets.from_queue`. | Does not post, send or write a site change. | `approvals/queue.jsonl`: `approve`. |
 | Public status lines L1–L6 | `/public-updates`: Veto/Undo, OFF, kill | No per-line Approve exists. CLI `records public-updates enable` verifies G's switch signature; advancement uses the 12-hour hold, caps and checks. Posting writes journal state plus the private `public-status-feed.json`, without transport. | Console cannot enable auto-post or approve an individual line. | `public-updates.jsonl`: `switch`, `hold`, `post`, `retract`, `refused`, `alert`. |
 | Update packets (`document`, `summary`, `finding`, `site_update`) | `/packets` → `/packets/approve` or `/packets/reject` | Shows request, source, revision, age, expiry and the exact signature payload. Approve calls `public_packets.approve`, scope `public-packet-v1`, retaining G's revision-bound signature, 14-day expiry and lint. Reject calls `public_packets.decide`, recording the console actor and private reason. Stale forms conflict. | Never calls `write_change`, enables the packets switch or publishes. CLI write remains separate and requires switch ON plus re-verification. | `public-packets.jsonl`: `approved` with id, revision, principal, signature; `rejected` with id, revision, actor, reason. A later CLI write records `written` with file and SHA-256. |
-| Agency page publishing | Not connected to console | Page units open draft site PRs held for G's approval. GitHub PR approval and the existing exact-head CI/review merge gates govern publication. | No console approval or merge exists. | GitHub review record and merge commit. |
+| Agency page publishing | Read-only `/site-prs` snapshot (DF2007-09, CON-SITEPR-1); no approval action | Page units open draft site PRs held for G's approval. GitHub PR approval and the existing exact-head CI/review merge gates govern publication. The console lists the operator-captured open drafts and their age only. | No console approval, merge or refresh exists; the console never contacts GitHub. | GitHub review record and merge commit. |
 | Document redactions | Console takes the pasted signature (DF2007-08, CON-REDACT-1); the CLI verifies it | `records panel --flock-store STORE` lists unsigned proposals at `/redactions` with the exact `flock_redact payload` text and journals a pasted signature (`redaction_signoff`); `tools/flock_redact.py signoff-apply STORE SLUG SHA DOCUMENT --decisions J` replays it through the one `signoff` function, scope `flock-redaction`, same trust file. The console verifies nothing and signs nothing; the separate `apply` still builds the derivative by hand. | Packet approval does not sign off redactions or apply them. A submitted signature is not a sign-off until `signoff-apply` receipts APPLIED. | `<store>/agencies/<slug>/redaction/<sha>/SIGNOFF.json`, then `ELIGIBILITY.json`. |
 | Analysis findings | `records finding-review list\|approve\|reject`, or the console's `/findings/review` (journaled; applied at the next analysis tick) | Verifies a detached SSH signature over the exact finding text (`finding_payload`, scope `finding-review-v1`, bound to agency slug, finding id and a sha256 of topic, claim, fact ids and rule ids), or records a rejection with a private reason. The packet step then stops holding that exact finding as `FINDING_UNREVIEWED`. | Does not approve, sign, stage-publish or send the finding packet: packet approval (`public-packet-v1`) stays a separate decision. A changed claim or fact list needs a new review. Trust unavailable is `FINDING_REVIEW_DEFERRED`, never a final refusal. | `<analysis root>/.analysis/finding-reviews.jsonl`: append-only, hash-chained `approve` (principal, signature, finding text) and `reject` (reason). |
 
@@ -44,12 +44,32 @@ A tie is never edited or deleted. A reply tied to the wrong request is corrected
    into `received-items.json`; earlier run outputs are not rewritten. Nothing is sent or published, and the earlier link
    line and the message evidence are kept. To refresh the console after a decision, take a new export.
 
+## Site draft PR snapshot (`/site-prs`, CON-SITEPR-1)
+
+The operator captures the site repository's open draft pull requests outside this tool and imports the saved file. The
+tool never runs the command and makes no network call:
+
+    gh pr list -R OWNER/REPO --state open --draft --limit 50 --json number,title,isDraft,url,headRefName,updatedAt > capture.json
+    records site-prs snapshot --from capture.json --export-root DIR --repository OWNER/REPO
+
+- `--from` is a local regular file (at most 256 KiB), a JSON array of at most 50 rows with exactly the six fields; every
+  row must be a draft and its `url` exactly `https://github.com/OWNER/REPO/pull/<number>` for the named repository.
+  Control characters are stripped from titles. Anything else (extra field, other host, duplicate number or key) is refused
+  and nothing is written. A full 50-row capture may have been cut off by `--limit`: check the repository separately.
+- `--export-root DIR` is the existing console export root (the directory holding `current`) in snapshot mode, or the
+  project directory in live mode. The file is `DIR/site-prs.json` (mode 0600, with `captured_at`), beside the sealed
+  export and never inside it, so the export manifest and pin are unchanged. A re-import replaces the previous snapshot.
+- `/site-prs` lists the rows with their age since the captured `updatedAt` (not proof of review inactivity), says
+  "captured N hours ago" and shows a stale banner when the capture is more than 24 hours old. Home links the page when
+  a snapshot exists. A missing, malformed or oversize file reads "unavailable", never zero. A snapshot is not proof that a
+  pull request is still open or that the list is complete. The page has no merge, approve or refresh control.
+
 ## Missing work (not implemented here)
 
 - **CON-LINE-APPROVE-1**: signed, text-bound per-line status approval while OFF;
   requires its own design review, without bypassing kills, caps or text checks.
-- **CON-SITEPR-1**: operator-staged, read-only snapshot of open site draft PRs
-  (`site-prs.json`); the console must not merge them.
+- **CON-SITEPR-1**: implemented (DF2007-09) as a read-only snapshot, see
+  "Site draft PR snapshot" below. Missing: nothing; the console must not merge them.
 - **CON-REDACT-1**: implemented (DF2007-08): the console reads proposals awaiting
   sign-off and journals a pasted signature; `flock_redact.py signoff-apply` reuses
   the existing sign-off path (no new approval chain). Missing: nothing for sign-off;

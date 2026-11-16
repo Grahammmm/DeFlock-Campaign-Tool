@@ -94,6 +94,31 @@ campaign | NAME | NOT CURRENT: <ErrorType> | private; review-required
 - Read-only: no lock, cache, index or ledger, and the register and every campaign keep their bytes, paths and modes.
   `today --directory D` and `today --campaign NAME` for one campaign are unchanged.
 
+## Records campaign readiness
+
+```sh
+python3 -m campaign_tool.records campaign-readiness --project P [--json] [--analysis-root R] [--portal-approval-file F]
+```
+
+Read-only inventory of what still keeps a campaign's records pipeline from running on its own. Per agency in the
+campaign's `content/agencies.json` it reports follow-up autonomy (`off`/`draft`/`invalid`), signature present/missing,
+the asks and follow-up coverage tables (`present`, `proposed` when only `ID.proposed.tsv` exists, `missing`,
+`invalid`), analysis profile and method, and the retention row; plus the seven `campaign.json` v1 fields, the law
+package status (`draft`/`reviewed`) and whether a portal approval file exists. Each gap lists a `command` to run or a
+`human` step, using the literal placeholders `P`, `R`, `S`, `ID`; nothing is executed.
+
+- The analysis root and portal approval file live outside the project, so they are not guessed: without
+  `--analysis-root` / `--portal-approval-file` they read `not_configured`, never `missing`.
+- The approval file is checked by presence only (no-follow `stat`); it is never opened, so presence is not approval.
+- Output holds agency ids, field names, states and fixed `READINESS_*` codes only: no record text, names, addresses,
+  signature text, URLs or input paths. Nothing is written, sent, published or approved.
+- Exit codes: 0 every input readable (autonomy off, missing files and a draft law are still 0); 1 an input was
+  unreadable or malformed (`READINESS_CONFIG_INVALID`, `_SETTINGS_INVALID`, `_ASKS_UNAVAILABLE`,
+  `_COVERAGE_UNAVAILABLE`, `_PROFILE_INVALID`, `_METHOD_UNAVAILABLE`, `_RETENTION_INVALID`, `_LAW_UNAVAILABLE`,
+  `_PORTAL_APPROVAL_UNAVAILABLE`), the other rows are still printed; 2 the project, its campaign pointer or the agency
+  list cannot be read (`READINESS_PROJECT_UNAVAILABLE`, `_CAMPAIGN_ROOT_UNAVAILABLE`, `_AGENCIES_INVALID`) with nothing on
+  stdout. No exit code means ready to send.
+
 ## Open question: the hosted workspace
 
 The hosted workspace is one campaign per deployment (`CAMPAIGN_ID` in `workers/workspace/src/env.ts`). Hosting several
