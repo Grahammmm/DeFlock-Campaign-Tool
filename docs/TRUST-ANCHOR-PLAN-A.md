@@ -93,6 +93,15 @@ OFF, then approval_required after current-key switch enable). Recovery for unwri
 packets: operator `public-packets cancel --project "$PROJECT" --id ID --actor operator`,
 then re-propose identical content via its original proposal command (r+1), then G
 approves that revision with his current key. Reject/re-Approve is not recovery.
-Written packets/output remain written and exported; list revoked-principal written
-packets for the site-PR reviewer to exclude. Withdrawal needs a separate design.
+Written packets/output remain written and exported. To list them for the site-PR reviewer to exclude, run
+`records public-packets revoked-written --project "$PROJECT" [--json]` (read-only). It re-verifies every written
+packet revision's recorded approval against the current anchor, including revisions a later proposal superseded,
+and lists each that no longer verifies: packet id, revision, logical target page
+(`content/updates/AGENCY/APPROVED_DAY-ID.json`) and actual written time (not the approval time). Exit 0 with an
+empty list means every inspected written approval verified. If the anchor is unavailable (even for an empty
+project) it exits 1, prints nothing on stdout and `APPROVAL_ANCHOR_UNAVAILABLE` on stderr, never an empty list.
+"Revoked" is operational shorthand: a listed row means the recorded approval does not currently verify, not proof
+of why. The reviewer excludes or holds those rows; the command removes nothing, changes no journal, switch or
+export, and authorizes no publication. An empty scan is not permission to publish and holds only for that moment.
+Withdrawal needs a separate design.
 No automatic send, publication, or history rewrite is authorized by this runbook.
