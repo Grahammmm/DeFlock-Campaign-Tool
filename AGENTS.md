@@ -21,6 +21,17 @@ The current CLI remains an offline starter. SLO production code has not yet been
 
 Use one codex/<task> branch and PR per task; never push to main. Before each push, run a credential scan and review all staged paths; report the command and checked scope in the PR. Never transfer private repo history.
 
+## Records-test pre-push interpreter
+
+When the pre-push selector includes records tests, check the repository's own provisioned `.venv/bin/python` first, before inspecting any alternate runtime.
+
+- Managed canonical checkout: `/home/user/repos/DeFlock-Campaign-Tool/.venv/bin/python`. In another clone, prefer that clone's own already-provisioned `.venv/bin/python`; the host path is an example, not a universal prerequisite.
+- Pins live in `requirements-records-test.txt`, `requirements-records-parsers.txt` and `requirements-runner.txt` (currently pypdf 6.10.0). Probe the interpreter with an external script file that prints `sys.executable`, the pypdf/openpyxl versions and `campaign_tool.__file__`; never use interpreter one-liners or command-line PYTHONPATH overrides.
+- A detached worktree may reuse the canonical checkout's interpreter for its installed parser packages, but run with cwd at the candidate checkout and confirm `campaign_tool.__file__` is under that cwd. On an import-source mismatch, report it; do not silently test the donor checkout.
+- Apply the interpreter prefix to the repository's existing workflow/selector checks, not a reduced suite. `<repo-python> -B -m unittest tests.records.test_fa100 -q` is only a smoke check, not full pre-push acceptance. Parser-independent starter tests need no extra dependency.
+- Only after that probe, inspect alternate runtimes, or report ENVIRONMENT with the actual missing path, import or version. If the venv is absent or broken, record that fact. Do not create a venv, download or upgrade packages, treat parser-dependent skips as green, or run the runtime doctor/run against private records.
+- Credential scans and staged-path review above still apply.
+
 For each extraction, rebuild the pilot from a pinned engine version and compare its output against the accepted asset hashes. List every intentional difference. Do not rewrite findings, dates, policy claims or consent wording as an incidental refactor.
 
 Staging deployment to the pilot's existing staging Worker is authorized. Production deployment, DNS, Access and Brevo list changes require explicit owner approval in chat. No account values or owner identities belong in a public fixture.
