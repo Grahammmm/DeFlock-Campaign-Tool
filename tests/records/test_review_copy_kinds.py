@@ -143,6 +143,9 @@ class CopyReviewTests(ServerCase):
         return next(r for r in aq.load_queue(self.project) if r["id"] == result["id"])
 
     def post(self, action, **fields):
+        if action == "approve":
+            row = self.row()
+            fields = {"body": row["body"], "expected_revision": str(row["revision"]), **fields}
         return self.http.post("/approvals/" + action, {"csrf_token": self.tok, "id": self.draft_row["id"],
                                                        "return": "review", **fields})
 

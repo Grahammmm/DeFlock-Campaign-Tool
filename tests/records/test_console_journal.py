@@ -53,7 +53,15 @@ class Journal(Panel):
         path = self.j / console_journal.FILE
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
+    def approve_fields(self, ident):
+        row = next((r for r in console_snapshot.SnapshotSource(console_snapshot.Pinner(str(self.root)).pin()).queue_rows()
+                    if r["id"] == ident), None)
+        return {} if row is None or row["kind"] == "message_link" else {
+            "body": row["body"], "expected_revision": str(row["revision"])}
+
     def decide(self, path, **fields):
+        if path == "/approvals/approve":
+            fields = {**self.approve_fields(fields["id"]), **fields}
         port = self.server.server_port
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         try:
@@ -127,7 +135,7 @@ class Decisions(Journal):
         page = html.unescape(self.get("/review?id=" + self.pending_id))
         self.assertIn(aq.approval_payload(self.live, self.pending_id).decode(), page)
         self.assertIn("\nproject: " + self.pid + "\n", page)
-        self.assertIn('<form method="post" action="/approvals/approve">', page)
+        self.assertIn('formaction="/approvals/approve"', page)
         before = tree_state(self.root)
         signature = "-----BEGIN SSH SIGNATURE-----\nabc\n-----END SSH SIGNATURE-----\n"
         self.assertEqual(self.decide("/approvals/approve", id=self.pending_id, signature=signature)[0], 303)
@@ -212,6 +220,26 @@ class Decisions(Journal):
         self.assertNotIn("pending apply", self.get("/review?id=" + self.pending_id))
         self.make_export(RUN4, set_manifest(applied_journal_ids=[first], apply_outcomes={second: {"refusal": "stale_revision"}}))
         self.assertIn("not applied: stale_revision", self.get("/review?id=" + self.pending_id))
+
+    def test_pending_history_is_item_and_project_scoped_and_terminal_refusal_is_not_deferred(self):
+        self.make_export()
+        self.up()
+        pin = console_snapshot.Pinner(str(self.root)).pin()
+        console_journal.append(str(self.j), pin, "operator", "/approvals/edit", "edit", self.pending_id, 0, "new words")
+        edit = self.lines()[0]["entry_id"]
+        console_journal.append(str(self.j), pin, "operator", "/approvals/reject", "reject", self.pending_id, 0, "later")
+        self.assertTrue(console_journal.pending_edit(self.server, self.pending_id))
+        before = (self.j / console_journal.FILE).read_bytes()
+        response = self.decide("/approvals/approve", id=self.pending_id, signature="old signature")
+        self.assertEqual(response[0], 409)
+        self.assertIn("approve_edit_pending", response[2])
+        self.assertEqual((self.j / console_journal.FILE).read_bytes(), before)
+        self.assertFalse(console_journal.pending_edit(self.server, self.approved_id))
+        self.make_export(RUN2, set_manifest(apply_outcomes={edit: {"outcome": "DEFERRED"}}))
+        self.assertTrue(console_journal.pending_edit(self.server, self.pending_id))
+        self.make_export(RUN3, set_manifest(apply_outcomes={edit: {"outcome": "STALE_REVISION", "refusal": "STALE_REVISION"}}))
+        self.assertFalse(console_journal.pending_edit(self.server, self.pending_id))
+        self.assertIn('id="approval-payload"', self.get("/review?id=" + self.pending_id))
 
     def test_an_unreadable_journal_fails_closed(self):
         self.make_export()

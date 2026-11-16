@@ -217,8 +217,14 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
     field = '<label for="body">Draft text</label><textarea id="body" name="body" rows="28"%s>\n%s</textarea>' % (
         " required" if pending and live else " readonly", esc(typed if field_name == "body" else row["body"]))
     if pending and live:
-        out.append(ap._form("/approvals/edit", token, row["id"], "", ap.revision_field(row) + field, "Save edit",
-                            back="review"))
+        # Keep the editor form open through the signing controls. Both buttons submit
+        # this very textarea and revision; Save remains a separate action.
+        out.append('<form method="post" action="/approvals/edit">'
+                   '<input type="hidden" name="csrf_token" value="%s">'
+                   '<input type="hidden" name="id" value="%s">'
+                   '<input type="hidden" name="return" value="review">%s%s'
+                   '<button type="submit">Save edit</button>' %
+                   (esc(token), esc(row["id"]), ap.revision_field(row), field))
     else:
         out.append(field)
     edits = history["edits"]
@@ -243,6 +249,9 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
         out.append("<p>%s</p>" % esc(limit))
     if pending and not live:
         out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre><p>%s</p>' % (esc(payload.decode("utf-8")), READ_ONLY))
+    elif pending and row.get("edit_pending"):
+        out.append('<h2>Approve</h2><p role="status">Waiting for edit to apply. '
+                   'Wait for the refreshed export, then review and approve.</p></form>')
     elif pending:
         out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre>' % esc(payload.decode("utf-8")))
         if journal:
@@ -252,15 +261,18 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
                    "The console holds no key and never signs. Approval does not send or publish. "
                    + ("This is a draft-copy decision only.</p>" if copy else
                       "For mail, continue to the separate send check after approval.</p>"))
-        out.append(ap._form("/approvals/approve", token, row["id"], "",
-                            '<label for="signature">Detached SSH signature</label>'
-                            '<textarea id="signature" name="signature" required>%s</textarea>' % esc(
-                                typed if field_name == "signature" else ""),
-                            approval_label(row, switches), back="review"))
+        out.append('<label for="signature">Detached SSH signature</label>'
+                   '<textarea id="signature" name="signature">%s</textarea>'
+                   '<button type="submit" formaction="/approvals/approve">%s</button></form>' %
+                   (esc(typed if field_name == "signature" else ""), esc(approval_label(row, switches))))
         out.append(ap._form("/approvals/reject", token, row["id"], "",
                             '<label for="reason">Rejection reason</label>'
                             '<input id="reason" name="reason" required maxlength="2000" value="%s">' % esc(
                                 typed if field_name == "reason" else ""),
+                            "Reject with reason", back="review"))
+    if pending and live and row.get("edit_pending"):
+        out.append(ap._form("/approvals/reject", token, row["id"], "",
+                            '<label>Rejection reason<input name="reason" required maxlength="2000"></label>',
                             "Reject with reason", back="review"))
     out.append('<p><a href="/">Back</a></p>')
     return console_layout.shell(title, "\n".join(out), active="Approvals")

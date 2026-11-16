@@ -522,3 +522,28 @@ with a token whose signature the console verifies itself**, so the write path do
 
 **Rollback:** start the unit without `--decisions-dir` (and without `--access-keys`). The page is then read-only again (every POST 503
 `read_only_export`); the journal and its receipts stay on disk and nothing already applied changes.
+
+
+### Visible edits and approval (CONDRAFT-04)
+
+Save edit and Approve share the draft textarea and its `expected_revision`.
+Approve is not Save: the server refuses unsaved words (`approve_unsaved_text`,
+409) or an older revision (409) before verifying or recording a signature.
+CRLF/LF-only differences are normalized; other text differences must be saved
+and reviewed first. The live writer rechecks both preconditions under its lock.
+
+On a hosted export, **Waiting for edit to apply** replaces the signing payload
+and approval button while any same-item edit awaits application anywhere in the
+journal history. A later action cannot hide it. Save does not recompute a payload,
+change project identity, or sign. Wait for live apply and a fresh live-derived
+export, review the complete edited words and new digest, then sign that payload.
+The pre-edit signature cannot approve the edited draft. `approve_edit_pending`
+refuses a direct approval POST (409) without adding a journal entry.
+
+DEFERRED/no receipt remains waiting; even a completed live apply remains waiting
+on an old export. A fresh export with APPLIED resolves that edit; a final refusal
+resolves the pending attempt but remains a distinct not-applied diagnostic, not a
+successful edit. Review the actual saved draft before deciding again. Other queue
+items remain independent. Read-only exports still refuse POSTs (503), hosted send
+remains unavailable (404), and all authentication/origin/CSRF and signature checks
+remain in force. Nothing is auto-signed, sent, or published.

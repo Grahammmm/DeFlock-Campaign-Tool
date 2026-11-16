@@ -278,12 +278,12 @@ class ReadTests(Base):
         self.assertNotIn("script", p.tags)
         self.assertNotIn("img", p.tags)
         self.assertFalse([a for a in p.attrs if a.startswith("on")])
-        self.assertEqual(len(p.forms), 3)
+        self.assertEqual(len(p.forms), 2)
         self.assertIn("&lt;/textarea&gt;&lt;script&gt;", html)
         self.assertEqual(html.count("</textarea>"), 2)  # signature + edit only; draft text stays inert
         self.assertIn("focus-visible", html)
         self.assertIn('aria-label="Dashboard sections"', html)
-        self.assertEqual({i.split("-")[0] for i in p.ids if "-" in i}, {"sig", "rej", "ed"})
+        self.assertEqual({i.split("-")[0] for i in p.ids if "-" in i}, {"rej", "ed"})
 
 
 class Http:
@@ -402,7 +402,7 @@ class LiveFormTests(ServerCase):
         self.assertEqual((row["status"], row["body"], row["actor"]), ("pending", "new text\nline 2", "operator-1"))
         # approve with a real signature over the exact payload
         sig = self.signer.sign(aq.approval_payload(self.project, ident))
-        self.assertEqual(self.http.post("/approvals/approve", {"csrf_token": self.tok, "id": ident,
+        self.assertEqual(self.http.post("/approvals/approve", {"body": self.row(ident)["body"], "expected_revision": str(self.row(ident)["revision"]), "csrf_token": self.tok, "id": ident,
                                                                 "signature": sig})[0], 303)
         self.assertEqual(self.row()["status"], "approved")
         self.assertEqual(self.row()["approved_by"], self.signer.principal)
@@ -410,7 +410,7 @@ class LiveFormTests(ServerCase):
         size = len(journal(self.project))
         self.assertEqual(self.http.post("/approvals/reject", {"csrf_token": self.tok, "id": ident,
                                                                "reason": "late"})[0], 409)
-        self.assertEqual(self.http.post("/approvals/approve", {"csrf_token": self.tok, "id": ident,
+        self.assertEqual(self.http.post("/approvals/approve", {"body": self.row(ident)["body"], "expected_revision": str(self.row(ident)["revision"]), "csrf_token": self.tok, "id": ident,
                                                                 "signature": sig})[0], 303)
         self.assertEqual(len(journal(self.project)), size)
         # reject needs a reason and records the configured actor
@@ -439,9 +439,9 @@ class LiveFormTests(ServerCase):
         self.addCleanup(stranger.close)
         bad = stranger.sign(aq.approval_payload(self.project, ident))
         for sig in ("G", "garbage", bad):
-            self.assertEqual(self.http.post("/approvals/approve", {"csrf_token": self.tok, "id": ident,
+            self.assertEqual(self.http.post("/approvals/approve", {"body": self.row(ident)["body"], "expected_revision": str(self.row(ident)["revision"]), "csrf_token": self.tok, "id": ident,
                                                                     "signature": sig})[0], 403)
-        self.assertEqual(self.http.post("/approvals/approve", {"csrf_token": self.tok, "id": sha(77),
+        self.assertEqual(self.http.post("/approvals/approve", {"body": self.draft_row["body"], "expected_revision": str(self.draft_row["revision"]), "csrf_token": self.tok, "id": sha(77),
                                                                 "signature": bad})[0], 404)
         self.assertEqual(len(journal(self.project)), size)
         self.assertEqual(self.row()["status"], "pending")
@@ -555,6 +555,9 @@ class NextStepsPageTests(ServerCase):
         return self.http.send("GET", path, headers={"Content-Length": None, "Content-Type": None})
 
     def post(self, route, ident, **fields):
+        if route == "/approvals/approve":
+            row = self.row(ident)
+            fields = {"body": row["body"], "expected_revision": str(row["revision"]), **fields}
         return self.http.post(route, {"csrf_token": self.tok, "id": ident, **fields})
 
     def test_page_has_three_sections_and_forms_only_on_pending_rows(self):
@@ -666,7 +669,7 @@ class MailboxPanelTests(ServerCase):
         if getattr(self, "sig", None) is None:
             self.sig = self.signer.sign(aq.approval_payload(self.project, ident))
         sig = self.sig
-        return Http(server.server_address[1]).post("/approvals/approve", {
+        return Http(server.server_address[1]).post("/approvals/approve", {"body": self.row(ident)["body"], "expected_revision": str(self.row(ident)["revision"]), 
             "csrf_token": server.csrf_token, "id": ident, "signature": sig})
 
     def test_approve_places_one_draft_and_the_cell_shows_it(self):
@@ -699,7 +702,7 @@ class MailboxPanelTests(ServerCase):
                             request_id="agency-wide", body="BODY-social", evidence=evidence, source_run_id=RUN)
         server = self.start(mail_drafts_config=str(self.cfg))
         sig = self.signer.sign(aq.approval_payload(self.project, step["id"]))
-        status, _, _ = Http(server.server_address[1]).post("/approvals/approve", {
+        status, _, _ = Http(server.server_address[1]).post("/approvals/approve", {"body": self.row(step["id"])["body"], "expected_revision": str(self.row(step["id"])["revision"]), 
             "csrf_token": server.csrf_token, "id": step["id"], "signature": sig})
         self.assertEqual(status, 303)
         self.place_mock.assert_not_called()

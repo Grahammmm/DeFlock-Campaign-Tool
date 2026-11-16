@@ -133,6 +133,37 @@ def parse(raw):
     return entries
 
 
+def pending_edit(server, ident, *, pin=None):
+    """Inspect every same-project edit, not the lossy latest-action overlay.
+
+    Only an applied receipt or a final refusal in a fresh live-derived export resolves
+    an entry. Missing outcomes (including deferred applies) remain waiting.
+    """
+    if server.decisions_dir is None:
+        return False
+    pin = pin or server.pinner.pin()
+    return ident in pending_edit_ids(server.decisions_dir, pin)
+
+
+def pending_edit_ids(journal, pin):
+    """One bounded history read for all rows in a pinned page."""
+    directory = os.open(pin.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        manifest = aq._strict_load(snap._read_file(directory, "EXPORT.json", snap.MAX_MANIFEST) or b"", "journal_invalid")
+    finally:
+        os.close(directory)
+    applied, outcomes = manifest.get("applied_journal_ids") or [], manifest.get("apply_outcomes") or {}
+    pending = set()
+    for entry in read(journal):
+        if (entry["source_project_id"] != pin.source_project_id or
+                entry["action"] != "edit" or entry.get("kind") or entry["entry_id"] in applied):
+            continue
+        outcome = outcomes.get(entry["entry_id"], {})
+        if not outcome.get("refusal") or outcome.get("outcome") == "DEFERRED":
+            pending.add(entry["target_id"])
+    return pending
+
+
 def overlay(journal, pin):
     """{target id (or "switch"): text} for this project's entries the pinned export has not applied; the latest wins."""
     directory = os.open(pin.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -160,12 +191,13 @@ class JournalSource(snap.SnapshotSource):
     def __init__(self, pin, notes):
         super().__init__(pin)
         self.notes = notes
+        self.edit_pending = set()
 
     def _mark(self, rows):
         return [{**r, "pending_apply": self.notes[r["id"]]} if r.get("id") in self.notes else r for r in rows]
 
     def queue_rows(self):
-        return self._mark(super().queue_rows())
+        return [{**r, "edit_pending": r["id"] in self.edit_pending} for r in self._mark(super().queue_rows())]
 
     def packets_pending(self, now=None):
         return self._mark(super().packets_pending(now))
@@ -218,6 +250,12 @@ def queue(handler, action, ident, value, row, expected, choice):
         return handler._fail(400) or False
     if action == "edit" and row["revision"] != int(expected):
         return handler._stale(ident) or False
+    if action == "approve":
+        try:
+            if pending_edit(handler.server, ident, pin=handler.pin):
+                return handler._approve_refused("approve_edit_pending") or False
+        except (OSError, ValueError, KeyError, TypeError, JournalError, aq.ApprovalQueueError):
+            return handler._fail(503, "journal_unavailable") or False
     return _record(handler, action, ident, row["revision"], value, choice)
 
 

@@ -393,3 +393,61 @@ class StoreFaults(Apply):
 class Registered(Apply):
     def test_the_command_is_registered(self):
         self.assertEqual(cli.COMMANDS["decisions-apply"], ("console_apply", "main"))
+
+
+class EditedApprovalCycle(Apply):
+    def test_save_wait_apply_refresh_then_sign_exact_edited_export(self):
+        self.make_export()
+        self.up()
+        old = self.approve_fields(self.pending_id)
+        old_payload = self.exported("queue.json", self.pending_id)
+        old_signature = self.sign(old_payload)
+        body = "Edited complete words <unsafe>&\n" + "Long reviewed sentence. " * 500 + "EDITED-TAIL"
+        other = self.row(self.approved_id)
+        self.assertEqual(self.decide("/approvals/edit", id=self.pending_id, body=body, expected_revision="0")[0], 303)
+        before = self.journal_bytes()
+        for fields in (old, {**old, "body": body}):
+            response = self.decide("/approvals/approve", id=self.pending_id, signature=old_signature, **fields)
+            self.assertEqual(response[0], 409)
+            self.assertEqual(self.journal_bytes(), before)
+        # An unrelated action remains independently applicable while the edit is deferred.
+        self.decide("/public-updates/off")
+        before = self.journal_bytes()
+        page = self.get("/review?id=" + self.pending_id)
+        self.assertIn("Waiting for edit to apply", page)
+        self.assertNotIn('id="approval-payload"', page)
+        self.assertNotIn('formaction="/approvals/approve"', page)
+        self.assertEqual(self.decide("/approvals/approve", id=self.pending_id, signature=old_signature, **old)[0], 409)
+        self.assertEqual(self.journal_bytes(), before)
+        # Defer the edit; no receipt/export may pretend it applied.
+        with mock.patch.object(aq, "edit", side_effect=aq.ApprovalQueueError("queue_busy")):
+            self.assertEqual(self.apply(), ["DEFERRED", "APPLIED"])
+        self.served(RUN + "-2")
+        self.assertIn("Waiting for edit to apply", self.get("/review?id=" + self.pending_id))
+        self.assertEqual(self.apply(), ["APPLIED", "ALREADY"])
+        # The old pinned export remains unsignable even after live apply, until refresh.
+        self.assertIn("Waiting for edit to apply", self.get("/review?id=" + self.pending_id))
+        page = self.served(RUN + "-3")
+        self.assertIn("EDITED-TAIL", page)
+        self.assertIn("Edited complete words &lt;unsafe&gt;&amp;", page)
+        self.assertNotIn("Waiting for edit to apply", page)
+        fresh = self.approve_fields(self.pending_id)
+        self.assertEqual((fresh["body"], fresh["expected_revision"]), (body, "1"))
+        payload = self.exported("queue.json", self.pending_id)
+        import hashlib
+        self.assertIn(hashlib.sha256(body.encode()).hexdigest(), page)
+        self.assertEqual(payload, aq.approval_payload(self.live, self.pending_id).decode())
+        self.assertNotEqual(payload.split("sha256: ", 1)[1].splitlines()[0],
+                            old_payload.split("sha256: ", 1)[1].splitlines()[0])
+        self.assertNotEqual(payload, old_payload)
+        self.assertIn("\nproject: " + self.pid + "\n", payload)
+        before = self.journal_bytes()
+        self.assertEqual(self.decide("/approvals/approve", id=self.pending_id, signature=old_signature, **old)[0], 409)
+        self.assertEqual(self.journal_bytes(), before)
+        self.assertEqual(self.decide("/approvals/approve", id=self.pending_id, signature=old_signature, **fresh)[0], 303)
+        self.assertEqual(self.apply(), ["ALREADY", "ALREADY", "SIGNATURE_REFUSED"])
+        self.assertEqual(self.row(self.pending_id)["status"], "pending")
+        self.assertEqual(self.decide("/approvals/approve", id=self.pending_id, signature=self.sign(payload), **fresh)[0], 303)
+        self.assertEqual(self.apply(), ["ALREADY", "ALREADY", "ALREADY", "APPLIED"])
+        self.assertEqual(self.row(self.pending_id)["status"], "approved")
+        self.assertEqual(self.row(self.approved_id), other)
