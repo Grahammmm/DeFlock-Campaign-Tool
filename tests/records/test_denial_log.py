@@ -71,6 +71,30 @@ class EntryTests(unittest.TestCase):
                 states["requests"][0]["evidence"]["events"] = []
                 self.assertEqual(dl.entries(states, doc, []), [])
 
+    def test_whole_denial_quote_from_current_page_text_only_when_complete_cited_and_unambiguous(self):
+        states, doc = fixtures()
+        doc["requests"][0]["asks"] = []
+        doc["sources"][0]["original_sha256"] = "b" * 64
+        legacy = dl.entries(states, doc, [])
+        self.assertEqual(dl.entries(states, doc, [], page_text=None), legacy)  # omitted: previous behaviour exactly
+        sentence = "We deny this request under Gov. Code section 9999."
+        row, = dl.entries(states, doc, [], page_text={"i1": [(2, "Re: request\n" + sentence + "\nThanks.")]})
+        self.assertEqual(row["agency_words"], {"quote": sentence, "page": 2, "doc_sha256": "b" * 64})
+        self.assertEqual(row["agency_citation"], {"text": [sentence], "label": dl.CITATION})
+        self.assertEqual(row["id"], legacy[0]["id"])  # enrichment never changes the row identity
+        for label, pages, note in (("no page text", [], None), ("page zero", [(0, sentence)], None),
+                                   ("uncited", [(1, "We deny this request.")], None),
+                                   ("item reference", [(1, "Item 2 is withheld under Gov. Code section 9999.")], None),
+                                   ("numbered heading", [(1, "2.\n" + sentence)], None),
+                                   ("two quotes", [(1, sentence), (2, "Also denied under \u00a7 7923.600.")],
+                                    "multiple candidate quotes; manual")):
+            with self.subTest(label):
+                row, = dl.entries(states, doc, [], page_text={"i1": pages})
+                self.assertIsNone(row["agency_words"])
+                self.assertEqual(row["agency_words_note"], note or "no quote extracted")
+        doc["sources"][0]["needs_visual_review_unresolved"] = True  # unreviewed extraction never qualifies
+        self.assertIsNone(dl.entries(states, doc, [], page_text={"i1": [(1, sentence)]})[0]["agency_words"])
+
     def test_reply_states_no_kind_only_coverage_or_ambiguous_sources(self):
         states, doc = fixtures()
         for status, expected in (("pending", "drafted"), ("approved", "approved"), ("rejected", "rejected"), ("sent", "sent"), ("cancelled", "not_drafted"), ("expired", "not_drafted")):

@@ -632,3 +632,152 @@ class UnresolvedEligibilityOcrPageTests(unittest.TestCase):
         self.assertTrue(validation.ocr_issue_admitted({"code": "page_eligibility_unresolved", "locator": {"page": 1}},
                                                       {1: {}}))
 
+
+
+class ReparseTimeoutTests(unittest.TestCase):
+    """Installed-parser reparse timeout is a distinct refusal; bounds and fail-closed behaviour unchanged."""
+    setUpClass = classmethod(fixture_module.ExtractionLedgerTests.setUpClass.__func__)
+    write = fixture_module.ExtractionLedgerTests.write
+    enroll = fixture_module.ExtractionLedgerTests.enroll
+    rewrite = fixture_module.ExtractionLedgerTests.rewrite
+    setUp = ExtractionValidationTests.setUp
+    install = ExtractionValidationTests.install
+    expected_id = ExtractionValidationTests.expected_id
+    run_row = ExtractionValidationTests.run_row
+    runner = ExtractionValidationTests.runner
+    packet = ExtractionValidationTests.packet
+    actual = ExtractionValidationTests.actual
+
+    TIMEOUT = {"status": "blocked", "issues": [{"code": "extraction_timeout", "owner": "runtime"}], "units": [], "pages": []}
+
+    def enroll_form(self, raw, name, mime, form):
+        source = self.root / name
+        self.write(source, raw)
+        self.source = source
+        self.subject = enrollment.sha(raw)
+        with self.store.ledger(self.database) as con:
+            con.execute('INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)',
+                (self.subject, len(raw), mime, None, 'original', 'unresolved', str(source), 'receipt_validation_pending', None, '{}'))
+            con.execute('INSERT INTO occurrences VALUES(?,?,?,?,?,?,?,?)',
+                (form + '-source', self.subject, 'local', 'synthetic', None, None, 'fixture', '{}'))
+            for stage in self.store.STAGES:
+                con.execute('INSERT INTO stage_state VALUES(?,?,?,?,?,?,?,?)',
+                    (self.subject, stage, 'pending', None, 'fixture', self.store.now(), 'intake', None))
+            con.commit()
+        out = self.root / ('out-' + form)
+        out.mkdir(mode=0o700)
+        result = routes.extract(source, self.subject, out, form, timeout=20)
+        self.enrolled = self.enroll(Path(result['run_path']) / 'extraction.json')
+        return result
+
+    def reparse_error(self, replacement, expected, form, timeout):
+        """Run the validator's evidence with only the independent reparse replaced; return recorded calls."""
+        real = routes.extract
+        calls = []
+        def fake(*args, **kwargs):
+            calls.append((args, kwargs))
+            return replacement(real(*args, **kwargs)) if callable(replacement) else replacement
+        with patch.object(routes, "extract", side_effect=fake):
+            with self.assertRaisesRegex(enrollment.ExtractionBindingError, "^" + expected + "$"):
+                self.validator.evidence(self.enrolled["import_id"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1]["form"], form)
+        self.assertEqual(calls[0][1]["timeout"], timeout)
+        self.assertEqual(set(calls[0][1]), {"form", "timeout"})
+        self.assertEqual(len(calls[0][0]), 3)
+        self.assertNotIn("ocr", " ".join(str(k) for k in calls[0][1]))
+
+    def assert_unaccepted(self):
+        with self.store.ledger(self.database, readonly=True) as con:
+            self.assertEqual(con.execute("SELECT count(*) FROM stage_transitions WHERE stage=?", ("extract",)).fetchone()[0], 0)
+            self.assertEqual(con.execute("SELECT count(*) FROM stage_state WHERE stage='extract' AND status='done'").fetchone()[0], 0)
+        self.assertEqual(self.stages.counts(self.database)["verified_seven_stage_complete"], 0)
+
+    def test_helper_classifies_only_trusted_blocked_runtime_timeout(self):
+        timeout = {"code": "extraction_timeout", "owner": "runtime"}
+        for checked in (self.TIMEOUT, {"status": "blocked", "issues": [{"code": "x"}, "junk", None, timeout]}):
+            with self.subTest(raised=checked), self.assertRaisesRegex(enrollment.ExtractionBindingError, "^fixed_code$"):
+                validation._require_no_reparse_timeout(checked, "fixed_code")
+        for checked in ({"status": "complete", "issues": [timeout]}, {"status": "partial", "issues": [timeout]},
+                        {"status": "blocked", "issues": [{"code": "extraction_timeout", "owner": "other"}]},
+                        {"status": "blocked", "issues": [{"code": "extraction_timeout"}]},
+                        {"status": "blocked", "issues": [{"code": "my extraction_timeout", "owner": "runtime"}]},
+                        {"status": "blocked", "issues": [{"code": "invalid_or_bounded_parser_output", "owner": "runtime"}]},
+                        {"status": "blocked", "issues": ["extraction_timeout", None, 7]},
+                        {"status": "blocked", "issues": "extraction_timeout"},
+                        {"status": "blocked", "issues": {"code": "extraction_timeout", "owner": "runtime"}},
+                        {"status": "blocked"}, {"issues": [timeout]}, None, "extraction_timeout", []):
+            with self.subTest(ignored=checked):
+                self.assertIsNone(validation._require_no_reparse_timeout(checked, "fixed_code"))
+
+    def test_pdf_reparse_timeout_is_distinct_and_leaves_extract_unaccepted(self):
+        self.actual(pdf=True); self.install(); self.runner()
+        self.reparse_error(self.TIMEOUT, "installed_pdf_reparse_timeout", "pdf", 20)
+        self.assert_unaccepted()
+
+    def test_pdf_real_route_child_timeout_is_converted_without_waiting(self):
+        import subprocess
+        self.actual(pdf=True); self.install(); self.runner()
+        with patch.object(routes, "run_bounded", side_effect=subprocess.TimeoutExpired(["synthetic"], 20)) as child:
+            with self.assertRaisesRegex(enrollment.ExtractionBindingError, "^installed_pdf_reparse_timeout$"):
+                self.validator.evidence(self.enrolled["import_id"])
+        self.assertEqual(child.call_args[0][1], 20)
+        self.assert_unaccepted()
+
+    def test_pdf_non_timeout_incomplete_keeps_previous_refusal(self):
+        self.actual(pdf=True); self.install(); self.runner()
+        decoder = {"status": "blocked", "issues": [{"code": "decoder_unavailable_or_failed", "owner": "runtime", "exit_code": 1}]}
+        malformed = {"status": "blocked", "issues": [{"code": "invalid_or_bounded_parser_output", "owner": "runtime"}]}
+        for replacement in (decoder, malformed):
+            self.reparse_error(replacement, "installed_pdf_reparse_incomplete", "pdf", 20)
+        def lying(result):
+            result = dict(result)
+            result["issues"] = [{"code": "extraction_timeout", "owner": "runtime"}]
+            return result
+        self.reparse_error(lying, "installed_pdf_reparse_incomplete", "pdf", 20)  # complete + timeout-looking issue
+        self.assert_unaccepted()
+
+    def test_receipt_claim_cannot_force_timeout_code(self):
+        self.actual(pdf=True)
+        self.rewrite(self.path, lambda d: d.update(issues=[{"code": "extraction_timeout", "owner": "runtime"}]))
+        # The submitted receipt may be refused by existing checks; it must never surface the timeout refusal.
+        try:
+            self.enrolled = self.enroll(self.path); self.install()
+            self.validator.evidence(self.enrolled["import_id"])
+        except Exception as error:
+            self.assertNotIn("reparse_timeout", str(error))
+
+    def test_pdf_genuine_reparse_control_still_accepted(self):
+        self.actual(pdf=True); self.install(); self.runner()
+        content, original, coverage = self.validator.evidence(self.enrolled["import_id"])
+        self.assertEqual(coverage["denominator"], {"kind": "pages", "total": 2})
+
+    def test_container_reparse_timeout_and_control(self):
+        raw = b"From: a@example.invalid\r\nTo: b@example.invalid\r\nSubject: Synthetic\r\n\r\nSynthetic body.\r\n"
+        self.enroll_form(raw, "original.eml", "message/rfc822", "eml"); self.install(); self.runner()
+        content, original, coverage = self.validator.evidence(self.enrolled["import_id"])  # genuine control
+        self.assertTrue(content)
+        self.reparse_error(self.TIMEOUT, "installed_reparse_timeout", "eml", 60)
+        incomplete = {"status": "blocked", "issues": [{"code": "decoder_unavailable_or_failed", "owner": "runtime"}]}
+        self.reparse_error(incomplete, "installed_reparse_incomplete", "eml", 60)
+        self.assert_unaccepted()
+
+    def test_workbook_reparse_timeout_and_control(self):
+        from openpyxl import Workbook
+        import io
+        import zipfile
+        from tests.records import test_workbook_policy as workbook_tests
+        book = Workbook(); book.active.title = "Synthetic"; book.active["A1"] = "Fictional value"
+        stream = io.BytesIO(); book.save(stream); raw = stream.getvalue()
+        self.enroll_form(raw, "original.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx")
+        policy = workbook_tests.WorkbookPolicyTests("runTest"); policy.setUp(); self.addCleanup(policy.doCleanups)
+        policy.inspection["package_parts"] = len(zipfile.ZipFile(io.BytesIO(raw)).infolist())
+        adapter_id = validation.install_extraction_validator(database=self.database, evidence_root=self.adapter.evidence_root,
+            original_root=self.root, native_workbook_policy=policy.load())
+        self.validator = self.stages._INSTALLED_VALIDATORS[adapter_id]; self.runner()
+        content, original, coverage = self.validator.evidence(self.enrolled["import_id"])  # genuine control
+        self.assertEqual(coverage["denominator"], {"kind": "rows", "total": 1})
+        self.reparse_error(self.TIMEOUT, "installed_workbook_reparse_timeout", "xlsx", 60)
+        incomplete = {"status": "blocked", "issues": [{"code": "invalid_or_bounded_parser_output", "owner": "runtime"}]}
+        self.reparse_error(incomplete, "installed_workbook_reparse_mismatch", "xlsx", 60)
+        self.assert_unaccepted()

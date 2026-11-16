@@ -103,8 +103,8 @@ An operator may stage `P/followup-coverage/AGENCY_KEY.tsv` with columns
 letter, list comma-separated ask numbers or `none`; this overrides machine mapping.
 Duplicate rows, inactive/unknown queue ids or out-of-scope asks yield manual
 `coverage_table_invalid`. The table is read-only. Neither ask text nor quotes are
-printed. `records_contradict_policy` and `vague_answer` require reviewed findings (see Reviewed contradictions;
-`vague_answer` stays disabled).
+printed. `records_contradict_policy` requires a reviewed finding (see Reviewed contradictions). `vague_answer` is not a
+finding: it is an evidence-bound machine question (see Vague answers).
 
 ## Read-only follow-up cases
 
@@ -204,6 +204,35 @@ edit placeholder. The queue row's evidence carries the locator, and its identity
 hashes, so a rerun adds nothing and changed evidence adds a distinct draft.
 
 Finding approval is not approval of the draft, a send or a publication. Scheduled root wiring is not part of this unit.
+
+## Vague answers (FLK-REC-4)
+
+A same-run denial that cites an exemption but does not tie it to numbered items gets one private, pending `vague_answer`
+reply-in-thread draft asking the agency to tie each cited exemption to the items it withholds and to state the
+justification. It is a machine reading, not a finding: no approval, send, placement or publication is wired.
+
+Eligibility (all required, otherwise the route is unchanged): a same-run denial-log entry (`denied_whole`, `withheld` or
+`exemption_cited`) with a complete quote (under 400 characters), a positive page, a 64-hex original-document hash and a
+section-numbered agency citation (`§ 7922.540`, `Gov. Code section 9999`; a bare "exempt" or "we conducted a search" never
+qualifies), and at least one open known ask left after the existing coverage reconciliation. The denial log quotes a
+whole denial only from the current hash-bound extraction of its exact source item, read-only (no extraction, no
+writes), one complete cited sentence; two distinct candidate sentences stay manual
+(`vague_answer_evidence_ambiguous`). Any item reference the agency itself wrote (`item 2`, `items 1, 2 and 3`, `#1`, a
+`1.` list heading, including an unknown `item 99`) makes the reply item-level: it never routes `vague_answer` and keeps
+its blanket-denial/coverer route. Statute digits are not item numbers.
+
+Precedence: closed/tier-1, closed, clarification and a queued fee answer still win. An eligible vague answer is checked
+next and therefore wins over silence, exceeded extension and waiting extension (and over the reviewed-contradiction
+branch and the residual rules); for unknown-state requests (no register issues) it also applies. Without eligible
+evidence every route is exactly as before. Fully covered scope keeps the existing covered disposition.
+
+The route carries only nontext locators (`vague_answer_evidence`: denial id, page, hash, quote digest); the case builder
+and engine re-resolve them against the same-run denial log and fail closed on any mismatch. Statute wording comes from
+the campaign-selected law package's written-denial rule (selected by rule identity, never a hardcoded paragraph or the
+agency's citation) and is prefixed `DRAFT law-package wording — unreviewed; not a legal finding` while the package is not
+reviewed; a missing package or rule refuses before any queue write. The agency's quote, page, document hash and
+citation (labelled `agency's citation; UNVERIFIED by us`) are queue evidence only (`evidence.vague_answer`), never in
+the letter body. The queue identity binds the evidence and the package wording, so changed evidence is a new draft.
 
 ## Agency events import
 

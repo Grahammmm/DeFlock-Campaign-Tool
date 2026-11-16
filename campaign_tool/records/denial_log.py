@@ -3,6 +3,9 @@ import argparse
 from datetime import datetime
 import hashlib
 import json
+import os
+import re
+import sqlite3
 from zoneinfo import ZoneInfo
 
 from . import approval_queue, followup_route, followup_state, mail_send
@@ -11,6 +14,43 @@ from .campaign_config import DEFAULT_TIMEZONE, load_timezone
 
 LABEL = "Machine reading of the response; review required; not proof of a lawful or unlawful denial."
 CITATION = "agency's citation; UNVERIFIED by us"
+_DENIAL_CUE = re.compile(response_items.WITHHELD.pattern + r"|\bexempt(?:ed|ion)?\b", re.I)
+# Item headings may include a description after the agency's number.
+_HEADING = re.compile(r"^\s*(?:(?:request\s+)?item\s+\d{1,3}\b|\(\d{1,3}\)|\d{1,3}[.):])", re.I)
+
+
+def _whole_quote(source, pages):
+    """FLK-REC-4: one complete cited denial sentence of a whole denial from hash-bound current page text.
+
+    -> (agency_words, note). Nothing qualifies without a positive page, a reviewed extraction, a section-numbered
+    citation and no item reference by the agency; two distinct candidates stay manual, never first-match.
+    """
+    sha = source.get("original_sha256")
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+        return None, None
+    if response_items._unreviewed(source, pages):
+        return None, None
+    found = {}
+    for page, text in pages:
+        if type(page) is not int or page < 1 or not isinstance(text, str):
+            continue
+        lines = [ln for ln in text.splitlines()]
+        for sentence in response_items.sentences(text):
+            if not (response_items._hit(_DENIAL_CUE, sentence) and followup_route.has_numbered_citation(sentence)):
+                continue
+            where = next((i for i, ln in enumerate(lines) if sentence in ln), None)
+            before = next((ln for ln in reversed(lines[:where or 0]) if ln.strip()), "") if where is not None else ""
+            if (followup_route.explicit_item_reference(sentence) or _HEADING.match(before)
+                    or (where is not None and followup_route.explicit_item_reference(lines[where]))):
+                return None, None  # item-level reply: keeps the existing denial routing
+            if len(sentence) < 400:
+                found[(page, sentence)] = None
+    if len(found) > 1:
+        return None, "multiple candidate quotes; manual"
+    if not found:
+        return None, None
+    (page, sentence), = found
+    return {"quote": sentence, "page": page, "doc_sha256": sha}, None
 
 
 def _day(value, *, time_zone=DEFAULT_TIMEZONE):
@@ -24,8 +64,12 @@ def _day(value, *, time_zone=DEFAULT_TIMEZONE):
     return moment.astimezone(ZoneInfo(time_zone)).date().isoformat()
 
 
-def entries(states, response_items_doc, queue_rows, *, time_zone=DEFAULT_TIMEZONE):
-    """Pure, one row per request/ask; optional sources carry same-run receipt metadata."""
+def entries(states, response_items_doc, queue_rows, *, time_zone=DEFAULT_TIMEZONE, page_text=None):
+    """Pure, one row per request/ask; optional sources carry same-run receipt metadata.
+
+    `page_text` (optional): {item_id: [(page, text)]} or a callable item_id -> that list, current hash-bound
+    extraction text used only to quote a whole denial; omitted means the previous behaviour exactly.
+    """
     if states["run_id"] != response_items_doc["run_id"]:
         raise ValueError("denial_log_stale_response_items")
     items = followup_state._index(response_items_doc["requests"])
@@ -58,6 +102,20 @@ def entries(states, response_items_doc, queue_rows, *, time_zone=DEFAULT_TIMEZON
             dates = [e["date"] for e in events if e.get("ids", {}).get("item_id") == source_id and source_id]
             day = _day(source.get("received_at") or max(dates, default=None)
                        or (denied[-1]["date"] if number is None else None), time_zone=time_zone)
+            identity_source = source_id or (denied[-1].get("ids", {}) if number is None else sorted(
+                {e["item_id"] for e in evidence if e.get("item_id")}))
+            row_id = hashlib.sha256(response_items.canon([*key, number, identity_source]).encode()).hexdigest()
+            words = {"quote": quote["quote"][:400], **{k: quote[k] for k in ("page", "doc_sha256") if k in quote}} if quote else None
+            if words is not None and source.get("original_sha256"):
+                words["doc_sha256"] = source["original_sha256"]
+            note = None
+            if words is None and number is None and page_text is not None and source_id and source:
+                pages = page_text(source_id) if callable(page_text) else page_text.get(source_id)
+                if pages:
+                    words, note = _whole_quote(source, pages)
+            citations = [e["quote"] for e in evidence if e.get("quote") and response_items.CITE.search(e["quote"])]
+            if words is not None and number is None:
+                citations = [words["quote"]]
             matches = []
             for q in queue_rows:
                 if q.get("agency_id") != key[0] or q.get("request_id") not in (key[1], req.get("ledger_request_id") or key[1]):
@@ -66,7 +124,16 @@ def entries(states, response_items_doc, queue_rows, *, time_zone=DEFAULT_TIMEZON
                 engine_evidence = q.get("evidence") or {}
                 if engine:
                     patterns = [engine_evidence.get("pattern"), *engine_evidence.get("extra_patterns", [])]
-                    if "blanket_denial" not in patterns or q.get("source_run_id") != states["run_id"]:
+                    if q.get("source_run_id") != states["run_id"]:
+                        continue
+                    if "vague_answer" in patterns:  # exact stored denial id and locator, never the kind or asks alone
+                        proofs = (engine_evidence.get("vague_answer") or {}).get("entries") or []
+                        if words is not None and any(
+                                p.get("denial_id") == row_id and p.get("page") == words.get("page")
+                                and p.get("doc_sha256") == words.get("doc_sha256") for p in proofs if isinstance(p, dict)):
+                            matches.append(q)
+                        continue
+                    if "blanket_denial" not in patterns:
                         continue
                 elif followup_route.COVERERS.get(q.get("kind")) != "withheld":
                     continue
@@ -81,21 +148,36 @@ def entries(states, response_items_doc, queue_rows, *, time_zone=DEFAULT_TIMEZON
             if len(matches) == 1:
                 qid = matches[0]["id"]
                 reply = {"pending": "drafted"}.get(matches[0]["status"], matches[0]["status"])
-            identity_source = source_id or (denied[-1].get("ids", {}) if number is None else sorted(
-                {e["item_id"] for e in evidence if e.get("item_id")}))
-            words = {"quote": quote["quote"][:400], **{k: quote[k] for k in ("page", "doc_sha256") if k in quote}} if quote else None
-            if words is not None and source.get("original_sha256"):
-                words["doc_sha256"] = source["original_sha256"]
-            citations = [e["quote"] for e in evidence if e.get("quote") and response_items.CITE.search(e["quote"])]
-            out.append({"id": hashlib.sha256(response_items.canon([*key, number, identity_source]).encode()).hexdigest(),
+            out.append({"id": row_id,
                         "agency_key": key[0], "request_id": key[1], "date": day,
                         "date_basis": (f"DATED (recorded receipt; {'Pacific' if time_zone == DEFAULT_TIMEZONE else time_zone} day)"
                                        if day else "UNKNOWN"),
                         "item_no": number, "item_text": (ask.get("text") or "")[:160],
                         "kind": "denied_whole" if number is None else "exemption_cited" if ask.get("rating") == "exemption_cited" else "withheld",
-                        "agency_words": words, "agency_words_note": None if words else "no quote extracted",
+                        "agency_words": words, "agency_words_note": None if words else (note or "no quote extracted"),
                         "agency_citation": {"text": citations, "label": CITATION}, "reply": reply, "queue_id": qid})
     return out
+
+
+def _extraction_loader(project, sources):
+    """Lazy item_id -> [(page, text)] from the current hash-bound extraction; read-only, never extracts or creates."""
+    by_id = {s.get("item_id"): s for s in sources if isinstance(s, dict)}
+
+    def pages(item_id):
+        sha = (by_id.get(item_id) or {}).get("original_sha256")
+        processing = received_items._safe_dir(project) / "processing-v1"
+        ledger = processing / "ledger.sqlite"
+        if not isinstance(sha, str) or not os.path.lexists(ledger) or ledger.is_symlink():
+            return []
+        from .run_stages import LedgerBusy, snapshot_ro
+        try:
+            with snapshot_ro(ledger) as db:
+                db.row_factory = sqlite3.Row
+                units, _, _ = received_items._current_units(db, processing, sha)
+        except (sqlite3.Error, LedgerBusy):
+            raise ValueError("denial_log_extraction") from None
+        return [(u["page"], u["text"]) for u in units]
+    return pages
 
 
 def load(project, run_id):
@@ -120,7 +202,8 @@ def load(project, run_id):
                  s.get("revision") == q["revision"] and s.get("state") == "sent" for s in sent) else q for q in queue]
         return {"state": "available", "schema": "records-denial-log-v1", "run_id": run_id,
                 "visibility": "private", "review_required": True, "label": LABEL,
-                "entries": entries(states, doc, queue, time_zone=time_zone)}
+                "entries": entries(states, doc, queue, time_zone=time_zone,
+                                   page_text=_extraction_loader(received_items._safe_dir(project), received["items"]))}
     except FileNotFoundError:
         return {"state": "unavailable", "code": "denial_log_source_missing"}
     except (OSError, ValueError, KeyError, TypeError, AttributeError, approval_queue.ApprovalQueueError, mail_send.MailSendError):
