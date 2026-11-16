@@ -189,6 +189,11 @@ class LiveSource:
             raise console_ocr.OcrPagesError(doc["code"])
         return doc
 
+    def followup_reading(self, run_id):
+        """The selected run's machine reading, computed live and read-only (FLK-REC-8)."""
+        from . import console_followups
+        return console_followups.read(self.project, run_id)
+
 
 class SnapshotSource:
     """The same methods over <pin.path>/console-model/*.json; one instance serves one request."""
@@ -325,3 +330,18 @@ class SnapshotSource:
         name, error = "ocr-pages.json", console_ocr.OcrPagesError
         return {"rows": self._doc(name, error, "rows", list), "counts": self._doc(name, error, "counts", dict),
                 "truncated": self._doc(name, error, "truncated", bool)}
+
+    def followup_reading(self, run_id):
+        """Only the pinned followup-reading.json: ok, {'state': 'not_in_export'} (an older export) or unavailable."""
+        from . import console_followups
+        if run_id != self.pin.run_id:
+            return console_followups.unavailable()
+        if "followup-reading.json" not in self._docs:
+            self._docs["followup-reading.json"] = self._load("followup-reading.json")
+        doc = self._docs["followup-reading.json"]
+        if doc == "console_model_missing":
+            return {"state": "not_in_export"}
+        if isinstance(doc, str):
+            return console_followups.unavailable(run_id)
+        return doc if console_followups.validate(doc, run_id) is not None else console_followups.unavailable(run_id)
+

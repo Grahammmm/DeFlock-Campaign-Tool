@@ -4,7 +4,7 @@ import urllib.parse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from . import approval_queue, console_journal, console_layout, console_snapshot, draft_templates, mail_drafts, mail_preview, mail_send
+from . import approval_queue, console_followups, console_journal, console_layout, console_snapshot, draft_templates, mail_drafts, mail_preview, mail_send
 from .outcomes.reading import esc
 from . import denial_log, denial_reply_check, followup_clock
 
@@ -92,6 +92,16 @@ def refusal_panel(project, row, run_id):
                      "Held documents listed with 'please do not resend'?"):
         out.append('<li>%s</li>' % esc(question))
     return "\n".join(out + ['</ul></section>'])
+
+
+def machine_reading(project, row, run_id, source, export):
+    """The selected run's machine reading for this draft's request (FLK-REC-8); a failure is contained here as 'unknown'."""
+    selected = export.run_id if export is not None else run_id  # a pinned export's own run, never the draft's older run
+    try:
+        reading = (source or console_snapshot.LiveSource(project)).followup_reading(selected) if selected else None
+    except Exception:
+        reading = None
+    return console_followups.render(reading, row["agency_id"], row["request_id"], draft_run_id=row.get("source_run_id"))
 
 
 def pending_note(row):
@@ -207,6 +217,7 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
     else:
         out.append("</dl>")
     out.append(refusal_panel(project, row, run_id or row["source_run_id"]))
+    out.append(machine_reading(project, row, run_id, source, export))
     warnings = [RESIDUE[code] for code in preview["residue"]]
     if not copy and preview["body_header_lines"]:
         warnings.append("Lines %s: the body has its own To/Subject/From lines; the real headers are shown above" %

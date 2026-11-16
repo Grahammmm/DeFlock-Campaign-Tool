@@ -107,7 +107,7 @@ class ConsoleExportTests(unittest.TestCase):
         self.assertEqual(files, sorted([
             "EXPORT.json", "agency-retention.csv", "processing-v1/ledger.sqlite",
             *("console-model/" + n for n in ("queue.json", "packets.json", "public-updates.json", "mail-drafts.json",
-                                             "sends.json", "ocr-pages.json")),
+                                             "sends.json", "ocr-pages.json", "followup-reading.json")),
             f"run-outputs/{RUN}/outcomes/received-items.json", f"run-outputs/{RUN}/text-state.json"]))
         for entry in ("approvals", "mail", "public-packets.jsonl", "public-updates.jsonl"):
             self.assertFalse((export / entry).exists())
