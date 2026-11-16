@@ -281,6 +281,22 @@ class IoTests(Base):
         self.assertEqual(self.cli("--apply")[2].strip(), "COVERAGE_QUEUE_INVALID")
         self.assertFalse((self.project / "followup-coverage").exists())
 
+    def test_malformed_response_identity_refuses_with_fixed_code_and_no_writes(self):
+        self.queue = [q("q1")]
+        for field in ("agency_key", "request_id"):
+            for value in ([], {}):
+                for args in ((), ("--apply",)):
+                    with self.subTest(field=field, value=value, args=args):
+                        self.stage()
+                        path = self.out / "outcomes" / "response-items.json"
+                        response = json.loads(path.read_text())
+                        response["requests"][0][field] = value
+                        put(path, response)
+                        before = self.snapshot()
+                        self.assertEqual(self.cli(*args), (2, "", "COVERAGE_INPUT_INVALID\n"))
+                        self.assertEqual(before, self.snapshot())
+                        self.assertFalse((self.project / "followup-coverage").exists())
+
     def test_wrong_original_identity_is_invalid(self):
         self.stage()
         received = json.loads((self.out / "outcomes" / "received-items.json").read_text())

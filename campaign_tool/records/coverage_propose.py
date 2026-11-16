@@ -193,7 +193,7 @@ def _load(project, run_id):
     response = _read(outcomes / "response-items.json", "COVERAGE_INPUT_INVALID")
     try:  # whole-input validator and canonical-scope oracle; its proposed ledger is discarded
         asks_propose.derive(register, received, response, run_id)
-    except asks_propose.ProposalError:
+    except (ValueError, KeyError, TypeError, AttributeError):
         raise ProposalError("COVERAGE_INPUT_INVALID") from None
     try:
         states = followup_state.classify_run(project, run_id)
