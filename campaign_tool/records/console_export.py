@@ -335,11 +335,15 @@ def write_model(project, out_dir, now):
             body = {**head, "state": "unavailable", "code": error.code}
         except (OSError, ValueError, KeyError, TypeError):
             body = {**head, "state": "unavailable", "code": "model_unreadable"}
-        path = os.path.join(out_dir, MODEL_DIR, name)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as out:
-            out.write(json.dumps(body, indent=1, sort_keys=True, allow_nan=False) + "\n")
+        _write_model_file(out_dir, name, body)
     return {"schema": MODEL_SCHEMA, "source_project_id": pid, "generated_at": _iso(now)}
+
+
+def _write_model_file(out_dir, name, body):
+    path = os.path.join(out_dir, MODEL_DIR, name)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        out.write(json.dumps(body, indent=1, sort_keys=True, allow_nan=False) + "\n")
 
 
 def _applied(project):
@@ -367,7 +371,8 @@ def build(project, run_id, dest):
             _copy_tree(run_fd, os.path.join("run-outputs", run_id), dest)
         finally:
             os.close(run_fd)
-        model = write_model(project, dest, time.time())
+        now = time.time()  # one instant for the model, the count summary and the manifest
+        model = write_model(project, dest, now)
         for rel in FILES:
             parts = rel.split("/")
             parent = _open_chain(root, parts[:-1])
@@ -383,6 +388,9 @@ def build(project, run_id, dest):
                 os.close(parent)
     finally:
         os.close(root)
+    from . import campaign_summary  # local: console_home/console_snapshot import this module
+    _write_model_file(dest, "campaign-summary.json", campaign_summary.project(
+        dest, run_id, approval_queue._project_id(project), "building", now))
     files = {}
     for base, _, names in os.walk(dest):
         for name in names:
@@ -390,7 +398,7 @@ def build(project, run_id, dest):
             files[os.path.relpath(path, dest)] = _sha256_file(path)
     _need(sum(os.path.getsize(os.path.join(dest, rel)) for rel in files) <= MAX_BYTES, "EXPORT_TOO_LARGE")
     manifest = {"approval_anchor": approval.anchor_state(), "schema": SCHEMA, "run_id": run_id, "source_project_id": approval_queue._project_id(project),
-                "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "exported_at": _iso(now),
                 "files": dict(sorted(files.items())), "model": model, **_applied(project)}
     Path(dest, MANIFEST).write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
