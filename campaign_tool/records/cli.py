@@ -52,6 +52,7 @@ COMMANDS = {
     "agency-retention": ("agency_retention", "main"),
     "first-request": ("first_request", "main"),
     "model-advice": ("model_advice", "main"),
+    "site-prs": ("site_prs", "main"),
     "panel": ("admin_panel", "main"),
     "calendar": ("console_calendar", "main"),
     "documents": ("console_documents", "main"),

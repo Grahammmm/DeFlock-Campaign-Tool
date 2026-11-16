@@ -21,7 +21,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, console_redactions, draft_templates, mail_drafts, mail_send, run_report, schedule
+from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, console_redactions, draft_templates, mail_drafts, mail_send, run_report, schedule, site_prs
 from . import console_origin, console_automation
 from . import console_access, console_export, console_journal, console_layout, console_review, console_settings, console_snapshot
 from .ledger import store
@@ -866,6 +866,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if console_findings.serve(self):  # finding review (DF2007-06)
             return
         if console_redactions.serve(self):  # redactions waiting for sign-off (DF2007-08)
+            return
+        if site_prs.serve(self):  # captured site draft PRs, read-only (DF2007-09)
             return
         if console_documents.serve(self):  # Screen C
             return
