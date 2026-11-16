@@ -62,6 +62,7 @@ with no agency folder is an error; a folder in no ROSTER is a note; linked folde
 (the newest `DIR/*.tar` whose first member is a `flock-store` manifest, by `created_at`; hashes are not re-verified, use
 `flock_backup.py verify`). One `<section> | ` block each, at most 20 error lines; exit 0 only with no errors. `--json` prints the same lines as one `flock-store-check-v1` document; `--json-out NEWFILE` also writes it to a new 0600 file outside STORE, backups and the repo, its only write.
 `--section NAME` (repeatable, no repeats) runs only those checks, in the order above, and the summary reads `sections=K of 8 (<names>)`; `--json` then lists only those sections plus `"selected"`.
+A linked `agencies` folder blocks the facts, law-policy, requests, contacts, publish and slugs sections, and a linked `regions` folder blocks watchlists and slugs, each with `agencies is a link; not followed` (or `regions ...`) and exit 1. A linked agency folder inside a real `agencies` blocks the whole facts or requests section (one error per link, sorted by name), so healthy sibling agencies are not validated by that section until the link is removed. This holds for persistent links at dispatch time only; it is not a defence against a directory swapped during the run.
 An agency folder with no `CONTACT.csv` adds nothing to `contacts`; with none in any folder it reads `contacts | none`.
 
 ## Starting a new store
