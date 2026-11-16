@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import approval_queue, draft_templates
+from . import approval_queue, draft_templates, followup_advisories
 from .intake.folder import secure_open
 from .ledger.store import checked_path
 
@@ -362,14 +362,23 @@ def queue_followups(project, run_id):
     queue_rows = approval_queue.load_queue(project)
     candidates, counts = _plan(register, settings, queue_rows, register["as_of"])
     summary.update(counts)
-    have = {r["id"] for r in queue_rows}
+    have = {r["id"]: r for r in queue_rows}
     for candidate in candidates:
         body, evidence = _render(candidate, register, run_id)
-        existed = approval_queue.draft_id(candidate["item_id"], candidate["kind"]) in have
-        approval_queue.add_draft(project, item_id=candidate["item_id"], kind=candidate["kind"],
-                                 agency_id=candidate["agency_key"], request_id=candidate["request_id"], body=body,
-                                 evidence=evidence, source_run_id=run_id)
-        summary["existing" if existed else "created"] += 1
+        qid = approval_queue.draft_id(candidate["item_id"], candidate["kind"])
+        old = have.get(qid)
+        if old is None:  # Advice for a NEW draft only; the letter is never edited and old rows are never rescanned.
+            found = followup_advisories.notes(body)
+            if found:
+                evidence["limits"] = found
+        elif isinstance(old.get("evidence"), dict) and "limits" in old["evidence"]:
+            evidence["limits"] = old["evidence"]["limits"]  # keep identity stable against the stored advice
+        row = approval_queue.add_draft(project, item_id=candidate["item_id"], kind=candidate["kind"],
+                                       agency_id=candidate["agency_key"], request_id=candidate["request_id"], body=body,
+                                       evidence=evidence, source_run_id=run_id)
+        if isinstance(row, dict) and row.get("id"):
+            have[row["id"]] = row
+        summary["existing" if old is not None else "created"] += 1
     return summary
 
 
