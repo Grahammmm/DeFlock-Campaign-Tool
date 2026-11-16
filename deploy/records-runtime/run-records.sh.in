@@ -171,6 +171,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   printf '%s\n' "preflight 2 disk: $RUNTIME_DIR filesystem needs at least $MIN_FREE_BYTES bytes available (else exit 78)"
   printf '%s\n' "preflight 3 docker: wait up to $DOCKER_WAIT_ATTEMPTS attempts / ${DOCKER_WAIT_DEADLINE}s for daemon and container (else exit 75)"
   printf '%s\n' "preflight 4 image: container image must equal the pinned image (else exit 78)"
+  printf '%s\n' "preflight 5 repository: each records project is probed inside the container for an ancestor .git marker; reports depth and basename only (else exit 78); not run in a dry run"
   printf '%s\n' "budget: ${RUN_BUDGET_SECONDS}s from start for all work stages; notify ${NOTIFY_TIMEOUT}s"
   if [ "$ARRIVAL" -eq 1 ]; then
     printf '%s\n' "arrival: target $TARGET (SCHEDULED_TARGET); watched: drop folder $RECORDS_DROP_DIR and $RUNTIME_DIR/arrival/"
@@ -580,7 +581,32 @@ if [ "$image" != "$EXPECTED_IMAGE" ]; then
   finish 78
 fi
 
-# Arrival batch: claimed only now, after the lock, plan, disk and image
+# Repository-ancestor preflight: refuse before the arrival claim or any work stage when a
+# records project (probed inside the container, where the stages run) sits under a .git
+# marker. Read-only; only the code, depth and fixed basename are logged. Bounded by the
+# invocation budget, never extending it. No automatic cleanup; see README.
+REPO_SECS=$((INVOCATION_DEADLINE_USE - $(date +%s) - KILL_AFTER))
+[ "$REPO_SECS" -le 60 ] || REPO_SECS=60
+[ "$REPO_SECS" -ge 0 ] || REPO_SECS=0
+set +e
+repo_out=$(PYTHONPATH="$ENGINE_DIR" "$TIMEOUT" -k "$KILL_AFTER" "$((REPO_SECS + KILL_AFTER))" \
+  "$HOST_PYTHON" -B -m campaign_tool.records.repository_preflight check \
+  --target-config "$TARGET_CONFIG" --timeout "$REPO_SECS" </dev/null 2>/dev/null 9>&-)
+rrc=$?
+set -e
+case "$rrc:$repo_out" in
+  0:clean|0:not-applicable) log "repository preflight: $repo_out";;
+  1:"PROJECT_INSIDE_REPOSITORY depth="[0-9]*" basename=.git")
+    log "ERROR: $repo_out; no records work was attempted"
+    abort_report PROJECT_INSIDE_REPOSITORY
+    finish 78;;
+  *)
+    log "ERROR: PROJECT_REPOSITORY_CHECK_FAILED; no records work was attempted"
+    abort_report PROJECT_REPOSITORY_CHECK_FAILED
+    finish 78;;
+esac
+
+# Arrival batch: claimed only now, after the lock, plan, disk, image and repository
 # preflights, so an early abort never consumes a stamp. The same immutable
 # batch then goes to the normal, failure and notify-fallback reports.
 if [ "$ARRIVAL" -eq 1 ]; then

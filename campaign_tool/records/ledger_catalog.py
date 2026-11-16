@@ -5,6 +5,7 @@ review promotion, low-value closure, server, network, or publication is performe
 """
 from __future__ import annotations
 from .ledger import store
+from . import repository_preflight
 
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -75,8 +76,14 @@ def _safe_path(value, *, directory=False):
 
 
 def _outside_repo(path):
-    for parent in (path, *path.parents):
-        _require(not (parent / ".git").exists(), "private_output_inside_repository")
+    # Reuse the shared finder; depth is relative to the path supplied here. The detail
+    # carries only the depth and the fixed marker basename, never a path or ancestor name.
+    try:
+        depth = repository_preflight.find_marker(path)
+    except repository_preflight.PreflightError:
+        raise CatalogError("private_output_inside_repository_check_failed") from None
+    _require(depth is None, f"private_output_inside_repository depth={depth} "
+                            f"basename={repository_preflight.MARKER}")
 
 
 def _rows(con, table, columns, *, limit=MAX_ROWS):
