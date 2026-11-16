@@ -523,6 +523,10 @@ def revision_field(row):
     return '<input type="hidden" name="expected_revision" value="%d">' % row["revision"]
 
 
+def approval_fields(row):
+    return revision_field(row) + '<input type="hidden" name="body" value="%s">' % esc(row["body"])
+
+
 def _next_label(d, approved_word):
     return {"pending": "proposed", "approved": approved_word, "rejected": "denied"}.get(d["status"], d["status"])
 
@@ -551,13 +555,15 @@ def _next_row(d, approved_word, token, project_live):
     out.append("</dd><dt>Text</dt><dd><pre>%s</pre></dd></dl>" % esc(d["body"]))
     if project_live and d["status"] == "pending":
         out.append("<p>%s</p>" % esc(NEXT_CAVEAT))
-        if d.get("payload") is not None:
+        if d.get("payload") is not None and not d.get("edit_pending"):
             out.append("<p>To approve, sign this exact payload with the approver key "
                        "(<code>ssh-keygen -Y sign -n deflock-approval</code>) and paste the signature.</p><pre>%s</pre>"
                        % esc(d["payload"]))
             out.append(_form("/approvals/approve", token, d["id"], "", (
-                '<label for="sig-%s">Detached SSH signature</label><textarea id="sig-%s" name="signature" rows="6" '
+                approval_fields(d) + '<label for="sig-%s">Detached SSH signature</label><textarea id="sig-%s" name="signature" rows="6" '
                 'required></textarea>' % (i[:12], i[:12])), "Approve (%s only)" % approved_word, "/next-steps"))
+        if d.get("edit_pending"):
+            out.append("<p>Waiting for edit to apply; refresh the export before signing.</p>")
         out.append(_form("/approvals/reject", token, d["id"], "", (
             '<label for="rej-%s">Denial reason (required)</label><input type="text" id="rej-%s" name="reason" '
             'required maxlength="2000">' % (i[:12], i[:12])), "Deny", "/next-steps"))
@@ -653,20 +659,24 @@ def _drafts_section(model, token):
         out.append("<dt>Text</dt><dd><pre>%s</pre></dd></dl>" % esc(d["body"]))
         if live and d["status"] == "pending":
             out.append('<p><a href="/review?id=%s">Review</a></p>' % i)
-            pid = "sig-" + i[:12]
-            if d.get("payload") is not None:
+            if d.get("payload") is not None and not d.get("edit_pending"):
                 out.append("<p>To approve, sign this exact payload with the approver key "
                            "(<code>ssh-keygen -Y sign -n deflock-approval</code>) and paste the signature.</p>"
                            "<pre>%s</pre>" % esc(d["payload"]))
-                out.append(_form("/approvals/approve", token, d["id"], "", (
-                    '<label for="%s">Detached SSH signature</label><textarea id="%s" name="signature" rows="6" '
-                    'required></textarea>' % (pid, pid)), "Approve (marks approved-to-send only)"))
             out.append(_form("/approvals/reject", token, d["id"], "", (
                 '<label for="rej-%s">Rejection reason (required)</label><input type="text" id="rej-%s" '
                 'name="reason" required maxlength="2000">' % (i[:12], i[:12])), "Reject"))
-            out.append(_form("/approvals/edit", token, d["id"], "", revision_field(d) + (
-                '<label for="ed-%s">Draft text</label><textarea id="ed-%s" name="body" rows="10" required>%s'
-                "</textarea>" % (i[:12], i[:12], esc(d["body"]))), "Save edit"))
+            editor = revision_field(d) + (
+                '<label for="ed-%s">Draft text</label><textarea id="ed-%s" name="body" rows="10" required>\n%s'
+                '</textarea>' % (i[:12], i[:12], esc(d["body"])))
+            editor += '<button type="submit">Save edit</button>'
+            if d.get("edit_pending"):
+                editor += '<p>Waiting for edit to apply; refresh the export before signing.</p>'
+            elif d.get("payload") is not None:
+                editor += ('<label>Detached SSH signature<textarea name="signature"></textarea></label>'
+                           '<button type="submit" formaction="/approvals/approve">Approve (marks approved-to-send only)</button>')
+            out.append(_form("/approvals/edit", token, d["id"], "", editor, "Save edit").replace(
+                '<button type="submit">Save edit</button></form>', "</form>"))
         out.append("</article>")
     return "".join(out)
 
@@ -754,7 +764,7 @@ def access_actor(email):
     return "%s via Access" % email
 
 
-ROUTES = {"/approvals/approve": ("approve", ("csrf_token", "id", "signature")),
+ROUTES = {"/approvals/approve": ("approve", ("csrf_token", "id", "signature", "body", "expected_revision")),
           "/approvals/reject": ("reject", ("csrf_token", "id", "reason")),
           "/approvals/edit": ("edit", ("csrf_token", "id", "body", "expected_revision"))}
 SEND_ROUTE = ("send", ("csrf_token", "id", "fingerprint", "signature", "to", "confirm"))
@@ -815,6 +825,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                    "page was loaded. Your edit was not saved. Reload the draft and make the edit again.</p>"
                    '<p><a href="/review?id=%s">Reload the draft</a></p>' % esc(urllib.parse.quote(ident))))
 
+    def _approve_refused(self, code):
+        return self._fail(409, code, detail=("Waiting for edit to apply. " if code == "approve_edit_pending" else "") +
+                          "Save your edit, wait for the refreshed export, then review and approve. Nothing was approved.")
+
     def _host_ok(self):
         return console_origin.request_ok(self, post=False)
 
@@ -834,6 +848,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if self.server.decisions_dir is not None:  # journal mode: pending decisions are shown over the export
             try:
                 source = console_journal.JournalSource(self.pin, console_journal.overlay(self.server.decisions_dir, self.pin))
+                source.edit_pending = console_journal.pending_edit_ids(self.server.decisions_dir, self.pin)
             except (console_journal.JournalError, console_snapshot.SnapshotError, approval_queue.ApprovalQueueError,
                     OSError, ValueError, KeyError, TypeError):
                 self._fail(503, "journal_unavailable")
@@ -1042,6 +1057,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if back == "review" and action in ("approve", "reject", "edit") and "csrf_token" not in fields \
                 and DRAFT_ID.fullmatch(fields.get("id", "")):
             return console_review.refuse(self, fields["id"], MISSING_CSRF, None, choice)
+        # A shared editor posts its optional signature on Save, but Save never approves.
+        if action == "edit":
+            fields.pop("signature", None)
+        link_approve = action == "approve" and choice is not None
+        if link_approve:
+            names = names[:3]  # message ties retain their choice-bound form, with no editor
         if set(fields) != set(names):
             return self._fail(400)
         if not hmac.compare_digest(fields["csrf_token"].encode("utf-8"), self.server.csrf_token.encode("ascii")):
@@ -1074,8 +1095,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._fail(409 if str(error) == "message_link_stale" else 400)
         except (approval_queue.ApprovalQueueError, OSError):
             return self._fail(503)
-        if action == "edit" and not REVISION.fullmatch(fields["expected_revision"]):
+        if (action == "edit" or (action == "approve" and not link_approve)) and not REVISION.fullmatch(fields["expected_revision"]):
             return self._fail(400)
+        if action == "approve" and not link_approve:
+            if row is None:
+                return self._fail(404)
+            if row["revision"] != int(fields["expected_revision"]):
+                return self._stale(ident)
+            if fields["body"].replace("\r\n", "\n") != row["body"].replace("\r\n", "\n"):
+                return self._approve_refused("approve_unsaved_text")
         if self.server.decisions_dir is not None:  # journal mode: validated against the snapshot, journaled, never written
             if console_journal.queue(self, action, ident, value, row, fields.get("expected_revision"), choice):
                 self._send(303, "", location="/review?id=" + urllib.parse.quote(ident) if back == "review" else back)
@@ -1084,7 +1112,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         hook = False
         try:
             if action == "approve":
-                approval_queue.approve(project, ident, {"kind": "ssh", "signature": value}, choice=choice)
+                approval_queue.approve(project, ident, {"kind": "ssh", "signature": value}, choice=choice,
+                                       **({} if link_approve else {"expected_revision": int(fields["expected_revision"]),
+                                                                  "expected_body": fields["body"]}))
                 expected = {"approved"}
                 hook = True
             elif action == "reject":
@@ -1096,6 +1126,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 expected = {"pending"}
             rows = {r["id"]: r for r in approval_queue.load_queue(project)}
         except approval_queue.ApprovalQueueError as error:
+            if error.code == "approve_unsaved_text":
+                return self._approve_refused(error.code)
             if error.code == "stale_revision":
                 return self._stale(ident)
             return self._fail(ACTION_STATUS.get(error.code, 503))

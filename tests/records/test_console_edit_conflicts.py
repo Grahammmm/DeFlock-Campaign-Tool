@@ -48,7 +48,7 @@ class EditConflictTests(ServerCase):
         approved_tab = self.form_revision(path=self.review())
         rejected_tab = self.form_revision(other["id"])
         signature = self.signer.sign(aq.approval_payload(self.project, self.draft_row["id"]))
-        self.assertEqual(self.http.post("/approvals/approve", {"csrf_token": self.tok, "id": self.draft_row["id"],
+        self.assertEqual(self.http.post("/approvals/approve", {"body": self.row(self.draft_row["id"])["body"], "expected_revision": str(self.row(self.draft_row["id"])["revision"]), "csrf_token": self.tok, "id": self.draft_row["id"],
                                                                 "signature": signature})[0], 303)
         self.assertEqual(self.http.post("/approvals/reject", {"csrf_token": self.tok, "id": other["id"],
                                                                "reason": "not needed"})[0], 303)
@@ -161,3 +161,66 @@ class EditConflictTests(ServerCase):
                         self.assertNotIn(FIELD, form)
         self.assertNotIn(FIELD, self.http.send("GET", "/next-steps")[2])
         self.assertNotIn(FIELD, ap.render_dashboard(self.load()))  # static snapshot stays form-free
+
+
+class ApprovalConflictTests(ServerCase):
+    save = EditConflictTests.save
+    review = EditConflictTests.review
+    def approve_visible(self, revision, body, signature):
+        return self.http.post("/approvals/approve", {
+            "csrf_token": self.tok, "id": self.draft_row["id"], "expected_revision": str(revision),
+            "body": body, "signature": signature, "return": "review"})
+
+    def test_unsaved_text_and_stale_tab_never_verify_or_append(self):
+        original = self.row()
+        sig = self.signer.sign(aq.approval_payload(self.project, original["id"]))
+        before = journal(self.project)
+        with mock.patch.object(aq.approval, "verify", side_effect=AssertionError("must refuse before verifying")):
+            for revision, body, code in (("0", "Unsaved browser words", "approve_unsaved_text"),
+                                         ("9", original["body"], "Draft changed")):
+                response = self.approve_visible(revision, body, sig)
+                self.assertEqual(response[0], 409)
+                self.assertIn(code, response[2])
+                self.assertEqual(journal(self.project), before)
+        self.assertEqual(self.save("0", "Concurrent winning edit")[0], 303)
+        before = journal(self.project)
+        self.assertEqual(self.approve_visible("0", original["body"], sig)[0], 409)
+        self.assertEqual(journal(self.project), before)
+
+    def test_approval_guard_runs_under_writer_lock(self):
+        original = self.row()
+        sig = self.signer.sign(aq.approval_payload(self.project, original["id"]))
+        real_lock, calls = aq._lock, []
+        def lock(fd, exclusive):
+            if exclusive and not calls:
+                calls.append("winner")
+                aq.edit(self.project, original["id"], "other", "Winning concurrent text", expected_revision=0)
+            return real_lock(fd, exclusive)
+        with mock.patch.object(aq, "_lock", side_effect=lock):
+            self.assertEqual(self.approve_visible("0", original["body"], sig)[0], 409)
+        self.assertEqual(self.row()["body"], "Winning concurrent text")
+        self.assertNotIn(b'"type":"approve"', journal(self.project))
+        self.assertEqual(self.row()["status"], "pending")
+
+    def test_crlf_only_difference_accepts_and_shared_buttons_carry_editor(self):
+        self.assertEqual(self.save("0", "First line\nSecond line")[0], 303)
+        row = self.row()
+        signature = self.signer.sign(aq.approval_payload(self.project, row["id"]))
+        page = self.http.send("GET", self.review())[2]
+        form = next(f for f in page.split("<form")[1:] if 'action="/approvals/edit"' in f).split("</form>")[0]
+        for field in ('name="body"', 'name="expected_revision"', 'name="signature"', 'formaction="/approvals/approve"'):
+            self.assertIn(field, form)
+        self.assertEqual(self.approve_visible("1", row["body"].replace("\n", "\r\n"), signature)[0], 303)
+        self.assertEqual(self.row()["status"], "approved")
+
+    def test_missing_duplicate_and_malformed_approval_fields(self):
+        base = {"csrf_token": self.tok, "id": self.draft_row["id"], "signature": "junk",
+                "body": self.row()["body"], "expected_revision": "0"}
+        before = journal(self.project)
+        for field in ("body", "expected_revision"):
+            fields = {k: v for k, v in base.items() if k != field}
+            self.assertEqual(self.http.post("/approvals/approve", fields)[0], 400)
+            self.assertEqual(self.http.post("/approvals/approve", [*base.items(), (field, base[field])])[0], 400)
+        for revision in ("", "01", "-1", "１"):
+            self.assertEqual(self.http.post("/approvals/approve", {**base, "expected_revision": revision})[0], 400)
+        self.assertEqual(journal(self.project), before)

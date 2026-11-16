@@ -276,7 +276,7 @@ def link_choice(value):
 
 
 def submit_of(action):
-    return "document.querySelector('form[action=\"%s\"] button[type=submit]')" % action
+    return "document.querySelector('button[formaction=\"%s\"], form[action=\"%s\"] button[type=submit]:not([formaction])')" % (action, action)
 
 
 def link_to(path):

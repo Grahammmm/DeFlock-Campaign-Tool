@@ -21,6 +21,9 @@ class ReviewTests(ServerCase):
         return self.http.send("GET", path or "/review?id=" + self.draft_row["id"])
 
     def post(self, action, **fields):
+        if action == "approve":
+            row = self.row()
+            fields = {"body": row["body"], "expected_revision": str(row["revision"]), **fields}
         return self.http.post("/approvals/" + action, {"csrf_token": self.tok, "id": self.draft_row["id"],
                                                        "return": "review", **fields})
 
@@ -42,7 +45,7 @@ class ReviewTests(ServerCase):
                      "&lt;why&gt;&amp;", "&lt;limit&gt;", "No edits", 'href="/">Back', 'rows="28"'):
             self.assertIn(text, page)
         self.assertNotIn("<script>", page)
-        self.assertEqual(page.count('name="return" value="review"'), 3)
+        self.assertEqual(page.count('name="return" value="review"'), 2)
         self.assertEqual(tree_state(self.project), before)
         self.assertIn('>Review</a>', self.get("/dashboard")[2])
 
