@@ -323,6 +323,8 @@ def main(argv=None):
         for entry in entries:
             if entry.get("kind") == cj.FINDING_KIND:
                 result = "ANALYSIS_TICK_REQUIRED"  # DF2007-06: left for `records analysis-tick --from-journal`; never receipted here
+            elif entry.get("action") == cj.REDACTION_ACTION:
+                result = "SIGNOFF_APPLY_REQUIRED"  # DF2007-08: left for `tools/flock_redact.py signoff-apply`; never receipted here
             elif entry["entry_id"] in done:
                 result = "ALREADY"
             elif entry.get("source_project_id") != pid:

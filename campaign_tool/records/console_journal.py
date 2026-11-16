@@ -68,6 +68,9 @@ def finding_value(entry):
     return value
 
 
+REDACTION_ACTION = "redaction_signoff"  # DF2007-08: replayed by tools/flock_redact.py signoff-apply, not by decisions-apply
+
+
 def append(journal, pin, actor, route, action, target_id, revision_seen, value, choice=None, kind=None):
     entry = {"schema": SCHEMA, "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "actor": actor,
              "route": route, "action": action, "target_id": target_id, "revision_seen": revision_seen, "value": value,
@@ -139,8 +142,8 @@ def overlay(journal, pin):
     applied, outcomes = manifest.get("applied_journal_ids") or [], manifest.get("apply_outcomes") or {}
     notes = {}
     for entry in read(journal):
-        if entry["source_project_id"] != pin.source_project_id or entry["entry_id"] in applied or entry.get("kind"):
-            continue  # a finding_review entry belongs to the analysis root (console_findings shows its own pending state)
+        if entry["source_project_id"] != pin.source_project_id or entry["entry_id"] in applied or entry.get("kind") or entry["action"] == REDACTION_ACTION:
+            continue  # a finding_review entry belongs to the analysis root and a redaction_signoff to the Flock store (each page shows its own pending state)
         outcome = outcomes.get(entry["entry_id"]) if isinstance(outcomes, dict) else None
         refusal = outcome.get("refusal") if isinstance(outcome, dict) else None
         text = ("not applied: %s" % refusal) if isinstance(refusal, str) else "pending apply: %s" % entry["action"]
@@ -194,6 +197,11 @@ def _record(handler, action, target, revision, value, choice=None, kind=None):
 def finding(handler, action, target, digest, value):
     """One finding_review decision (already checked against the live analysis view by console_findings): journal only."""
     return _record(handler, action, target, digest, value, kind=FINDING_KIND)
+
+
+def redaction_signoff(handler, target, digest, value):
+    """One pasted sign-off signature for a Flock redaction proposal (already checked against the store by console_redactions): journal only."""
+    return _record(handler, REDACTION_ACTION, target, digest, value)
 
 
 def queue(handler, action, ident, value, row, expected, choice):

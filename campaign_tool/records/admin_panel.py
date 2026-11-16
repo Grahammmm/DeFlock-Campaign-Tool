@@ -21,7 +21,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, draft_templates, mail_drafts, mail_send, run_report, schedule
+from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, console_redactions, draft_templates, mail_drafts, mail_send, run_report, schedule
 from . import console_origin, console_automation
 from . import console_access, console_export, console_journal, console_layout, console_review, console_settings, console_snapshot
 from .ledger import store
@@ -865,6 +865,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if console_findings.serve(self):  # finding review (DF2007-06)
             return
+        if console_redactions.serve(self):  # redactions waiting for sign-off (DF2007-08)
+            return
         if console_documents.serve(self):  # Screen C
             return
         if console_board.serve(self):  # Screens A and B
@@ -1019,6 +1021,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if console_findings.post(self):  # one finding: approve or reject, journaled only
             return
+        if console_redactions.post(self):  # one redaction sign-off signature, journaled only
+            return
         if self.path == RELINK_PATH:
             return self._post_relink()
         route = ROUTES.get(self.path) or (SEND_ROUTE if self.path == "/send" else console_manual_events.ROUTE if self.path == "/manual-event" else None)
@@ -1147,7 +1151,7 @@ def _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg):
 def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
                  timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None,
                  access_config=None, access_clock=None, manual_events_dir=None, meetings_dir=None, export_root=None,
-                 decisions_dir=None, access_keys=None, analysis_root=None):
+                 decisions_dir=None, access_keys=None, analysis_root=None, flock_store=None):
     """Unstarted loopback-only server; the caller serves and closes it.
 
     export_root (DFGL-16A) with run_id "auto" serves the one real export DIR/current points at, pinned per request.
@@ -1190,6 +1194,11 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
             analysis_root = console_findings.check_root(analysis_root, project, export_root, decisions_dir, manual_events_dir, meetings_dir)
         except ValueError:
             raise PanelError("analysis_root_invalid") from None
+    if flock_store is not None:
+        try:  # read-only input: it may not be, hold or sit inside any enabled console write location
+            flock_store = console_redactions.check_store(flock_store, project, export_root, decisions_dir, manual_events_dir, meetings_dir)
+        except ValueError:
+            raise PanelError("flock_store_invalid") from None
     access_cfg = _access_cfg(public_origin, access_config)
     _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg)
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
@@ -1210,6 +1219,7 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
     server.pinner = console_snapshot.Pinner(os.path.abspath(project)) if export_root is not None else None
     server.decisions_dir = decisions_dir
     server.analysis_root = analysis_root
+    server.flock_store = flock_store  # its own attribute: never passed to the dashboard loaders
     return server
 
 
@@ -1225,6 +1235,7 @@ def main(argv=None):
     parser.add_argument("--decisions-dir", metavar="J",
                         help="with --export-root: journal each decision in J (absolute, 0700, outside DIR) for the next apply")
     parser.add_argument("--analysis-root", metavar="ROOT", help="read-only analysis root: adds /findings/review (finding review); never written here")
+    parser.add_argument("--flock-store", metavar="STORE", help="read-only private Flock store: adds /redactions (redactions waiting for sign-off); never written here")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-report")
     parser.add_argument("--kit-root")
@@ -1300,7 +1311,7 @@ def main(argv=None):
                               send_config=args.send_config, public_origin=args.public_origin,
                               access_config=access, manual_events_dir=args.manual_events, meetings_dir=args.meetings_dir,
                               export_root=args.export_root, decisions_dir=args.decisions_dir, access_keys=args.access_keys,
-                              analysis_root=args.analysis_root)
+                              analysis_root=args.analysis_root, flock_store=args.flock_store)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required", "_unused", "_needs_export")) else 1
