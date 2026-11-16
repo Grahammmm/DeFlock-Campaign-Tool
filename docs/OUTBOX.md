@@ -114,6 +114,15 @@ the evidence and have the correction and a fresh approval reviewed independently
 - `file_muckrock(draft, token, base_url, opener=None)`: `POST /foia/` on MuckRock API v2 with
   `{"agencies": [id], "title", "requested_docs"}`; the receipt is the created request id and
   URL. 402 is `no_credits`; the organizer buys credits or switches the row to email.
+  A success reply is accepted only as UTF-8 JSON in one of two shapes: an object whose
+  `requests` list has an object first, or a flat request object when `requests` is absent
+  (a bad `requests` member is never rescued by a top-level `id`). The `id` must be a positive
+  integer or a nonempty ASCII digit string with a nonzero digit; booleans, null, zero,
+  negatives, floats and other strings are never coerced. Any other reply (including invalid
+  UTF-8, malformed JSON or an empty body) raises `AmbiguousFailure("muckrock reply had no valid
+  request id; filing state unknown")` with no response content, the row stays `sending`, and
+  nothing sends again until `reconcile`. Such a reply may still have filed a request: check
+  the MuckRock request page first, and never bypass the hold by changing scope.
 
 Both take credentials as arguments. The CLI reads them from `OUTBOX_SMTP_PASSWORD` and
 `MUCKROCK_TOKEN` (names overridable) at the moment of sending and never stores them.

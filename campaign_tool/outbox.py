@@ -271,7 +271,11 @@ def file_muckrock(draft, token, base_url="https://www.muckrock.com/api_v2", open
     open_fn = opener or urllib.request.urlopen
     try:
         with open_fn(request, timeout=60) as response:
-            body = json.loads(response.read().decode("utf-8") or "{}")
+            raw_body = response.read()
+            try:
+                body = json.loads(raw_body.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError, RecursionError):  # JSONDecodeError is a ValueError
+                raise AmbiguousFailure(_MUCKROCK_BAD_ACK) from None
     except urllib.error.HTTPError as exc:
         if exc.code == 402:
             raise Blocked("no_credits", "MuckRock returned 402 Payment Required") from None
@@ -282,12 +286,34 @@ def file_muckrock(draft, token, base_url="https://www.muckrock.com/api_v2", open
         raise OutboxError(f"muckrock HTTP {exc.code}") from None
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         raise AmbiguousFailure("muckrock unreachable after request: " + str(getattr(exc, "reason", exc))) from None
-    requests = body.get("requests") or ([body] if "id" in body else [])
-    if not requests or "id" not in requests[0]:
-        raise AmbiguousFailure("muckrock reply had no request id")
-    first = requests[0]
+    first = _muckrock_first_request(body)
+    request_id = _muckrock_request_id(first.get("id")) if first is not None else None
+    if request_id is None:
+        raise AmbiguousFailure(_MUCKROCK_BAD_ACK)
     url = first.get("absolute_url") or first.get("url") or ""
-    return ProviderReceipt("muckrock", str(first["id"]), url=url, raw={"status": first.get("status")})
+    return ProviderReceipt("muckrock", request_id, url=url, raw={"status": first.get("status")})
+
+
+_MUCKROCK_BAD_ACK = "muckrock reply had no valid request id; filing state unknown"
+
+
+def _muckrock_first_request(body):
+    """The first request object of a supported reply shape, or None. No fallback from a bad envelope."""
+    if not isinstance(body, dict):
+        return None
+    if "requests" in body:
+        items = body["requests"]
+        return items[0] if isinstance(items, list) and items and isinstance(items[0], dict) else None
+    return body
+
+
+def _muckrock_request_id(value):
+    """Decimal string for a positive int or ASCII-digit string id; None for anything else (never coerced)."""
+    if type(value) is int:
+        return str(value) if value > 0 else None
+    if isinstance(value, str) and value.isascii() and value.isdigit() and value.strip("0"):
+        return value
+    return None
 
 
 def preview(draft_json):
