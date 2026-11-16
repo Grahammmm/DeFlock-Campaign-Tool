@@ -145,6 +145,31 @@ or force. `case_builder` never reads a `.proposed.tsv`, so until the rename the 
 manual-check note stays. There is no auto-confirm. Proposals are private and nothing is
 approved, sent or published.
 
+## Proposing and confirming the follow-up coverage table (FLK-REC-7)
+
+`followup_route` settles `coverage_unreconciled` only from an operator-staged
+`P/followup-coverage/AGENCY_KEY.tsv` (`queue_id, ask_numbers, confirmed_by, note`). The tool can propose one:
+
+```
+records coverage-propose --project P --run-id R            # dry run: counts only, writes nothing
+records coverage-propose --project P --run-id R --apply    # creates AGENCY_KEY.proposed.tsv only
+```
+
+It reads only the same run's register, timeline, received-items and response-items plus the approval queue, and
+reuses the router's own exact item-evidence mapper. A row whose scope maps cleanly gets its ask numbers and the note
+`machine mapping; review required`; a row that does not map, or whose numbers overlap another row of the same request,
+is left blank with the note `needs a person: unmapped scope` or `needs a person: overlapping scope` (every overlapping
+row is blank: no row is chosen as the winner, and `none` is never proposed because it is a person's judgment). Every
+`confirmed_by` is empty, so the router never reads a `.proposed.tsv` and refuses a naive rename (`coverage_table_invalid`).
+An existing `AGENCY_KEY.tsv` is never opened for writing; an identical proposal is a no-op and a differing one is refused
+(`COVERAGE_PROPOSAL_EXISTS`).
+
+Confirm step, done by a person and never by a command: read the whole draft and its evidence for every row, fill each
+`ask_numbers` (or write `none` deliberately) and put your label in `confirmed_by`, then rename the file to
+`AGENCY_KEY.tsv` only when no confirmed table exists; if one does, compare and merge privately and never overwrite it. If
+the run's sources change or a draft is rejected, review fresh sources rather than a stale proposal. Nothing here confirms,
+approves, signs, sends or publishes.
+
 ## Reviewed contradictions (FLK-REC-2)
 
 `records_contradict_policy` is routed only from a finding with a valid signed `finding-review-v1` approval

@@ -14,6 +14,7 @@ COMMANDS = {
     "followup-engine": ("followup_engine", "main"),
     "followup-route": ("followup_route", "main"),
     "asks-propose": ("asks_propose", "main"),
+    "coverage-propose": ("coverage_propose", "main"),
     "followup-state": ("followup_state", "main"),
     "events-import": ("events_import", "main"),
     "doctor": ("runtime", "main"),
