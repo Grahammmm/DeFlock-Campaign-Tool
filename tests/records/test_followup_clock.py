@@ -654,3 +654,82 @@ class ReminderStatus(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Advisories(Base):
+    MIXED = "The agency secretly shared data. Please respond under §6253."
+
+    def render(self, text):
+        def render(candidate, register, run_id):
+            body, evidence = real(candidate, register, run_id)
+            return body + "\n" + text, evidence
+        real = fc._render
+        return mock.patch.object(fc, "_render", render)
+
+    def test_each_kind_gets_notes_body_unchanged_and_clean_gets_none(self):
+        self.enable()
+        self.put_register([row(), row(request="req-2", state="running", promised={"state": "passed", "date": "2030-01-20"})])
+        with self.render("Thanks."):
+            fc.queue_followups(self.root, "run-1")
+        clean = self.queued()
+        self.assertTrue(clean and all("limits" not in r["evidence"] for r in clean))
+        self.put_register([row(), row(request="req-2", state="running", promised={"state": "passed", "date": "2030-01-20"})],
+                          run="run-2")
+        other = Path(tempfile.mkdtemp(dir=self.root.parent))
+        other.chmod(0o700)
+        self.assertEqual(len(clean), 2)
+        # A fresh project: same registers, mixed wording.
+        self.root = other / "p"
+        self.root.mkdir(mode=0o700)
+        self.enable()
+        self.put_register([row(), row(request="req-2", state="running", promised={"state": "passed", "date": "2030-01-20"})])
+        with self.render(self.MIXED):
+            self.assertEqual(fc.queue_followups(self.root, "run-1")["created"], 2)
+        rows = self.queued()
+        self.assertEqual(len(rows), 2)
+        for r in rows:
+            self.assertTrue(r["body"].endswith("\n" + self.MIXED))
+            self.assertEqual(r["status"], "pending")
+            self.assertTrue("(intent)" in r["evidence"]["limits"][0] and "former_cpra_citation" in r["evidence"]["limits"][-1])
+
+    def test_existing_rows_never_rewritten_and_no_source_conflict(self):
+        self.enable()
+        self.put_register([row(), row(request="req-2")])
+        fc.queue_followups(self.root, "run-1")  # pre-feature style rows: no limits
+        first, second = self.queued()
+        aq.edit(self.root, first["id"], "G", "My own wording")
+        aq.reject(self.root, second["id"], "G", "not wanted")
+        before = self.queued()
+        self.put_register([row(), row(request="req-2")], run="run-2")
+        with self.render(self.MIXED):
+            again = fc.queue_followups(self.root, "run-2")
+        self.assertEqual((again["created"], again["existing"]), (0, 2))
+        self.assertEqual(self.queued(), before)
+        self.assertTrue(all("limits" not in r["evidence"] for r in self.queued()))
+
+    def test_new_row_limits_preserved_on_replay_even_if_scanner_differs(self):
+        self.enable()
+        self.put_register([row()])
+        with self.render(self.MIXED):
+            fc.queue_followups(self.root, "run-1")
+        before = self.queued()
+        self.put_register([row()], run="run-2")
+        with self.render("Thanks."), mock.patch("campaign_tool.records.followup_advisories.notes",
+                                                  side_effect=RuntimeError("PRIVATE")):
+            again = fc.queue_followups(self.root, "run-2")
+        self.assertEqual((again["created"], again["existing"]), (0, 1))
+        self.assertEqual(self.queued(), before)
+
+    def test_real_source_change_still_conflicts(self):
+        self.enable()
+        self.put_register([row()])
+        with self.render(self.MIXED):
+            fc.queue_followups(self.root, "run-1")
+        real = fc._render
+
+        def changed(candidate, register, run_id):
+            body, evidence = real(candidate, register, run_id)
+            return body, dict(evidence, clock_date="2030-01-13")
+        self.put_register([row()], run="run-2")
+        with mock.patch.object(fc, "_render", changed), self.assertRaises(aq.ApprovalQueueError):
+            fc.queue_followups(self.root, "run-2")

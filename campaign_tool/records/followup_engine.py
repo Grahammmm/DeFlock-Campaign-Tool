@@ -7,7 +7,7 @@ import json
 import re
 import sys
 
-from . import approval_queue as aq, case_builder, followup_clock, followup_drafter
+from . import approval_queue as aq, case_builder, followup_advisories, followup_clock, followup_drafter
 from . import followup_route, followup_state as fs, mail_drafts, playbook
 from .outcomes import received_items
 
@@ -127,6 +127,9 @@ def run(project, run_id, *, apply=False, as_of=None):
                         thread_item_id=thread_id, thread_basis=basis, planned_send_date=route["planned_date"],
                         draft_status=draft["status"], lint_hits=len(draft["banned_phrases"]["hits"]),
                         unfilled=len(draft["unfilled"]))
+        advice = followup_advisories.notes(draft["body"])  # Advice only: stored beside the letter, never edits it.
+        if advice:
+            evidence["limits"] = advice
         planned.append(dict(item_id=ident, kind=KIND, agency_id=key[0], request_id=key[1],
                             body=draft["body"], evidence=evidence, source_run_id=run_id))
         existing.add(qid)
