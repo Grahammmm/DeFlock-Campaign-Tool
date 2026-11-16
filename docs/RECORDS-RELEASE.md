@@ -180,6 +180,9 @@ receipts and approvals belong only to their recorded head: a merge commit is a
 new head requiring fresh exact-head evidence and fresh review, even if it
 merged cleanly. A cancelled or expired review is not approval; duplicate
 receipts cannot supply missing evidence or make a stale receipt current.
+Retained exact-head approvals for the T11 inputs (#142, #145, #148, with #148's
+approved/merged head mismatch) are in
+[review-receipts/T11-INPUTS-EXACT-HEAD-2026-10-19.md](review-receipts/T11-INPUTS-EXACT-HEAD-2026-10-19.md).
 
 Before downstream review, incorporate the **reviewed upstream rework** using a
 normal merge, name the incorporated commit, and bind composition evidence to
