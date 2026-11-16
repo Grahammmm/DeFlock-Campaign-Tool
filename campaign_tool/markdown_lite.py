@@ -263,7 +263,9 @@ def _inline_codes(body):
               if marked[m.start() - 1:m.start()] != "!" and (code := _target_code(unescape(m.group(2))))]
     shielded = _shield_escapes(body)
     unbolded = _BOLD.sub(lambda m: m.group(1), shielded)
-    if "**" in unbolded:
+    # bold-unclosed also covers a closed span the renderer leaves literal because HTML escaping
+    # pushes it past _BOLD's 500-character limit, so decide on the renderer's protected view.
+    if "**" in marked:
         codes.append("bold-unclosed")
     if _HTML.search(shielded):
         codes.append("raw-html")
