@@ -1126,6 +1126,13 @@ def stage_outputs(args):
         raise
     except Exception:  # noqa: BLE001 - isolate timeline errors; never expose private exception text
         warning = warning or "OUTPUTS_TIMELINE_UNAVAILABLE"
+    try:  # Engine-owned follow-up drafts (FLK-REC-1): needs received-item drafts, response items and timeline above.
+        from .followup_engine import run as run_followup_engine
+        run_followup_engine(args.project, args.run_id, apply=True)  # The engine keeps its own autonomy/identity gates.
+    except StageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
+        warning = warning or "OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE"
     try:  # Analysis-ready manifest (DFGL-05): last, own code; reads the files written above; starts nothing.
         from .outcomes.analysis_ready import write_run_analysis_ready
         write_run_analysis_ready(args.project, args.run_id)

@@ -69,6 +69,72 @@ not send or publish. Approved/rejected drafts have a read-only body and no forms
 checks; only the literal `return=review` adds a new success redirect. Static
 `--render` output is unchanged and includes no editor.
 
+## Import one correspondence draft (queue only)
+
+`records draft-import --project PROJECT --file INPUT.json` validates one draft and
+prints a metadata-only `would_queue`/`existing` summary. It is dry-run by default:
+no files are created and no network is contacted. Add `--apply` to queue one
+**pending** `correspondence-draft` through the existing approval journal. This
+never approves, signs, places, sends, changes settings or starts a records run.
+Use a private input outside the engine repository; never commit real drafts.
+
+The input is exactly one UTF-8 JSON object (not an array or JSONL), schema
+`records-console-draft-input-v1`, with these exact keys:
+
+- `schema`, `kind` (`correspondence-draft`), `draft_key` (stable operator key),
+  `agency_id`, `request_id`, `source_run_id`, `source_section` (safe identifiers,
+  1–128 characters: letters/digits first, then letters/digits or `_.:/-`).
+- `body`: the full instantiated letter, nonblank, no NUL, at most 64 KiB in UTF-8.
+  It is retained exactly, including the tail, Unicode and line endings. The
+  console's existing edit history retains this original after operator edits.
+- `why`: a nonblank single-line reason for the operator to review.
+- `source_attachment_sha256`: lowercase 64-hex digest of the source attachment.
+- `citations`: 0–64 structured objects with required `source_type`, `source_id`,
+  `locator`, `as_of` (ISO date or null), and `verification`. Source types are
+  `original`, `tracker`, `timeline`, `public`, `missing-original`; verification is
+  `verified`, `unverified`, or `missing-original`. Source ID/locator are nonblank,
+  control-free, at most 1024 UTF-8 bytes. Optional `original_sha256` is lowercase
+  hex64, `page` a positive integer (not boolean), and `limits` control-free
+  at most 4000 UTF-8 bytes. Original citations require the hash; missing-original
+  citations cannot claim verified or supply hash/page. Unknown keys refuse.
+  Order and limits are retained; `[]` means no citations, not source completeness.
+- `envelope`: exactly `{ "to": "custodian@agency.example", "subject": "Records follow-up",
+  "thread_item_id": null, "recipient_basis": { "source_type": "custodian",
+  "source_id": "contact-1", "locator": "records desk", "checked": true } }`.
+
+To/Subject must be **operator-checked custodian facts or source-header facts**,
+not editable `To:`/`Subject:` body lines or guessed tracker labels. Use one bare
+email address, not a display name or recipient list. All envelope values reject
+CR/LF and control characters; subject is at most 998 UTF-8 bytes. The basis has
+exactly those four keys, requires actual `true`, and source ID/locator are nonblank,
+control-free, at most 1024 UTF-8 bytes. With no thread, basis must be `custodian`;
+this deliberately remains unthreaded even if the project has
+other messages. For a proven reply, supply the received item's lowercase 64-hex
+`thread_item_id`: read-only ledger/original lookup must resolve
+one unambiguous source message, and To plus reply Subject must match that source
+(`Re: ` is added only if absent). Unresolved or contradictory linkage refuses.
+For a `source-header` basis, `source_id` must equal that item ID and `locator`
+must be the selected `Reply-To` header, or `From` only when Reply-To is absent.
+Custodian basis records operator attestation, not machine proof of authority.
+The same validation and envelope feed import, console preview and later placement;
+existing draft kinds keep their current header behavior.
+
+The signed review evidence contains the envelope, citations, reason, source
+attachment/section/run, draft key and original body hash. These record supplied
+provenance, not machine verification of the custodian facts or legal acceptance.
+Identity is **section + request + draft_key**, not the body hash. Identical imports
+return the existing row without an event, including a rejected or operator-edited
+row; changed original body, attribution or evidence under that identity refuses
+`source_conflict` (exit 3) for operator resolution. Other invalid inputs exit 2
+with a content-free `draft-import: <reason>` line. Duplicate JSON keys, unknown or
+missing fields, nonregular/multiply-linked input, symlink leaves or ancestors,
+and input over 128 KiB are refused. Reading is bounded and nonblocking.
+
+Review the full draft and edit it in the console before approval. Pending rows
+cannot be placed or sent. Queue approval still only enables the existing separate
+placement step; later sending still requires G's **separate recipient/text outbox
+signature**, every send switch, kill file and cap. Import grants none of those.
+
 ## Sending an approved draft
 
 With `--send-config`, the separate `/send` review and human POST send one approved,

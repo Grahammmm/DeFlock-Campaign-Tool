@@ -16,7 +16,7 @@ from unittest import mock
 from campaign_tool.records import approval_queue as aq
 from campaign_tool.records import h2o_questions as hq
 from campaign_tool.records import model_advice as ma
-from campaign_tool.records import run_stages
+from campaign_tool.records import followup_engine, run_stages
 from tests.records.test_approval_drafts import item, received, sha
 from tests.test_records_run_stages import StageTestCase, synthetic_ledger
 
@@ -308,7 +308,8 @@ class StageAndCliTests(StageTestCase):
             target.mkdir(parents=True, mode=0o700, exist_ok=True)
             (target / "received-items.json").write_text(json.dumps(doc), encoding="utf-8")
         with mock.patch.object(received_items, "write_run_received_items", fake), \
-                mock.patch.object(response_items, "write_run_response_items", lambda project, run_id: None):
+                mock.patch.object(response_items, "write_run_response_items", lambda project, run_id: None), \
+                mock.patch.object(followup_engine, "run", lambda project, run_id, apply=False: None):  # needs ratings
             return self.stage("outputs")
 
     def tree(self):

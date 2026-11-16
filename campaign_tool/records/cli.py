@@ -5,6 +5,7 @@ import os
 import sys
 
 COMMANDS = {
+    "draft-import": ("draft_import", "main"),
     "console-export": ("console_export", "export_main"),
     "decisions-apply": ("console_apply", "main"),
     "console-import": ("console_export", "import_main"),
@@ -52,6 +53,7 @@ COMMANDS = {
     "agency-retention": ("agency_retention", "main"),
     "first-request": ("first_request", "main"),
     "model-advice": ("model_advice", "main"),
+    "site-prs": ("site_prs", "main"),
     "panel": ("admin_panel", "main"),
     "calendar": ("console_calendar", "main"),
     "documents": ("console_documents", "main"),
@@ -65,6 +67,7 @@ COMMANDS = {
     "backup": ("records_backup", "backup_main"),
     "backup-verify": ("records_backup", "verify_main"),
     "backup-check": ("records_backup", "check_main"),
+    "campaign-readiness": ("campaign_readiness", "main"),
     "quiescence-audit": ("quiescence_audit", "main"),
 }
 
