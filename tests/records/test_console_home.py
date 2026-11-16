@@ -8,7 +8,7 @@ from unittest import mock
 
 from campaign_tool.records import approval_queue as aq, console_home as home, public_packets as pp
 from campaign_tool.records.console_layout import plain, unavailable_note
-from campaign_tool.records import public_updates as pu
+from campaign_tool.records import public_updates as pu, site_prs
 from tests.records import test_admin_panel as panel
 from tests.records.test_console_board import build, put, RUN
 from tests.records import test_console_calendar as cal
@@ -59,7 +59,9 @@ class Home(unittest.TestCase):
         self.packet = fixture(self.project)
 
     def model(self, **kwargs):
-        return home.load(self.project, RUN, now=NOW, **kwargs)
+        model = home.load(self.project, RUN, now=NOW, **kwargs)
+        model["site_prs"] = site_prs.unavailable("site_prs_missing")  # no sidecar: Home says unavailable, never zero
+        return model
 
     def test_newest_counts_links_metadata_and_privacy(self):
         model = self.model()
@@ -74,7 +76,7 @@ class Home(unittest.TestCase):
             self.assertTrue(all(row[k] not in (None, "") for k in ("agency", "what", "why", "age_hours", "link")))
         page = home.render_home(model, "unused")
         for text in ("Requests 1 · Follow-ups 2", "Status lines 2 · Packets 1", '<span class="overdue">OVERDUE 30 days</span>',
-                     "not a legal finding", "CON-SITEPR-1", "CON-REDACT-1", "CON-FIND-1", 'id="standing"', 'id="outstanding"'):
+                     "not a legal finding", "Site draft PR snapshot unavailable", "CON-REDACT-1", "CON-FIND-1", 'id="standing"', 'id="outstanding"'):
             self.assertIn(text, page)
         for text in ("BODY-SENTINEL-1", "person@example.invalid", "PACKET-TEXT-SENTINEL-1", "LINE-TEXT-SENTINEL", "@", "<form"):
             self.assertNotIn(text, page)
@@ -87,7 +89,7 @@ class Home(unittest.TestCase):
         self.assertLess(page.index('6 need your decision'), page.index('<section id="decide">'))
         start, end = page.index('<details id="more">'), page.index('</details>')
         self.assertLess(page.index('<section id="decide">'), start)
-        for text in ('id="standing"', 'id="outstanding"', 'CON-SITEPR-1', 'CON-REDACT-1', 'CON-FIND-1'):
+        for text in ('id="standing"', 'id="outstanding"', 'Site draft PR snapshot unavailable', 'CON-REDACT-1', 'CON-FIND-1'):
             self.assertTrue(start < page.index(text) < end, text)
         self.assertIn('<summary>More detail</summary>', page)
         self.assertTrue(page.index('</table></section>') < page.index('id="week"') < start)
