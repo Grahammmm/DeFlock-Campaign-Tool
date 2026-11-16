@@ -1619,5 +1619,48 @@ class TemplateHygieneTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class ReadmeT17ContractTests(unittest.TestCase):
+    """AUDINV-FIX-145: README prose contract; host commands stay inert text."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = (RUNTIME / "README.md").read_text(encoding="utf-8")
+        start = cls.text.index("## T17 attended cutover and rollback")
+        nxt = cls.text.find("\n## ", start + 5)
+        cls.section = cls.text[start:nxt if nxt > 0 else len(cls.text)]
+
+    def test_backup_not_described_as_planned(self):
+        self.assertNotRegex(self.text, r"(?is)backup[^.]{0,80}lands\s*\(planned T17\)")
+        self.assertNotIn("planned T17", self.text)
+        for token in ("ADOPT_BACKUP_FAILED", "ADOPT_BACKUP_SKIPPED",
+                      "processing-v1/backups/<run_id>/", "manifest.json"):
+            self.assertIn(token, self.text)
+        self.assertIn("positive no-write proof", self.text)
+        self.assertIn("indeterminate dry-run takes the backup", self.text)
+
+    def test_runbook_subsections_in_order(self):
+        heads = ["### Render", "### Install and enable (operator only)",
+                 "### Rollback (operator only)"]
+        positions = [self.section.index(h) for h in heads]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("attended operator only", self.section)
+        self.assertIn("Separate approval", self.section)
+
+    def test_render_inert_and_activation_gated(self):
+        self.assertIn("Rendering is inert", self.section)
+        self.assertIn("TARGET_REQUIRED", self.section)
+        self.assertIn("enabling is operational authority", self.section)
+        self.assertLess(self.section.index("daemon-reload"),
+                        self.section.index("enable `records-run.timer`"))
+        self.assertIn("Do not start\n   `records-run.service`", self.section)
+
+    def test_rollback_preserves_evidence_and_holds_when_unknown(self):
+        rollback = self.section[self.section.index("### Rollback"):]
+        for phrase in ("never guess a legacy unit name", "never run two writers",
+                       "never deletes\nreceipts, stamps or backups",
+                       "not a data rollback", "leave the\nhost blocked"):
+            self.assertIn(phrase, rollback)
+
+
 if __name__ == "__main__":
     unittest.main()

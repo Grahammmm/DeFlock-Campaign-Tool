@@ -141,9 +141,83 @@ live runs use:
 T17's scheduled timer (weekdays, twice a day by default) uses the same plan with `--scheduled` once
 `SCHEDULED_TARGET` is switched to `LIVE` at cutover. Rendering installs,
 enables and starts nothing; installing the rendered files and switching the
-timer are separate owner-approved cutover steps. Until the per-run
-ledger+intake backup pre-step lands (planned T17), the operator takes a
-manual ledger and intake backup before each live run.
+timer are separate owner-approved cutover steps.
+
+The pre-adoption ledger+intake database backup is implemented (T17 prep). Before
+an adoption apply the adopt stage backs up `ledger.sqlite` and
+`intake/intake.sqlite` with the SQLite backup API and an integrity check into
+`processing-v1/backups/<run_id>/` (directories 0700, files 0600), writes a
+`manifest.json`, and keeps the newest nine run directories. Reports carry only
+codes and counts. If the backup cannot be made (missing or corrupt database,
+full disk, lock contention) the stage fails with `ADOPT_BACKUP_FAILED` and the
+adoption apply is never attempted. Only a positive no-write proof from the
+adoption dry-run skips it, reported as `ADOPT_BACKUP_SKIPPED`; an
+indeterminate dry-run takes the backup. This is not a whole-project backup and
+does not qualify disaster recovery: the attended operator still decides what
+cutover or recovery backup is required before the first live run.
+
+## T17 attended cutover and rollback
+
+**Reference procedure for the attended operator only. Separate approval is
+required.** Merging this source, or rendering, is neither installation nor
+permission. Nothing here says an installed host matches these templates or that
+T17's operational gates (T16 runs, sandbox, source/image pin, validation,
+signing, writer quiescence) have passed; each stays in force. All paths and
+values below are placeholders; real values live in the private `VALUES.json`
+outside Git.
+
+### Render
+
+Use the renderer invocation above with explicit TEST and LIVE mappings (add the
+opt-in mail-refresh or portal LIVE template only by a deliberate choice; do not
+switch OCR, mail or portal variants quietly):
+
+    python3 deploy/records-runtime/render.py --values VALUES.json --out DIR \
+        --target TEST=deploy/records-runtime/targets/test-container.json.in \
+        --target LIVE=deploy/records-runtime/targets/live-container.json.in
+
+`DIR` must be fresh and outside a checkout; a non-empty output is refused.
+`VALUES.json` sets `SCHEDULED_TARGET=LIVE` for the cutover, the TEST sandbox
+values, and a `RECORDS_DROP_DIR` separate from `RUNTIME_DIR`.
+`DEFAULT_TARGET=TEST` is compatibility only: a bare wrapper still exits 64 with
+`TARGET_REQUIRED`. Rendering is inert: it installs, enables and starts nothing.
+
+### Install and enable (operator only)
+
+1. Inventory the previously approved writer and timers, keep the original
+   units and files, and record each prior enabled state before quiescing the
+   old writer.
+2. Copy and inspect the rendered files (placeholder paths):
+
+       install -m 0700 DIR/run-records.sh RUNTIME_DIR/run-records.sh
+       install -m 0600 DIR/targets/NAME.json RUNTIME_DIR/targets/NAME.json
+       install -m 0600 DIR/records-run.service USER_UNIT_DIR/records-run.service
+       install -m 0600 DIR/records-run.timer USER_UNIT_DIR/records-run.timer
+
+   The notify helper and env, and the pinned engine/image, are existing
+   prerequisites verified separately; never put credentials in these files.
+3. After inspection, run `systemctl --user daemon-reload` (attended).
+4. After separate approval, enable `records-run.timer`. Do not start
+   `records-run.service` or run a LIVE target by hand for this step.
+
+The timer is `Persistent=true`, so enabling it can immediately run a missed
+slot: enabling is operational authority, never a dry check. The arrival,
+health, analysis and backup-check timers are separate and are not enabled by
+T17.
+
+### Rollback (operator only)
+
+Stop and reconcile any active writer before switching versions. Then, only
+after separate approval, disable the newly introduced `records-run.timer`,
+restore the previously recorded compatible wrapper, plans and user units and
+their prior enabled state, and run `systemctl --user daemon-reload`. If the
+prior unit or enabled state, or engine compatibility, is unknown, leave the
+host blocked; never guess a legacy unit name and never run two writers.
+
+Rollback never automatically restarts a legacy timer, and never deletes
+receipts, stamps or backups, restores databases, recreates containers,
+downgrades past new authority gates or clears holds. Preserve all later data:
+reverting source or configuration is not a data rollback.
 
 Portal download plan (PORTAL-ARGV-1)
 
