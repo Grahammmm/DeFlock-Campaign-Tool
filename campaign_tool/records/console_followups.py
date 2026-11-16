@@ -22,9 +22,10 @@ STATES = frozenset({"closed", "clarification", "unknown", "silence", "extension"
 FLAGS = frozenset({"open_tier1", "audit_items_no_records", "extension_limit_exceeded", "items_not_rated",
                    "register_issues"})
 PATTERNS = frozenset({"blanket_denial", "audit_no_documents", "no_records", "partial_production", "closed_new_request",
-                      "silence", "extension", "records_contradict_policy"})
+                      "silence", "extension", "records_contradict_policy", "vague_answer"})
 REASONS = frozenset({"coverage_table_invalid", "coverage_unreconciled", "contradiction_evidence_unavailable",
-                     "contradiction_findings_ambiguous", "reviewed_contradiction"})
+                     "contradiction_findings_ambiguous", "reviewed_contradiction", "vague_answer_evidence_ambiguous",
+                     "vague_answer; cited denial not tied to items (machine reading, not a finding)"})
 RULE = re.compile(r"rule (10|[1-9]); records_contradict_policy and vague_answer require a reviewed finding")
 MAX_REQUESTS = 5000
 MAX_ASKS = 10000

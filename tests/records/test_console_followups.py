@@ -99,6 +99,50 @@ class Reading(Panel):
             for sentinel in (ASK_SENTINEL, QUOTE_SENTINEL, "evidence"):
                 self.assertNotIn(sentinel, blob)
 
+    def test_vague_answer_live_export_snapshot_preserves_other_requests(self):
+        quote = "We deny this request under Gov. Code section 9999."
+        reason = "vague_answer; cited denial not tied to items (machine reading, not a finding)"
+        for ambiguous in (False, True):
+            with self.subTest(ambiguous=ambiguous):
+                self.paths = write_run(self.live, self.REQUESTS)
+                ratings = json.loads(self.paths["ratings"].read_text())
+                request = next(r for r in ratings["requests"]
+                               if (r["agency_key"], r["request_id"]) == ("caltrans", "req-2"))
+                request["asks"][0]["evidence"] = [{"quote": quote, "page": 1, "doc_sha256": "a" * 64}]
+                if ambiguous:
+                    second = copy.deepcopy(request["asks"][0])
+                    second["ask_id"] = "ask-2"
+                    second["evidence"][0]["page"] = 2
+                    request["asks"].append(second)
+                self.paths["ratings"].write_text(json.dumps(ratings))
+                before = tree_state(self.live)
+                routes = followup_route.route_run(self.live, RUN)
+                route = next(r for r in routes if (r["agency_key"], r["request_id"]) == ("caltrans", "req-2"))
+                expected = (None, "vague_answer_evidence_ambiguous") if ambiguous else ("vague_answer", reason)
+                self.assertEqual((route["pattern"], route["reason"]), expected)
+                reading = console_snapshot.LiveSource(self.live).followup_reading(RUN)
+                self.assertEqual(reading["state"], "ok")
+                self.assertEqual(tree_state(self.live), before)
+                ordinary = self.row(reading, "caltrans", "req-1")
+                self.assertEqual(ordinary["item_needs"], {"produced": [1], "withheld": [2], "audit_no_records": [3],
+                                                          "other_no_records": [4], "not_addressed": [5]})
+                dest = self.make_dest()
+                exported = json.loads((dest / "console-model" / "followup-reading.json").read_text())
+                self.assertEqual({k: v for k, v in exported.items() if k not in ("schema", "source_project_id")}, reading)
+                snapshot = console_snapshot.SnapshotSource(self.pin(dest)).followup_reading(RUN)
+                self.assertEqual(snapshot, exported)
+                for doc in (reading, exported, snapshot):
+                    row = self.row(doc, "caltrans", "req-2")
+                    self.assertEqual((row["state_source"], row["route_source"]), ("ok", "ok"))
+                    self.assertEqual((row["pattern"], row["reason"]), expected)
+                    self.assertEqual(row["item_needs"]["withheld"], [1, 2] if ambiguous else [1])
+                    self.assertEqual(self.row(doc, "caltrans", "req-1"), ordinary)
+                    page = cf.render(doc, "caltrans", "req-2")
+                    self.assertIn(expected[1], page)
+                    self.assertIn("Asks withheld</dt><dd>" + ("1, 2" if ambiguous else "1") + "<", page)
+                    for sentinel in (quote, ASK_SENTINEL, QUOTE_SENTINEL):
+                        self.assertNotIn(sentinel, json.dumps(doc) + page)
+
     def test_coverage_unreconciled_is_visible_not_guessed(self):
         aq.add_draft(self.live, item_id="%064x" % 9, kind="appeal-denial", agency_id="caltrans", request_id="req-2",
                      body="Appeal.", evidence={"source": "test", "item_id": "item-x"}, source_run_id=RUN)
@@ -175,6 +219,8 @@ class Reading(Panel):
             return lambda rows: rows[index].__setitem__(key, value)
         needs = lambda g, v: (lambda rows: rows[0]["item_needs"].__setitem__(g, v))
         cases = (put("reason", "free text from a letter"), put("pattern", "invented"), put("flags", ["made_up"]),
+                 put("reason", "vague_answer; cited denial not tied to items (machine reading, not a finding) " + QUOTE_SENTINEL),
+                 put("reason", "vague_answer_evidence_ambiguous " + QUOTE_SENTINEL),
                  put("extra", "text"), put("display_state", "bogus"), needs("produced", [0]), needs("produced", [True]),
                  needs("produced", [-1]), needs("withheld", [1, 1]), needs("withheld", [1]), needs("produced", [2, 1]),
                  lambda rows: rows.append(copy.deepcopy(rows[0])), lambda rows: rows[0].pop("reason"),
