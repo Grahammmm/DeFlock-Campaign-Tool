@@ -1,0 +1,27 @@
+{
+  "schema": "records-e2e-seed-v1",
+  "agencies": [
+    {
+      "id": "ca-fictional-valley-pd",
+      "name": "Fictional Valley Police Department",
+      "jurisdiction": "us-ca"
+    }
+  ],
+  "requests": [
+    {
+      "id": "fv-req-1",
+      "agency_id": "ca-fictional-valley-pd",
+      "submitted_at": "2026-11-02",
+      "status": "open"
+    }
+  ],
+  "join": {
+    "agency_id": "ca-fictional-valley-pd",
+    "request_id": "fv-req-1"
+  },
+  "followup": {
+    "asked": "1. Vendor agreement for the ALPR cameras; 2. ALPR search logs",
+    "autonomy": "draft",
+    "source_sha256": "89c0f93886eb261c832460c74525ee276b8d3fe438b2a41c7e916b8a89f9be74"
+  }
+}

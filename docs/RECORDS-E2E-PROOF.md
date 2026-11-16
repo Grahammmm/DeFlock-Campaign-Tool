@@ -50,6 +50,30 @@ typed join (`join_type e2e_proof_seed`) per replayed original, and writes the op
 project (`SEED_NOT_SANDBOX`) or a ledger without exactly one message fails the stage before anything is written.
 In production canonical identity still comes only from the pipeline. Without `--seed` there is no `seed` stage.
 
+### Follow-up route proof (optional `followup` seed block)
+
+A seed may add `"followup": {"asked": "1. ...; 2. ...", "autonomy": "off"|"draft", "source_sha256": "<64 hex>"}`
+(exactly these keys; `asked` non-empty, at most 16 KiB). `source_sha256` names ONE attachment of the replayed message
+(not the .eml itself): only that original gets the typed join, so the reply is one attributable source. The seed stage
+also writes, inside the sandbox only, a one-row `MASTER-REQUEST-TRACKER.csv` (the asked list) and a
+`followup-settings.json` (autonomy for the seeded agency; every other agency stays off). A bad block is
+`SEED_INVALID`; a source that is not an attachment of that message is `SEED_FOLLOWUP_SOURCE_INVALID`; both refuse before
+any write. A new read-only `followups` stage runs right after `outputs` and calls the real `followup_route`. It
+reports, for the seeded request: `handled_by` (`received_items`, `engine`, `followup_clock`, `manual`, `none`), the
+pattern and asks, `queued_by_kind` (pending drafts that owner queued in this run) and a status. It queues nothing.
+
+| status | meaning |
+| --- | --- |
+| `queued` | the owner queued its draft (received_items: the draft kind chosen for the received item; engine: a `followup-playbook` for the residual asks) |
+| `drafting_off` | engine/clock route found, autonomy `off`, nothing queued: shown as **route found, drafting off**; PASS |
+| `missing_draft` | `FOLLOWUP_DRAFT_MISSING` (or `FOLLOWUP_DRAFT_COUNT_INVALID`: more than one): FAIL, and a manual step `followups: <code>` |
+| `manual` / `no_route` | route needs a person (`FOLLOWUP_MANUAL_REVIEW_REQUIRED`) / nothing to route; neither fails the proof |
+
+A received item that calls for a fee-reply, appeal-denial or reply-extension draft but has none queued also fails
+`FOLLOWUP_DRAFT_MISSING`, even when the missing draft made the route fall back to another owner. An unreadable route or
+queue is `FOLLOWUP_PROOF_UNAVAILABLE` (a manual step). Fixtures: `tests/records/fixtures/e2e-followups/{fee,partial,
+denial,extension}.{eml,seed.json}`; nothing is sent, approved or published.
+
 ## Adoption rehearsal (`--with-adoption`)
 
 By default the replay starts after the live mailbox-side stages (sync, delta, adoption, portal), so the real adoption
