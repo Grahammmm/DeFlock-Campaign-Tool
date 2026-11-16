@@ -797,6 +797,39 @@ that attended step.
   `local_ocr_dependency_or_output_missing`. Requeueing a refusal, repairing host permissions,
   changing evidence limits and replaying the live backlog are separate attended steps.
 
+### Receipt manifest handoff privacy (AUDINV-FIX-140)
+
+The enriched reader's stdout is private evidence, not a comment-ready payload. It carries no
+message content, but mailbox identity and date metadata are still unsuitable for indefinite
+retention in a comment.
+
+* **No inline manifest metadata.** Never paste manifest JSON, document rows, mailbox UIDs or
+  UIDVALIDITY, dates, sender-domain classes, ledger IDs or per-document hashes into a board
+  comment, copied stdout, screenshot or pasted log excerpt.
+* **Custody is unchanged.** Keep the original detailed manifest in authorized private storage
+  without redaction, rewriting or schema change. A hash is of its exact bytes, never of
+  reserialized JSON.
+* **Two conditional handoff forms**, neither executed by this policy: (a) a separately
+  authorized attachment of the original private file, using the existing `kanban_attach`
+  capability, to an approved access audience; an attachment is not automatically private and
+  is not a bypass for missing recipient or access approval; or (b) only an approved opaque
+  locator plus its exact SHA-256 in the comment text. The locator itself needs privacy review,
+  because an approved locator can still identify a mailbox. Synthetic shape (the digest below
+  is a placeholder, not an observed or approved value; a real handoff needs the computed
+  exact-byte digest):
+
+  ```json
+  {"locator": "approved://synthetic/receipt-manifest.json", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+  ```
+
+* **HOLD, no handoff** when: the locator is missing or unapproved; the locator is identifying
+  or credential-bearing; the manifest is unreadable or missing; the digest is malformed or
+  does not match; the attachment audience is unauthorized; or approval is unavailable. No
+  automatic check of these exists.
+* **Holds stay in force.** This policy does not post or attach anything, remove old comments,
+  alter record custody, or prove removal of previously exposed identifiers. Historical
+  cleanup needs a separately scoped owner decision.
+
 ## Analysis cycle (DFGL-20s, off by default)
 
 `run-analysis.sh` runs one bounded analysis cycle every 15 minutes (`records-analysis.timer`). It renders only when
