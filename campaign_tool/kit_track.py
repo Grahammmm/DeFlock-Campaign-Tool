@@ -309,8 +309,24 @@ def _entry_ok(key, entry):
                  or entry["channel"] == "portal" and _portal_url_ok(entry["request_url"])))
 
 
+class _DuplicateMember(Exception):  # private marker; deliberately not a ValueError so nothing else can catch it
+    pass
+
+
+def _unique_members(pairs):  # object_pairs_hook: a repeated decoded member name at any depth is ambiguous
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateMember
+        result[key] = value
+    return result
+
+
 def read_sent(root):
-    """Return the ``requests`` dict of kit/sent.json; {} when absent. Never resets a bad file."""
+    """Return the ``requests`` dict of kit/sent.json; {} when absent. Never resets a bad file.
+
+    A repeated decoded JSON member name at any depth refuses the whole file (no first/last choice).
+    """
     path = Path(root) / "kit" / "sent.json"
     if not os.path.lexists(path):
         return {}
@@ -326,7 +342,9 @@ def read_sent(root):
     if len(data) > MAX_BYTES:
         raise bad("larger than 1 MiB")
     try:
-        document = json.loads(data.decode("utf-8"))
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_members)
+    except _DuplicateMember:
+        raise bad("duplicate JSON keys") from None
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise bad("not JSON") from None
     if not isinstance(document, dict) or document.get("schema_version") != 1 \
