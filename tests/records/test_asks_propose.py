@@ -153,6 +153,28 @@ class EvidenceTests(Base):
         rows = self.states([ask(1, t[0], "answered", ["Item 1 is attached."])], flags=["text_unreviewed"])
         self.assertEqual(rows[0]["state"], "unknown")
 
+    def test_production_requires_an_affirmative_completed_clause(self):
+        unknown = [
+            "You requested that item 1 policy documents be provided.",
+            "We ask that item 1 be attached.",
+            "Item 1 should be provided.",
+            "If item 1 is attached, review it.",
+            "Item 1 was requested and a receipt is attached.",
+            "A receipt is attached for the request for item 1.",
+            "Item 1 is under review; a receipt is attached.",
+        ]
+        for quote in unknown:
+            with self.subTest(quote=quote):
+                rows = self.states([ask(1, self.texts[0], "answered", [quote])])
+                self.assertEqual(rows[0]["state"], "unknown")
+                self.assertEqual(rows[0]["held_doc_ids"], "[]")
+        for quote in ("Item 1 policy documents have been provided.",
+                      "We have provided item 1 policy documents.", "Item 1 is enclosed."):
+            with self.subTest(quote=quote):
+                rows = self.states([ask(1, self.texts[0], "answered", [quote])])
+                self.assertEqual(rows[0]["state"], "produced")
+                self.assertEqual(json.loads(rows[0]["held_doc_ids"]), [SHA_A])
+
     def test_wrong_join_refuses_evidence_invalid(self):
         t = self.texts
         good = ask(1, t[0], "answered", ["Item 1 is attached."])
@@ -173,6 +195,19 @@ class EvidenceTests(Base):
                 self.assertEqual(self.run_cli("--apply")[::2], (2, "ASKS_EVIDENCE_INVALID\n"))
         self.assertFalse((self.project / "agency-asks").exists())
 
+    def test_nonstring_response_flags_refuse_without_content_or_writes(self):
+        for level in ("request", "ask"):
+            for bad in ({"PRIVATE-FLAG": "PRIVATE-VALUE"}, [], 7, None):
+                with self.subTest(level=level, bad=bad):
+                    good = ask(1, self.texts[0], "answered", ["Item 1 is attached."])
+                    response = self.response([good])
+                    target = response[0] if level == "request" else good
+                    target["flags"] = [bad]
+                    self.stage(response=response)
+                    before = self.snapshot()
+                    self.assertEqual(self.run_cli("--apply"), (2, "", "ASKS_RESPONSE_INVALID\n"))
+                    self.assertEqual(self.snapshot(), before)
+
     def test_stale_schemas_refuse_with_codes(self):
         self.stage(response=[])
         path = self.out / "outcomes" / "response-items.json"
@@ -188,8 +223,19 @@ class EvidenceTests(Base):
 
 
 class MalformedRegisterTests(Base):
+    def test_exactly_200_complete_asks_are_preserved(self):
+        asked = "; ".join("%d. item number %d" % (i, i) for i in range(1, 201))
+        self.stage(requests=[req("alpha", "R-1", "L1", asked=asked)])
+        code, out, err = self.run_cli("--apply")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out)["rows"], 200)
+        rows = self.rows()
+        self.assertEqual([r["item_text"] for r in rows],
+                         ["item number %d" % i for i in range(1, 201)])
+        self.assertEqual([r["item_no"] for r in rows], [str(i) for i in range(1, 201)])
+
     def test_named_codes_empty_stdout_no_writes(self):
-        long = "; ".join("%d. item number %d" % (i, i) for i in range(1, 201))
+        long = "; ".join("%d. item number %d" % (i, i) for i in range(1, 202))
         cases = {
             "ASKS_REGISTER_INVALID": [
                 dict(requests=[req("alpha", "R-1", "L1"), req("alpha", "R-1", "L1")]),

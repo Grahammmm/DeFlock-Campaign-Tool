@@ -35,7 +35,14 @@ BAD_FLAGS = frozenset({"ask_truncated", "quote_truncated", "text_unreviewed", "s
 _I = re.I
 _REF = re.compile(r"(?:\bitems?|\brequests?|\bno\.?|\bnumbers?|#)\s*#?\s*(\d{1,3}(?:\s*(?:,|and|&|through|to|-)\s*\d{1,3})*)\b", _I)
 _PAREN = re.compile(r"\((\d{1,3})\)")
-_PAST = re.compile(r"\battached\b|\benclosed\b|\bproduced\b|\bprovided\b", _I)
+# Match an entire affirmative clause, not a production word borrowed from a
+# request, conditional, or unrelated clause. Unrecognized wording stays unknown.
+_NUMBERED_ITEM = r"(?:items?|requests?|numbers?|no\.?|#)\s*#?\s*\d{1,3}\b"
+_ITEM = _NUMBERED_ITEM + r"(?:\s+(?:policy|documents?|records?|audit|logs?|contracts?)){0,8}"
+_PAST = re.compile(
+    rf"(?:{_ITEM}\s+(?:is|are|was|were|has been|have been)\s+"
+    rf"(?:attached|enclosed|produced|provided)|"
+    rf"we\s+(?:have\s+)?(?:attached|enclosed|produced|provided)\s+{_ITEM})[.!]?", _I)
 _FUTURE = re.compile(r"\bwill\s+(?:be\s+)?(?:produced?|provided?)\b", _I)
 _NEGATION = re.compile(r"\b(?:not|no|never|without|cannot|unable)\b|n't\b", _I)
 
@@ -86,7 +93,9 @@ def quote_cue(quote, number):
             or response_items.CITE.search(quote):
         return None
     future = bool(_FUTURE.search(quote))
-    past = bool(_PAST.search(_FUTURE.sub(" ", quote)))
+    if future and re.search(r"\b(?:attached|enclosed|produced|provided)\b", _FUTURE.sub(" ", quote), _I):
+        return None
+    past = bool(_PAST.fullmatch(quote.strip()))
     if future == past:
         return None
     return "pending" if future else "produced"
@@ -115,9 +124,10 @@ def _state(ask, response_ask, request_flags, evidence_items):
 def _split(row):
     asked = row["asked"]
     _need(_clean_text(asked) and asked.strip() != response_items.UNKNOWN_SCOPE, "ASKS_REGISTER_INVALID")
-    asks = response_items.split_asked(asked)
+    # Admit one extra ask through the canonical splitter to detect real overflow.
+    asks = response_items.split_asked(asked, max_asks=response_items.MAX_ASKS + 1)
     _need(asks, "ASKS_REGISTER_INVALID")
-    _need(len(asks) < response_items.MAX_ASKS and all(
+    _need(len(asks) <= response_items.MAX_ASKS and all(
         not a["flags"] and len(a["_full"]) <= response_items.MAX_ASK and a["text"] == a["_full"]
         for a in asks), "ASKS_SCOPE_INCOMPLETE")
     return asks
@@ -165,7 +175,8 @@ def _check_response(report, run_id, rows, sources):
     joined, flags = {}, {}
     for request in report["requests"]:
         _need(type(request) is dict and type(request.get("asks")) is list
-              and type(request.get("flags")) is list, "ASKS_RESPONSE_INVALID")
+              and type(request.get("flags")) is list
+              and all(isinstance(flag, str) for flag in request["flags"]), "ASKS_RESPONSE_INVALID")
         key = (request.get("agency_key"), request.get("request_id"))
         row = rows.get(key)
         _need(key not in joined, "ASKS_RESPONSE_INVALID")
@@ -175,6 +186,7 @@ def _check_response(report, run_id, rows, sources):
         joined[key], flags[key] = {}, list(request["flags"])
         for ask in request["asks"]:
             _need(type(ask) is dict and type(ask.get("evidence")) is list and type(ask.get("flags")) is list
+                  and all(isinstance(flag, str) for flag in ask["flags"])
                   and ask.get("rating") in response_items.RATINGS and isinstance(ask.get("ask_id"), str),
                   "ASKS_RESPONSE_INVALID")
             match = ASK_ID.fullmatch(ask["ask_id"])
