@@ -62,6 +62,17 @@ an encoding one: `--eml` stops before anything is written with exactly
 message as `{"number": N, "code": "malformed"}` while the other messages, their attachments and the original
 mailbox import as above. No part of the deep message is stored on its own; keep it with `ingest --file` (below).
 
+A multipart whose closing delimiter (`--boundary--`) is missing, at any depth, including a multipart inside a
+forwarded `message/rfc822` part, is refused the same structural way: `--eml` stops before anything is written with
+exactly `Stopped: malformed MIME (CloseBoundaryNotFoundDefect); nothing was imported` and exit status 1, even if
+earlier attachments of the same message were complete or the multipart has no attachments, and `--mbox` lists only
+that message as `{"number": N, "code": "malformed"}` while the other messages and the original mailbox import as
+above (an all-bad mailbox keeps only the raw mailbox object). The forward check is structural only: a forwarded
+message is still one opaque serialized `.eml` member, and its inner transfer encodings are not newly validated.
+A refusal does not establish what bytes the sender intended; ask for a corrected export rather than adding a
+delimiter by hand, or keep the file with `ingest --file`. Objects stored by an earlier import are not deleted,
+migrated or reclassified; re-importing such a mailbox reports those messages skipped and leaves them untouched.
+
 The saved file's own name must be valid UTF-8 text, because it prefixes every receipt name the ledger stores. A
 `--eml` file whose name contains bytes that are not valid UTF-8 (a raw byte such as `FF` on Linux) is refused, in a
 real run and in `--dry-run` alike, before the message is read for MIME, looked up or stored: the output is exactly

@@ -705,5 +705,83 @@ class IngestEmlTests(unittest.TestCase):
         self.assertIn("Stopped: malformed MIME (RecursionError); nothing was imported", doc)
 
 
+    # RF0520-2: an unclosed multipart is a structural refusal, before anything is derived or written
+    CLOSE_REFUSAL = "Stopped: malformed MIME (CloseBoundaryNotFoundDefect); nothing was imported\n"
+    ATTACH = ("--B\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n"
+              'Content-Disposition: attachment; filename="s.bin"\r\n\r\nQUJD\r\n')
+    TEXT = "--B\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
+
+    def unclosed(self, body, close=False, crlf=True):
+        data = raw('Content-Type: multipart/mixed; boundary="B"', body + ("--B--\r\n" if close else ""))
+        return data if crlf else data.replace(b"\r\n", b"\n")
+
+    def assert_refused_before_write(self, data, populated):
+        from email import errors
+        parsed = BytesParser(policy=policy.default).parsebytes(data)
+        self.assertTrue(any(isinstance(d, errors.CloseBoundaryNotFoundDefect)
+                            for part in parsed.walk() for d in part.defects))
+        if populated:
+            self.ingest(self.write(message((PDF, "application", "pdf", "a.pdf")), "seed.eml"), "seed-1")
+        path = self.write(data)
+        before = self.files()
+        for dry in (True, False):
+            result = self.ingest(path, dry=dry, returncode=1)
+            self.assertEqual((result.stdout, result.stderr), ("", self.CLOSE_REFUSAL))
+            self.assertEqual(self.files(), before)
+        self.assertEqual(path.read_bytes(), data)
+
+    def test_unclosed_multipart_eml_refused_before_any_write(self):
+        inner = ('Content-Type: multipart/mixed; boundary="I"\r\n\r\n--I\r\nContent-Type: application/octet-stream\r\n'
+                 'Content-Disposition: attachment; filename="in.bin"\r\n\r\nxyz\r\n')
+        cases = {"outer": self.unclosed(self.TEXT + self.ATTACH),
+                 "inner-unclosed": self.unclosed(self.TEXT + self.ATTACH + "--B\r\n" + inner + "--B\r\n", close=True)}
+        for name, data in cases.items():
+            for crlf in (True, False):
+                for populated in (False, True):
+                    with self.subTest(case=name, crlf=crlf, populated=populated):
+                        self.setUp()
+                        self.assert_refused_before_write(data if crlf else data.replace(b"\r\n", b"\n"), populated)
+
+    def test_missing_close_is_structural_even_without_attachments(self):
+        lookalike = self.TEXT + "--B--not-a-close\r\n"
+        for name, body in {"body-only": self.TEXT, "inline-unnamed": self.TEXT + "--B\r\nContent-Type: image/png\r\n"
+                           "Content-Disposition: inline\r\n\r\nxyz\r\n", "lookalike": lookalike}.items():
+            with self.subTest(case=name):
+                self.setUp()
+                self.assert_refused_before_write(self.unclosed(body), False)
+
+    def test_closed_multipart_boundary_controls_keep_exact_outputs(self):
+        epilogue = self.unclosed(self.TEXT + self.ATTACH, close=True) + b"epilogue text\r\n"
+        for name, data in {"crlf": self.unclosed(self.TEXT + self.ATTACH, close=True),
+                           "lf": self.unclosed(self.TEXT + self.ATTACH, close=True, crlf=False),
+                           "epilogue": epilogue,
+                           "eof-no-newline": self.unclosed(self.TEXT + self.ATTACH, close=True)[:-2]}.items():
+            with self.subTest(case=name):
+                self.setUp()
+                report = self.ingest(self.write(data))
+                self.assertEqual(report["attachments"],
+                                 [{"name": "s.bin", "sha256": hashlib.sha256(b"ABC").hexdigest(), "outcome": "stored"}])
+                self.assertEqual(report["message"]["sha256"], hashlib.sha256(data).hexdigest())
+
+    def test_forward_structural_close_and_inner_encoding_scope(self):
+        def forward(inner, name=True):
+            head = ("Content-Type: message/rfc822\r\n" + ('Content-Disposition: attachment; filename="f.eml"\r\n'
+                                                           if name else "") + "\r\n")
+            return self.unclosed(self.TEXT + "--B\r\n" + head + inner + "\r\n", close=True)
+        opened = ('Subject: inner\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="I"\r\n\r\n'
+                  "--I\r\nContent-Type: text/plain\r\n\r\ninner\r\n")
+        for name in (True, False):
+            with self.subTest(unclosed_forward_named=name):
+                self.setUp()
+                self.assert_refused_before_write(forward(opened, name), False)
+        bad_leaf = (opened + "--I\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: base64\r\n"
+                    "Content-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"x.bin\"\r\n\r\n"
+                    "A\r\n--I--\r\n")
+        self.setUp()
+        report = self.ingest(self.write(forward(bad_leaf)))
+        self.assertEqual([a["name"] for a in report["attachments"]], ["f.eml"])
+        self.assertEqual(self.rows("SELECT count(*) FROM objects"), [(2,)])
+
+
 if __name__ == "__main__":
     unittest.main()
