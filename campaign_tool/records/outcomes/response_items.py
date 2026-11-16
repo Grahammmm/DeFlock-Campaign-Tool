@@ -88,8 +88,8 @@ def _clip(text, flags, flag):
     return text
 
 
-def split_asked(text):
-    """-> [{ask_id, text, flags}] in document order; never guessed from unknown scope."""
+def split_asked(text, *, max_asks=MAX_ASKS):
+    """-> [{ask_id, text, flags}] in document order; max_asks may admit an overflow sentinel."""
     if not isinstance(text, str) or not text.strip() or text.strip() == UNKNOWN_SCOPE:
         return []
     text = text.strip()
@@ -107,7 +107,7 @@ def split_asked(text):
         part = part.strip().rstrip(";").strip()
         if part:
             out.append(part)
-    out = out[:MAX_ASKS]
+    out = out[:max_asks]
     asks = []
     for number, part in enumerate(out, 1):
         flags = []
