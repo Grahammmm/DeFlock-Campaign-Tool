@@ -1,0 +1,76 @@
+{
+ "kill": {
+  "journal": "{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"line\", \"id\": \"358b383e4598c027\", \"line\": {\"agency_key\": \"ex\", \"event\": {\"date\": \"2026-11-01\", \"source\": {\"item_id\": \"sent2026-11-01\", \"kind\": \"outbox_receipt\"}, \"type\": \"sent\"}, \"fields\": {\"agency\": \"Example PD\", \"date\": \"2026-11-01\"}, \"template\": \"L1\", \"text\": \"2026-11-01: We sent a public records request to Example PD.\"}, \"schema\": \"records-public-updates-v1\", \"seq\": 0, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"line\", \"id\": \"8e21c6ea5d3cc7d8\", \"line\": {\"agency_key\": \"ex\", \"event\": {\"date\": \"2026-11-02\", \"source\": {\"item_id\": \"acknowledged2026-11-02\", \"kind\": \"received_item\"}, \"type\": \"acknowledged\"}, \"fields\": {\"agency\": \"Example PD\", \"date\": \"2026-11-02\"}, \"template\": \"L2\", \"text\": \"2026-11-02: Example PD confirmed it received our request.\"}, \"schema\": \"records-public-updates-v1\", \"seq\": 1, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"hold\", \"hold_until\": 1793043200, \"id\": \"358b383e4598c027\", \"schema\": \"records-public-updates-v1\", \"seq\": 2, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"hold\", \"hold_until\": 1793043200, \"id\": \"8e21c6ea5d3cc7d8\", \"schema\": \"records-public-updates-v1\", \"seq\": 3, \"ts\": 1793000000}\n{\"actor\": \"system\", \"at\": \"2026-10-26T20:33:20Z\", \"event\": \"switch\", \"schema\": \"records-public-updates-v1\", \"seq\": 4, \"state\": \"killed\", \"ts\": 1793046800}\n{\"actor\": \"system\", \"at\": \"2026-10-26T20:33:20Z\", \"event\": \"retract\", \"id\": \"358b383e4598c027\", \"reason\": \"kill\", \"schema\": \"records-public-updates-v1\", \"seq\": 5, \"ts\": 1793046800}\n{\"actor\": \"system\", \"at\": \"2026-10-26T20:33:20Z\", \"event\": \"retract\", \"id\": \"8e21c6ea5d3cc7d8\", \"reason\": \"kill\", \"schema\": \"records-public-updates-v1\", \"seq\": 6, \"ts\": 1793046800}\n",
+  "results": [
+   {
+    "held": [
+     "358b383e4598c027",
+     "8e21c6ea5d3cc7d8"
+    ],
+    "posted": [],
+    "refused": [],
+    "retracted": [],
+    "state": "ON"
+   },
+   {
+    "held": [],
+    "posted": [],
+    "refused": [],
+    "retracted": [
+     "358b383e4598c027",
+     "8e21c6ea5d3cc7d8"
+    ],
+    "state": "KILLED"
+   }
+  ]
+ },
+ "normal": {
+  "feed": "{\n \"lines\": [\n  {\n   \"agency_key\": \"ex\",\n   \"date\": \"2026-11-01\",\n   \"id\": \"358b383e4598c027\",\n   \"posted_at\": \"2026-10-26T19:33:20Z\",\n   \"template\": \"L1\",\n   \"text\": \"2026-11-01: We sent a public records request to Example PD.\"\n  },\n  {\n   \"agency_key\": \"ex\",\n   \"date\": \"2026-11-02\",\n   \"id\": \"8e21c6ea5d3cc7d8\",\n   \"posted_at\": \"2026-10-26T19:33:20Z\",\n   \"template\": \"L2\",\n   \"text\": \"2026-11-02: Example PD confirmed it received our request.\"\n  },\n  {\n   \"agency_key\": \"ex\",\n   \"date\": \"2026-11-03\",\n   \"id\": \"0b63ad4155792116\",\n   \"posted_at\": \"2026-10-26T19:33:20Z\",\n   \"template\": \"L4\",\n   \"text\": \"2026-11-03: Example PD responded to our request. We are reviewing the response.\"\n  }\n ],\n \"private_until_reviewed\": true,\n \"schema\": \"records-public-status-feed-v1\"\n}\n",
+  "journal": "{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"line\", \"id\": \"358b383e4598c027\", \"line\": {\"agency_key\": \"ex\", \"event\": {\"date\": \"2026-11-01\", \"source\": {\"item_id\": \"sent2026-11-01\", \"kind\": \"outbox_receipt\"}, \"type\": \"sent\"}, \"fields\": {\"agency\": \"Example PD\", \"date\": \"2026-11-01\"}, \"template\": \"L1\", \"text\": \"2026-11-01: We sent a public records request to Example PD.\"}, \"schema\": \"records-public-updates-v1\", \"seq\": 0, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"line\", \"id\": \"8e21c6ea5d3cc7d8\", \"line\": {\"agency_key\": \"ex\", \"event\": {\"date\": \"2026-11-02\", \"source\": {\"item_id\": \"acknowledged2026-11-02\", \"kind\": \"received_item\"}, \"type\": \"acknowledged\"}, \"fields\": {\"agency\": \"Example PD\", \"date\": \"2026-11-02\"}, \"template\": \"L2\", \"text\": \"2026-11-02: Example PD confirmed it received our request.\"}, \"schema\": \"records-public-updates-v1\", \"seq\": 1, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"line\", \"id\": \"0b63ad4155792116\", \"line\": {\"agency_key\": \"ex\", \"event\": {\"date\": \"2026-11-03\", \"source\": {\"item_id\": \"determination2026-11-03\", \"kind\": \"received_item\"}, \"type\": \"determination\"}, \"fields\": {\"agency\": \"Example PD\", \"date\": \"2026-11-03\"}, \"template\": \"L4\", \"text\": \"2026-11-03: Example PD responded to our request. We are reviewing the response.\"}, \"schema\": \"records-public-updates-v1\", \"seq\": 2, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"line\", \"id\": \"c93c81ecaeecc34d\", \"line\": {\"agency_key\": \"ex\", \"event\": {\"date\": \"2026-11-04\", \"source\": {\"item_id\": \"production2026-11-04\", \"kind\": \"received_item\"}, \"type\": \"production\"}, \"fields\": {\"agency\": \"Example PD\", \"date\": \"2026-11-04\"}, \"template\": \"L5\", \"text\": \"2026-11-04: Example PD released records. We review records before publishing any of them.\"}, \"schema\": \"records-public-updates-v1\", \"seq\": 3, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"line\", \"id\": \"bb19be654237f93f\", \"line\": {\"agency_key\": \"other\", \"event\": {\"date\": \"2026-11-01\", \"source\": {\"item_id\": \"sent2026-11-01\", \"kind\": \"outbox_receipt\"}, \"type\": \"sent\"}, \"fields\": {\"agency\": \"Other PD\", \"date\": \"2026-11-01\"}, \"template\": \"L1\", \"text\": \"2026-11-01: We sent a public records request to Other PD.\"}, \"schema\": \"records-public-updates-v1\", \"seq\": 4, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"hold\", \"hold_until\": 1793043200, \"id\": \"358b383e4598c027\", \"schema\": \"records-public-updates-v1\", \"seq\": 5, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"hold\", \"hold_until\": 1793043200, \"id\": \"8e21c6ea5d3cc7d8\", \"schema\": \"records-public-updates-v1\", \"seq\": 6, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"hold\", \"hold_until\": 1793043200, \"id\": \"0b63ad4155792116\", \"schema\": \"records-public-updates-v1\", \"seq\": 7, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"hold\", \"hold_until\": 1793043200, \"id\": \"c93c81ecaeecc34d\", \"schema\": \"records-public-updates-v1\", \"seq\": 8, \"ts\": 1793000000}\n{\"at\": \"2026-10-26T07:33:20Z\", \"event\": \"hold\", \"hold_until\": 1793043200, \"id\": \"bb19be654237f93f\", \"schema\": \"records-public-updates-v1\", \"seq\": 9, \"ts\": 1793000000}\n{\"actor\": \"g\", \"at\": \"2026-10-26T07:33:25Z\", \"event\": \"retract\", \"id\": \"bb19be654237f93f\", \"reason\": \"undo\", \"schema\": \"records-public-updates-v1\", \"seq\": 10, \"ts\": 1793000005}\n{\"at\": \"2026-10-26T19:33:20Z\", \"event\": \"post\", \"id\": \"0b63ad4155792116\", \"schema\": \"records-public-updates-v1\", \"seq\": 11, \"ts\": 1793043200}\n{\"at\": \"2026-10-26T19:33:20Z\", \"event\": \"post\", \"id\": \"358b383e4598c027\", \"schema\": \"records-public-updates-v1\", \"seq\": 12, \"ts\": 1793043200}\n{\"at\": \"2026-10-26T19:33:20Z\", \"event\": \"post\", \"id\": \"8e21c6ea5d3cc7d8\", \"schema\": \"records-public-updates-v1\", \"seq\": 13, \"ts\": 1793043200}\n{\"at\": \"2026-10-26T19:33:20Z\", \"code\": \"cap_agency_day\", \"event\": \"refused\", \"id\": \"c93c81ecaeecc34d\", \"schema\": \"records-public-updates-v1\", \"seq\": 14, \"ts\": 1793043200}\n{\"agency_key\": \"ex\", \"at\": \"2026-10-26T19:33:20Z\", \"code\": \"cap_agency_day\", \"event\": \"alert\", \"id\": \"c93c81ecaeecc34d\", \"schema\": \"records-public-updates-v1\", \"seq\": 15, \"ts\": 1793043200}\n",
+  "results": [
+   {
+    "held": [
+     "358b383e4598c027",
+     "8e21c6ea5d3cc7d8",
+     "0b63ad4155792116",
+     "c93c81ecaeecc34d",
+     "bb19be654237f93f"
+    ],
+    "posted": [],
+    "refused": [],
+    "retracted": [],
+    "state": "ON"
+   },
+   {
+    "held": [],
+    "posted": [],
+    "refused": [],
+    "retracted": [],
+    "state": "ON"
+   },
+   {
+    "held": [],
+    "posted": [
+     "0b63ad4155792116",
+     "358b383e4598c027",
+     "8e21c6ea5d3cc7d8"
+    ],
+    "refused": [
+     [
+      "c93c81ecaeecc34d",
+      "cap_agency_day"
+     ]
+    ],
+    "retracted": [],
+    "state": "ON"
+   },
+   {
+    "held": [],
+    "posted": [],
+    "refused": [],
+    "retracted": [],
+    "state": "ON"
+   }
+  ]
+ }
+}

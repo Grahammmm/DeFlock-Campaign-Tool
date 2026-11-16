@@ -32,6 +32,7 @@ from .. import approval
 SCHEMA = "records-public-updates-v1"
 FEED_SCHEMA = "records-public-status-feed-v1"
 SWITCH_SCOPE = "public-autopost-switch-v1"
+LINE_SCOPE = "public-update-line-v1"
 JOURNAL, SWITCH, KILL, LOCK, FEED = ("public-updates.jsonl", "public-autopost.json", "public-autopost.KILL",
                                      "public-updates.lock", "public-status-feed.json")
 HOLD_SECONDS = 12 * 3600
@@ -204,7 +205,78 @@ def fold(events):
                 row.update(state="retracted", retracted_at=ev["ts"], retract_reason=ev["reason"])
             elif kind == "refused":
                 row.update(state="refused", refusal=ev["code"])
+            elif kind == "line_approval":  # safe metadata only; the signature stays in the private journal
+                row.update(approved_revision=ev["revision"], approved_by=ev["principal"], approved_at=ev["ts"])
     return lines, switch, alerts
+
+
+# ---- per-line approval (CON-LINE-APPROVE-1) ----------------------------------------------------
+
+def line_revision(row):
+    """SHA-256 of the line's content (never its lifecycle or approval state), so approving cannot void itself."""
+    body = {k: row[k] for k in ("id", "template", "fields", "text", "agency_key", "event")}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), allow_nan=False,
+                                     ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def line_payload_for_row(project, row):
+    """The exact bytes G signs to let this one line (id, revision, text) post while auto-post is OFF."""
+    pid = project_id(project)
+    return approval.payload(LINE_SCOPE, pid, f"project: {pid}\nline: {row['id']}\nrevision: {line_revision(row)}\n"
+                                              f"text:\n{row['text']}")
+
+
+def line_payload(project, lid, *, read_only=False):
+    _need(isinstance(lid, str) and _LINE_ID.fullmatch(lid), "line_unknown")
+    with _Locked(project, read_only=read_only) as lock:
+        row = fold(lock.events())[0].get(lid)
+    _need(row is not None, "line_unknown")
+    return line_payload_for_row(project, row)
+
+
+def _approvals(events):
+    """{(line id, revision): newest line_approval event}."""
+    return {(e["id"], e["revision"]): e for e in events if e["event"] == "line_approval"}
+
+
+def _authorized(project, row, approvals):
+    """True when a journaled approval for exactly this revision still verifies. TrustUnavailable propagates (retry later)."""
+    ev = approvals.get((row["id"], line_revision(row)))
+    if ev is None:
+        return False
+    try:
+        who = approval.verify(line_payload_for_row(project, row), ev["signature"])
+    except approval.TrustUnavailable:
+        raise
+    except (approval.ApprovalError, KeyError, TypeError):
+        return False
+    return who == ev.get("principal")
+
+
+def approve_line(project, lid, signature, *, revision, now=None):
+    """Record G's signature over one proposed/holding line. Never posts, advances or touches the switch or feed."""
+    now = _now(now)
+    _need(isinstance(lid, str) and _LINE_ID.fullmatch(lid), "line_unknown")
+    _need(isinstance(signature, str) and signature.strip() and len(signature) <= approval.MAX_SIGNATURE, "approval_required")
+    with _Locked(project) as lock:
+        events = lock.events()
+        row = fold(events)[0].get(lid)
+        _need(row is not None, "line_unknown")
+        _need(row["state"] in ("proposed", "holding"), "invalid_transition")
+        _need(not os.path.lexists(lock.path(KILL)), "killed")
+        _need(revision == line_revision(row), "stale_revision")
+        _need(render(row["template"], row["fields"]) == row["text"], "text_mismatch")
+        old = _approvals(events).get((lid, revision))
+        if old is not None and old.get("signature") == signature:
+            return "already"
+        try:
+            who = approval.verify(line_payload_for_row(project, row), signature)
+        except approval.TrustUnavailable:
+            raise PublicUpdatesError("approval_unavailable") from None
+        except approval.ApprovalError:
+            raise PublicUpdatesError("approval_required") from None
+        lock.append("line_approval", now, id=lid, revision=revision, principal=who, signature=signature)
+    return "approved"
 
 
 # ---- generator ---------------------------------------------------------------------------------
@@ -453,23 +525,38 @@ def advance(project, now=None):
     now = _now(now)
     result = {"state": None, "held": [], "posted": [], "refused": [], "retracted": []}
     with _Locked(project) as lock:
-        state = result["state"] = _switch_state(lock, lock.events())
+        events = lock.events()
+        state = result["state"] = _switch_state(lock, events)
         if state == "KILLED":
             result["retracted"] = _observe_kill(lock, now)
             return result
-        if state != "ON":
+        on = state == "ON"
+        approvals = _approvals(events)
+        if not on and not approvals:
             return result
-        for row in sorted(fold(lock.events())[0].values(), key=lambda r: r["proposed_at"]):
-            if row["state"] == "proposed":
-                lock.append("hold", now, id=row["id"], hold_until=int(now) + HOLD_SECONDS)
-                result["held"].append(row["id"])
-        for row in sorted(fold(lock.events())[0].values(), key=lambda r: (r.get("hold_until", 0), r["id"])):
-            if row["state"] != "holding" or row["hold_until"] > now:
+        if on:
+            for row in sorted(fold(lock.events())[0].values(), key=lambda r: r["proposed_at"]):
+                if row["state"] == "proposed":
+                    lock.append("hold", now, id=row["id"], hold_until=int(now) + HOLD_SECONDS)
+                    result["held"].append(row["id"])
+        # candidates: lines whose hold has run out (switch ON) and lines with a still-valid signed per-line approval
+        for row in sorted(fold(lock.events())[0].values(),
+                          key=lambda r: (r.get("hold_until", 1 << 62), 0 if r["state"] == "holding" else r["proposed_at"], r["id"])):
+            timed = on and row["state"] == "holding" and row["hold_until"] <= now
+            manual = row["state"] in ("proposed", "holding") and (row["id"], line_revision(row)) in approvals
+            if not (timed or manual):
                 continue
             if os.path.lexists(lock.path(KILL)):  # checked before every post
                 result["retracted"] += _observe_kill(lock, now)
                 result["state"] = "KILLED"
                 break
+            if not timed:  # only the signed approval makes this line eligible: verify it again now
+                try:
+                    if not _authorized(project, row, approvals):
+                        continue
+                except approval.TrustUnavailable:
+                    result.setdefault("deferred", []).append(row["id"])
+                    continue
             posted = [r for r in fold(lock.events())[0].values()
                       if r["state"] in ("posted", "retracted") and r.get("posted_at") and _local_day(r["posted_at"]) == _local_day(now)]
             if len(posted) >= CAP_PER_DAY:
@@ -486,7 +573,8 @@ def advance(project, now=None):
             else:
                 lock.append("post", now, id=row["id"])
                 result["posted"].append(row["id"])
-        _write_feed(lock)
+        if on or result["posted"]:  # an OFF pass with nothing posted leaves the feed alone
+            _write_feed(lock)
     return result
 
 
@@ -521,8 +609,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="records public-updates", description=(
         "Status-line generator, journal and switches. Nothing is posted anywhere; ships OFF."))
     parser.add_argument("action", choices=("init", "status", "propose", "advance", "payload", "enable", "off", "kill",
-                                           "retract"))
+                                           "retract", "line-payload", "approve-line"))
     parser.add_argument("--project", required=True)
+    parser.add_argument("--revision")
     parser.add_argument("--run-id")
     parser.add_argument("--signature-file")
     parser.add_argument("--actor", default="console")
@@ -538,6 +627,16 @@ def main(argv=None):
             out = {"proposed": propose(args.project, lines), "candidates": len(lines), "skipped": len(skipped)}
         elif args.action == "advance":
             out = advance(args.project)
+        elif args.action == "line-payload":
+            _need(args.line and not (args.revision or args.signature_file), "operand_invalid")
+            sys.stdout.buffer.write(line_payload(args.project, args.line))
+            return 0
+        elif args.action == "approve-line":
+            _need(args.line and args.revision and args.signature_file, "operand_invalid")
+            raw = _read(args.signature_file, 8192, None)
+            _need(raw is not None, "approval_required")
+            out = {"line": args.line, "result": approve_line(args.project, args.line, raw.decode("utf-8", "replace"),
+                                                             revision=args.revision)}
         elif args.action == "payload":
             sys.stdout.buffer.write(switch_payload(args.project))
             return 0
