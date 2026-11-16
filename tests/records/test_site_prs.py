@@ -69,6 +69,41 @@ class Importer(Base):
         model = site_prs.load(str(dest), NOW + timedelta(hours=3, minutes=5))
         self.assertEqual((model["state"], model["hours"], model["stale"]), ("ok", 3, False))
 
+    def test_utf8_capture_round_trips_at_maximum_rows_and_title_length(self):
+        rows = [pr(n, title="界" * site_prs.MAX_TEXT) for n in range(1, site_prs.MAX_ROWS + 1)]
+        raw = json.dumps(rows, ensure_ascii=False).encode("utf-8")
+        self.assertLessEqual(len(raw), site_prs.MAX_BYTES)
+        self.capture(rows, raw=raw)
+        self.assertEqual(self.run_import(), site_prs.MAX_ROWS)
+        dest = self.root / site_prs.NAME
+        model = site_prs.load(str(dest), NOW)
+        self.assertEqual(model["state"], "ok")
+        self.assertEqual(model["prs"], rows)
+        self.assertLessEqual(dest.stat().st_size, site_prs.MAX_BYTES)
+        self.assertIn("50 captured open drafts", site_prs.home_card(model))
+        self.assertIn("界" * site_prs.MAX_TEXT, site_prs.render(model, NOW))
+
+    def test_escaped_surrogates_remain_json_escaped_in_utf8_storage(self):
+        rows = [pr(title="Synthetic " + chr(0xD800), headRefName="branch-" + chr(0xDFFF))]
+        self.capture(rows)
+        self.assertEqual(self.run_import(), 1)
+        model = site_prs.load(str(self.root / site_prs.NAME), NOW)
+        self.assertEqual(model["state"], "ok")
+        self.assertEqual(model["prs"], rows)
+
+    def test_encoded_output_over_reader_cap_keeps_the_old_snapshot(self):
+        self.capture([pr()])
+        self.run_import()
+        rows = [pr(n, title="😀" * 1005, headRefName="a" * site_prs.MAX_TEXT)
+                for n in range(1, site_prs.MAX_ROWS + 1)]
+        raw = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.assertLessEqual(len(raw), site_prs.MAX_BYTES)
+        self.capture(rows, raw=raw)
+        self.refused("too_large")
+        model = site_prs.load(str(self.root / site_prs.NAME), NOW)
+        self.assertEqual(model["state"], "ok")
+        self.assertEqual(model["prs"], [pr()])
+
     def test_bad_url_or_unknown_field_writes_nothing(self):
         self.capture([pr()])
         self.run_import()
