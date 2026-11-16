@@ -1,6 +1,7 @@
 """Private read-only follow-up routing leads; never drafts or sends a letter."""
 import argparse
 import csv
+import hashlib
 import io
 import json
 import re
@@ -122,7 +123,76 @@ def _route_reviewed_contradiction(out, state_row, findings, as_of, items=None):
     return True
 
 
-def route(state_row, clock_row, queue_rows, as_of, *, items=None, coverage_rows=(), reviewed_findings=()):
+# FLK-REC-4: evidence-bound vague answers. The detector only sees what the agency wrote in the quoted sentence.
+_NUMBERED_CITE = re.compile(
+    r"§\s*\d|\b(?:Gov(?:ernment|\.)?\.?\s+)?Code\s+(?:§\s*|sec(?:tion|\.)\s*)?\d{3,}|\bsection\s+\d{3,}"
+    r"|\b79\d{2}\.\d{3}\b|\b6254\b", re.I)
+_ITEM_REF = re.compile(r"\b(?:request\s+)?items?\s*(?:#|no\.?|number)?\s*\d|(?<![\w§])#\s*\d|^\s*(?:\(\d{1,3}\)|\d{1,3}[.)])\s",
+                       re.I | re.M)
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+VAGUE = "vague_answer"
+
+
+def has_numbered_citation(text):
+    return isinstance(text, str) and _NUMBERED_CITE.search(text) is not None
+
+
+def explicit_item_reference(text):
+    """True when the agency's own words name an item (`item 2`, `items 1 and 3`, `#1`, a `1.` list marker)."""
+    return isinstance(text, str) and _ITEM_REF.search(text) is not None
+
+
+def quote_digest(quote):
+    return hashlib.sha256(quote.encode("utf-8")).hexdigest()
+
+
+def _vague_candidate(entry):
+    """-> (kind, locator): kind is 'item_level', 'eligible' or None (no usable cited denial)."""
+    words = entry.get("agency_words")
+    if entry.get("kind") not in ("denied_whole", "withheld", "exemption_cited") or not isinstance(words, dict):
+        return None, None
+    quote, page, sha = words.get("quote"), words.get("page"), words.get("doc_sha256")
+    cited = [t for t in (entry.get("agency_citation") or {}).get("text") or [] if has_numbered_citation(t)]
+    if (not isinstance(quote, str) or not quote.strip() or len(quote) >= 400 or type(page) is not int or page < 1
+            or not isinstance(sha, str) or not _HEX64.fullmatch(sha) or not cited or not has_numbered_citation(quote)):
+        return None, None
+    if explicit_item_reference(quote):
+        return "item_level", None
+    return "eligible", {"denial_id": entry["id"], "page": page, "doc_sha256": sha, "quote_sha256": quote_digest(quote)}
+
+
+def _route_vague_answer(out, state_row, queue, items, coverage_rows, denial_entries, as_of, opened, needs):
+    """Between the fee/clarification rules and silence/extension: a cited denial the agency did not tie to items.
+
+    Returns True when `out` was set (routed or manual). Item-level or uncited denials leave `out` untouched.
+    """
+    kinds, locators = [], {}
+    for entry in denial_entries or ():
+        kind, locator = _vague_candidate(entry)
+        kinds.append(kind)
+        if locator:
+            locators[tuple(sorted(locator.items()))] = locator
+    if "item_level" in kinds or not locators or not opened:
+        return False
+    if len(locators) > 1:
+        out.update(handled_by="manual", reason="vague_answer_evidence_ambiguous", planned_date=as_of)
+        return True
+    covered, unknown, error = _coverage(needs, queue, items, coverage_rows)
+    if error:
+        out.update(handled_by="manual", reason=error, unreconciled=unknown)
+        return True
+    done = {n for row in covered for n in row["items"]}
+    residual = sorted(set(opened) - done)
+    if not residual:
+        return False
+    out.update(pattern=VAGUE, vehicle="reply_in_thread", handled_by="engine", planned_date=as_of, date_basis=READY,
+               asks_for=residual, covered=covered, vague_answer_evidence=list(locators.values()),
+               reason="vague_answer; cited denial not tied to items (machine reading, not a finding)")
+    return True
+
+
+def route(state_row, clock_row, queue_rows, as_of, *, items=None, coverage_rows=(), reviewed_findings=(),
+          denial_entries=()):
     """Pure first-match routing. Inputs and private evidence text are never modified."""
     if timeline._day(as_of) is None:
         raise ValueError("followup_route_as_of")
@@ -136,6 +206,9 @@ def route(state_row, clock_row, queue_rows, as_of, *, items=None, coverage_rows=
     out = dict(pattern=None, extra_patterns=[], asks_for=[], covered=[], unreconciled=[],
                vehicle=None, handled_by="none", planned_date=None, date_basis=None,
                reason=f"rule {number}; records_contradict_policy and vague_answer require a reviewed finding")
+    if (number in (5, 6, 7, 8, 9) or (number == 10 and "register_issues" not in state_row.get("flags", []))) \
+            and _route_vague_answer(out, state_row, queue, items, coverage_rows, denial_entries, as_of, opened, needs):
+        return out
     if number in (8, 9) and _route_reviewed_contradiction(out, state_row, reviewed_findings, as_of, items):
         return out
     if number == 1:
@@ -197,6 +270,19 @@ def _table(project, agency):
     return rows
 
 
+def same_run_denials(project, run_id):
+    """Same-run denial-log entries by (agency_key, request_id); unavailable or invalid evidence is simply absent."""
+    from . import denial_log  # deferred: denial_log imports this module
+    report = denial_log.load(project, run_id)
+    if (not isinstance(report, dict) or report.get("state") != "available" or report.get("run_id") != run_id
+            or report.get("schema") != "records-denial-log-v1"):
+        return {}
+    out = {}
+    for entry in report.get("entries", []):
+        out.setdefault((entry.get("agency_key"), entry.get("request_id")), []).append(entry)
+    return out
+
+
 def route_run(project, run_id, *, analysis_root=None, findings=None):
     """`findings` (already loaded by the caller) wins over `analysis_root`; neither means the legacy routes."""
     if findings is None and analysis_root is not None:
@@ -217,6 +303,7 @@ def route_run(project, run_id, *, analysis_root=None, findings=None):
         ratings = {"requests": []}
     by_items = followup_state._index(ratings["requests"])
     tables = {r["agency_key"]: _table(project, r["agency_key"]) for r in states["requests"]}
+    denials = same_run_denials(project, run_id)
     rows = []
     for state in states["requests"]:
         key = (state["agency_key"], state["request_id"])
@@ -226,7 +313,8 @@ def route_run(project, run_id, *, analysis_root=None, findings=None):
         rows.append({"agency_key": key[0], "request_id": key[1], "review_required": True,
                      **route(state, clocks.get(key, {}), matching, states["as_of"],
                              items=by_items.get(key), coverage_rows=table,
-                             reviewed_findings=followup_findings.for_request(findings, *key))})
+                             reviewed_findings=followup_findings.for_request(findings, *key),
+                             denial_entries=denials.get(key, ()))})
     return rows
 
 

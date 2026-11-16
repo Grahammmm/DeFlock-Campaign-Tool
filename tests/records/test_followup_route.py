@@ -232,6 +232,94 @@ class ReviewedContradictionTests(unittest.TestCase):
         self.assertEqual((r["handled_by"], r["reason"][:7]), ("manual", "rule 10"))
 
 
+def denial(quote="We deny this request under Gov. Code section 9999.", kind="denied_whole", cites=None, page=1,
+           sha="c" * 64, ident="d1", words=True):
+    cites = [quote] if cites is None else cites
+    return {"id": ident, "agency_key": "alpha-pd", "request_id": "r1", "kind": kind, "item_no": None,
+            "agency_words": {"quote": quote, "page": page, "doc_sha256": sha} if words else None,
+            "agency_citation": {"text": cites, "label": "agency's citation; UNVERIFIED by us"}}
+
+
+class VagueAnswerRouteTests(unittest.TestCase):
+    """FLK-REC-4: a cited denial the agency did not tie to items; precedence over silence and extension."""
+
+    def route(self, s, entries, qs=(), clock=None, tables=(), findings=()):
+        return fr.route(s, clock or {}, qs, DAY, items={"asks": [ask(1, rating="missing"), ask(2, rating="missing")]},
+                        coverage_rows=tables, denial_entries=entries, reviewed_findings=findings)
+
+    def test_whole_denial_with_citation_routes_vague_answer_with_nontext_locator(self):
+        r = self.route(state("unknown", not_addressed=[1, 2]), [denial()])
+        self.assertEqual((r["pattern"], r["vehicle"], r["handled_by"], r["asks_for"], r["extra_patterns"]),
+                         ("vague_answer", "reply_in_thread", "engine", [1, 2], []))
+        self.assertEqual((r["planned_date"], r["date_basis"]), (DAY, fr.READY))
+        self.assertEqual(r["vague_answer_evidence"], [{"denial_id": "d1", "page": 1, "doc_sha256": "c" * 64,
+                                                       "quote_sha256": fr.quote_digest(denial()["agency_words"]["quote"])}])
+        self.assertNotIn("section 9999", json.dumps(r))  # no quote or citation prose in route output
+        r = self.route(state("withheld", withheld=[1]), [denial(kind="withheld")])
+        self.assertEqual((r["pattern"], r["asks_for"]), ("vague_answer", [1]))  # statute digits are not an item number
+
+    def test_item_level_denial_never_routes_vague_answer(self):
+        for quote in ("Item 2 is withheld under Gov. Code section 9999.", "Items 1, 2 and 3 are exempt under § 7923.600.",
+                      "1. Withheld under Gov. Code section 9999.", "Request item #2 is denied under § 7923.600."):
+            with self.subTest(quote=quote):
+                r = self.route(state("withheld", withheld=[1]), [denial(quote, kind="withheld")])
+                self.assertEqual((r["pattern"], r["handled_by"]), ("blanket_denial", "engine"))
+                self.assertNotIn("vague_answer_evidence", r)
+        r = self.route(state("unknown", not_addressed=[1]), [denial("Item 99 is withheld under § 7923.600.")])
+        self.assertEqual((r["pattern"], r["handled_by"]), (None, "manual"))  # unknown item: not a whole-denial fallback
+
+    def test_no_citation_or_incomplete_evidence_never_activates(self):
+        base = state("unknown", not_addressed=[1])
+        for label, entry in (("no words", denial(words=False)), ("empty citation", denial(cites=[])),
+                             ("bare exempt", denial("The records are exempt.")),
+                             ("search statement", denial("We conducted a search of our systems.")),
+                             ("no records", denial("We have no responsive records.", cites=["no responsive records"])),
+                             ("page 0", denial(page=0)), ("bool page", denial(page=True)),
+                             ("short hash", denial(sha="c" * 63)), ("upper hash", denial(sha="C" * 64)),
+                             ("truncated", denial("We deny this request under Gov. Code section 9999. " + "x" * 400))):
+            with self.subTest(label):
+                self.assertEqual(self.route(base, [entry])["handled_by"], "manual")
+                self.assertIsNone(self.route(base, [entry])["pattern"])
+        self.assertIsNone(self.route(base, [])["pattern"])
+
+    def test_precedence_over_silence_and_extension_and_under_closed_clarification_fee(self):
+        future = {"promised": {"date": "2026-11-26"}, "extended_due": "2026-11-20"}
+        wins = [state("silence", withheld=[1]), state("silence", ["extension_limit_exceeded"], withheld=[1]),
+                state("extension", ["extension_limit_exceeded"], withheld=[1]), state("extension", withheld=[1]),
+                state("withheld", withheld=[1]), state("partial", not_addressed=[1])]
+        for s in wins:
+            with self.subTest(state=s["state"], flags=s["flags"]):
+                self.assertEqual(self.route(s, [denial()], clock=future)["pattern"], "vague_answer")
+                self.assertNotEqual(self.route(s, [], clock=future)["pattern"], "vague_answer")
+        for s, qs in ((state("closed", ["open_tier1"], withheld=[1]), []), (state("closed", withheld=[1]), []),
+                      (state("clarification", withheld=[1]), []),
+                      (state("withheld", withheld=[1]), [queue(kind="fee-reply")])):
+            with self.subTest(state=s["state"]):
+                self.assertEqual(json.dumps(self.route(s, [denial()], qs, clock=future), sort_keys=True),
+                                 json.dumps(self.route(s, [], qs, clock=future), sort_keys=True))
+        asks = {"asks": [ask(1, rating="answered"), ask(2, rating="missing")]}
+        s = state("withheld", withheld=[2])
+        self.assertEqual(fr.route(s, {}, [], DAY, items=asks, denial_entries=[denial()],
+                                  reviewed_findings=[finding()])["pattern"], "vague_answer")  # first match
+        self.assertEqual(fr.route(s, {}, [], DAY, items=asks, reviewed_findings=[finding()])["pattern"],
+                         "records_contradict_policy")
+
+    def test_coverage_and_ambiguity(self):
+        s = state("withheld", withheld=[1, 2])
+        both = {"asks": [ask(1, rating="withheld"), ask(2, rating="withheld")]}
+        cover = [queue(kind="appeal-denial")]
+        covered = fr.route(s, {}, cover, DAY, items=both, coverage_rows=[table("1,2")], denial_entries=[denial()])
+        self.assertNotEqual(covered["pattern"], "vague_answer")  # fully covered: existing disposition
+        part = fr.route(s, {}, cover, DAY, items=both, coverage_rows=[table("1")], denial_entries=[denial()])
+        self.assertEqual((part["pattern"], part["asks_for"], [c["queue_id"] for c in part["covered"]]),
+                         ("vague_answer", [2], ["q1"]))
+        bad = self.route(s, [denial()], [queue()], tables=[table("9")])
+        self.assertEqual((bad["handled_by"], bad["reason"]), ("manual", "coverage_table_invalid"))
+        two = self.route(s, [denial(ident="d1"), denial("We deny under § 7923.600.", ident="d2")])
+        self.assertEqual((two["handled_by"], two["reason"]), ("manual", "vague_answer_evidence_ambiguous"))
+        self.assertEqual(len(self.route(s, [denial(), denial()])["vague_answer_evidence"]), 1)  # identical collapse
+
+
 class RunTests(unittest.TestCase):
     def test_cli_read_only_scope_and_stale_input(self):
         with tempfile.TemporaryDirectory() as tmp:
