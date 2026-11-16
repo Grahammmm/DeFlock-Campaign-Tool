@@ -54,7 +54,10 @@ def strict_json(raw):
         return result
     def constant(value):
         raise ValueError('nonfinite_json')
-    return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+    try:
+        return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+    except RecursionError:
+        raise ValueError("json_nesting_invalid") from None
 
 
 def hostname(value):

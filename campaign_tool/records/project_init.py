@@ -1,7 +1,10 @@
 """records project-init: create an empty private records project for an existing campaign.
 
-Writes only the project tree (0700), campaign.json (0600), the .campaign-root pointer (0600), an empty ledger and an
-empty portal queue. No mailbox, credential, target, send or service is configured.
+Writes only the project tree (0700), campaign.json (0600), the .campaign-root pointer (0600), an empty ledger, an
+empty portal queue and safe disabled starters: followup-settings.json (every agency autonomy off, no signature),
+a header-only agency-retention.csv and README-only agency-asks/ and followup-coverage/ (0700). No mailbox,
+credential, target, send or service is configured. There is no rollback: a failed start may leave a private partial
+project, which a rerun refuses as nonempty.
 """
 import argparse
 import json
@@ -10,7 +13,8 @@ import re
 import sys
 from pathlib import Path
 
-from . import campaign_config
+from . import agency_retention, campaign_config
+from .followup_clock import SETTINGS_FILE, SETTINGS_SCHEMA
 from .ledger import store as ledger_store
 from .portal.store import Queue
 from .run_stages import CAMPAIGN_ROOT_POINTER
@@ -35,8 +39,16 @@ def _slug(config):
     return text[:40] if len(text) >= 2 else "campaign"
 
 
+_README_TAIL = (" are unconfirmed until a person supplies the matching ID.tsv here; a .proposed.tsv never counts as\n"
+                "confirmed. Creating this folder sent, approved and enabled nothing. Formats: "
+                "docs/RECORDS-FOLLOWUP-ENGINE.md.\n")
+_README_ASKS = "# agency-asks\n\nPer-agency asks" + _README_TAIL
+_README_COVERAGE = "# followup-coverage\n\nPer-agency coverage tables" + _README_TAIL
+
+
 def _write(path, text):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as out:
         out.write(text)
 
@@ -65,7 +77,23 @@ def init_project(project, campaign_root, campaign_id=None):
     _write(project / CAMPAIGN_ROOT_POINTER, root + "\n")
     ledger_store.initialize(project / "processing-v1" / "ledger.sqlite")
     Queue(str(project / "portal-queue-v1")).close()
+    _starters(project)
     return document
+
+
+def _starters(project):
+    """Safe disabled scaffolding: exclusive creates only, never replaces, repairs or enables anything."""
+    try:
+        _write(project / SETTINGS_FILE, json.dumps(
+            {"schema": SETTINGS_SCHEMA, "default": {"autonomy": "off"}, "agencies": {}}, indent=2) + "\n")
+        _write(project / "agency-retention.csv", ",".join(agency_retention.HEADER) + "\n")
+        for name, text in (("agency-asks", _README_ASKS), ("followup-coverage", _README_COVERAGE)):
+            folder = project / name
+            os.mkdir(folder, 0o700)
+            os.chmod(folder, 0o700)
+            _write(folder / "README.md", text)
+    except OSError:
+        raise Refused("project_starter_unavailable") from None
 
 
 def main(argv=None):

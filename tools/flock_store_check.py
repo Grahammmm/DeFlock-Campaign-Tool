@@ -167,6 +167,17 @@ def _write_new(path, data):  # tools/flock_alerts.py write_new(): O_EXCL|O_NOFOL
         os.unlink(path)
         raise
 
+ON_AGENCIES = ("facts", "law-policy", "requests", "contacts", "publish", "slugs")
+ON_REGIONS = ("watchlists", "slugs")
+
+def boundary(store, section):  # lexical link check before dispatch; a link is named, never followed or opened
+    errs = [f"{c} is a link; not followed" for c, used in (("agencies", ON_AGENCIES), ("regions", ON_REGIONS))
+            if section in used and (store / c).is_symlink()]
+    if not errs and section in ("facts", "requests") and (store / "agencies").is_dir():
+        errs = [f"agencies/{shown(p.name)} is a link; not followed"
+                for p in sorted((store / "agencies").iterdir(), key=lambda p: p.name) if p.is_symlink()]
+    return errs
+
 def collect(store, args):
     checks = {"facts": lambda s: (facts_tool.check_path(s), []), "law-policy": lambda s: (law_policy.load_all(s)[2], []),
               "requests": requests, "contacts": contacts,
@@ -174,7 +185,9 @@ def collect(store, args):
     out = []
     for section in [s for s in SECTIONS if not args.section or s in args.section]:
         try:
-            errs, info = checks[section](store)
+            errs, info = boundary(store, section), []
+            if not errs:
+                errs, info = checks[section](store)
         except RAISED as exc:  # the class only, never a path or record text
             errs, info = [f"failed: {type(exc).__name__}"], []
         lines = errs[:CAP] + ([f"… and {len(errs) - CAP} more"] if len(errs) > CAP else []) + info

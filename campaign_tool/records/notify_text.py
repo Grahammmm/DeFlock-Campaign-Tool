@@ -12,6 +12,10 @@ from campaign_tool.records import run_coverage
 
 ARRIVAL_KINDS = ("response", "extension", "denial", "fee", "records", "other")
 
+# The arrival report is projected before the wrapper replays console decisions (decisions-apply),
+# so its pending count is a snapshot, not a live queue view.
+NEEDS_G_ARRIVAL_LABEL = "Needs G (pre-decision state)"
+
 PREFLIGHT_MESSAGES = {
     "DOCKER_UNAVAILABLE": "{label}: records run {run_id} could not start because Docker or the "
                           "records container was not ready. No records work was attempted.",
@@ -69,7 +73,7 @@ def compose_arrival(report: dict[str, Any], exit_code: int) -> str:
                                               if first_failed is not None else "")
     coverage = run_coverage.format_coverage(run_coverage.coverage_counts(report))
     return "\n".join([head, kind_line(summary), "Done: " + ", ".join(done) + ".",
-                      f"Needs G: {drafts}; {holds}.", coverage])
+                      f"{NEEDS_G_ARRIVAL_LABEL}: {drafts}; {holds}.", coverage])
 
 
 def compose(report: dict[str, Any], label: str, exit_code: int) -> str:

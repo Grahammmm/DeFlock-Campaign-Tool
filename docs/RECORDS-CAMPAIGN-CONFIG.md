@@ -43,6 +43,14 @@ neutral defaults (display name "Records project", `us-ca`, no SLO text).
 | `records_mailbox_label` | 1-80 printable chars, trimmed | none |
 | `timezone` | as above | `America/Los_Angeles` |
 
+`public_base_url` grammar (syntax only; nothing is resolved or fetched, and private or loopback hosts are not
+thereby authorized): `https://` plus a host with an optional `:port` and an optional single trailing `/`. The host is
+DNS labels of ASCII letters, digits and hyphens (each 1-63 chars, not starting or ending with a hyphen, whole name at
+most 253 chars, one optional trailing dot), a single-label name, an IPv4 address, or a bracketed IPv6 literal (no zone
+id). Whitespace, backslashes, `%` escapes, empty labels, a dot-only host, an empty or non-decimal port, a port outside
+1-65535, and any `?` or `#` (even empty) refuse with `campaign_config_invalid`. Valid values are kept byte-for-byte
+(no lowercasing, no default-port rewrite); only the terminal `/` is removed.
+
 ```json
 {"schema_version": 1, "campaign_id": "cedar-civic", "display_name": "Cedar Civic Records",
  "law_package": "us-ca", "public_base_url": "https://records.cedar.example",

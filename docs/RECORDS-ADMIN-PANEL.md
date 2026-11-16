@@ -36,6 +36,21 @@ is invented. The complete draft body remains available at the existing size cap.
 first remaining id). They are GET navigation only: no decision, snooze, deletion
 or bulk action. Rejection changes only that row and leaves others reachable.
 
+## Per-ask machine reading (FLK-REC-8)
+
+Each export carries `console-model/followup-reading.json`: for the exact selected run, each
+request's follow-up-state partition of ask **numbers** (produced, withheld, audit no-records,
+other no-records, not addressed), display state, flags, and the follow-up route pattern and
+reason, from the existing classifier and router. It holds no ask text, response text, quote,
+evidence, queue id or error text. `/agency` (per request) and `/review` (beside the draft) show
+it under **machine reading, review required**: a private machine lead from our records, not a
+legal finding, never an approval, send or publication. Pages read only the pinned file; a
+pinned console never recomputes it. A source that cannot be read, a request missing from the
+ratings, or a failed route shows **unknown** (a route failure leaves the partition visible);
+an export made before this model shows **not in this export**. `coverage_unreconciled` is
+shown as the router's reason with no pattern. `/review` labels the reading as the selected
+run's and notes when the draft came from another run. The section has no form or POST route.
+
 ## Review-only agency summaries and corrections (CONDRAFT-02)
 
 ### Implementation scope amendment

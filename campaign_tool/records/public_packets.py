@@ -598,6 +598,113 @@ def status(project, now=None, *, read_only=False):
     return _reading(project, read_only, use, lambda: {"switch": "OFF", "packets": []})
 
 
+# ---- read-only inventory of written packets whose approval no longer verifies (FLK-CON-3) ------
+
+def _is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _written_revisions(events):
+    """-> [{id, revision, packet, digest, approved_ts, principal, signature, written_ts}] for every effective
+    approved -> written transition, per (id, revision), including revisions a later proposal superseded.
+    Refuses ``written_packet_invalid`` on malformed or ambiguous effective written history; never repairs it."""
+    state, current = {}, {}  # (id, revision) -> row; id -> latest proposed revision (an older one is superseded)
+    for e in events:
+        kind, ident = e.get("event"), e.get("id")
+        if kind not in ("packet", "approved", "rejected", "cancelled", "written"):
+            continue
+        rev = e.get("revision")
+        if kind == "packet":
+            _need(isinstance(ident, str) and PACKET_ID.fullmatch(ident) is not None and _is_int(rev) and rev >= 0
+                  and _is_int(e.get("ts")) and isinstance(e.get("packet"), dict) and isinstance(e.get("digest"), str),
+                  "written_packet_invalid")
+            _need((ident, rev) not in state, "written_packet_invalid")  # a repeated proposal of one revision is ambiguous
+            state[(ident, rev)] = {"id": ident, "revision": rev, "packet": e["packet"], "digest": e["digest"],
+                                   "status": "proposed"}
+            current[ident] = rev
+            continue
+        row = state.get((ident, rev)) if isinstance(ident, str) and _is_int(rev) else None
+        if row is None or current.get(ident) != rev:
+            continue
+        if kind == "approved" and row["status"] == "proposed":
+            row.update(status="approved", principal=e.get("principal"), signature=e.get("signature"),
+                       approved_ts=e.get("ts"))
+        elif kind in ("rejected", "cancelled") and row["status"] in ("proposed", "approved"):
+            row["status"] = kind
+        elif kind == "written" and row["status"] == "approved":
+            row.update(status="written", written_ts=e.get("ts"))
+    return [r for r in state.values() if r["status"] == "written"]
+
+
+def _written_checked(row):
+    """Bounded validation of one written revision, before any of it is used. -> its report target, written_at."""
+    packet = row["packet"]
+    _need(isinstance(row["principal"], str) and 0 < len(row["principal"]) <= 256, "written_packet_invalid")
+    _need(isinstance(row["signature"], str) and 0 < len(row["signature"]) <= 16384, "written_packet_invalid")
+    _need(_is_int(row["approved_ts"]) and _is_int(row["written_ts"]), "written_packet_invalid")
+    for field in ("kind", "agency_key", "request_id", "title", "text"):
+        _need(isinstance(packet.get(field), str), "written_packet_invalid")
+    _need(isinstance(packet.get("documents"), list) and isinstance(packet.get("citations"), list), "written_packet_invalid")
+    _need(KEY.fullmatch(packet["agency_key"]) is not None, "written_packet_invalid")
+    _need(hashlib.sha256(_canon(packet).encode()).hexdigest() == row["digest"], "written_packet_invalid")
+    try:
+        day, written_at = _iso(row["approved_ts"])[:10], _iso(row["written_ts"])
+    except (OverflowError, OSError, ValueError):
+        raise PacketError("written_packet_invalid") from None
+    return f"content/updates/{packet['agency_key']}/{day}-{row['id']}.json", written_at
+
+
+def _anchor_ready():
+    try:
+        approval.anchor_status()
+    except approval.TrustUnavailable:
+        raise PacketError("APPROVAL_ANCHOR_UNAVAILABLE") from None
+
+
+def revoked_written(project):
+    """Read-only: every written packet revision whose recorded approval does not verify against the CURRENT anchor.
+    -> [{id, revision, target, written_at}] sorted by (id, revision). An unavailable anchor raises
+    PacketError(APPROVAL_ANCHOR_UNAVAILABLE), never an empty list. Changes nothing; sends, publishes, approves nothing."""
+    def use(lock):
+        _anchor_ready()
+        out = []
+        for row in _written_revisions(lock.events()):
+            target, written_at = _written_checked(row)
+            try:
+                who = approval.verify(_payload(project, row), row["signature"])
+            except approval.TrustUnavailable:
+                raise PacketError("APPROVAL_ANCHOR_UNAVAILABLE") from None
+            except approval.ApprovalError:
+                who = None
+            if who != row["principal"]:
+                out.append({"id": row["id"], "revision": row["revision"], "target": target, "written_at": written_at})
+        return sorted(out, key=lambda r: (r["id"], r["revision"]))
+
+    def absent():
+        _anchor_ready()
+        return []
+    try:
+        return _reading(project, True, use, absent)
+    except (KeyError, TypeError, ValueError, RecursionError, OverflowError):
+        raise PacketError("written_packet_invalid") from None
+    except OSError:
+        raise PacketError("packets_unavailable") from None
+
+
+REVOKED_HEADER = "Written packets with approvals that do not verify against current trust (exclude from site-PR review):"
+
+
+def _print_revoked(rows, as_json):
+    if as_json:
+        print(json.dumps({"packets": rows}, sort_keys=True))
+    elif not rows:
+        print("No written packets with non-verifying approvals.")
+    else:
+        print(REVOKED_HEADER)
+        for r in rows:
+            print(f"{r['id']}\t{r['revision']}\t{r['target']}\t{r['written_at']}")
+
+
 # ---- command line ------------------------------------------------------------------------------
 
 def main(argv=None):
@@ -605,8 +712,10 @@ def main(argv=None):
         "Update packets for documents, summaries and findings. Writes a site-content change file on G's signed approval; "
         "publishes and deploys nothing; ships OFF."))
     parser.add_argument("action", choices=("init", "status", "propose", "payload", "approve", "reject", "cancel", "write",
-                                           "switch-payload", "enable", "off", "propose-document", "export-changes"))
+                                           "switch-payload", "enable", "off", "propose-document", "export-changes",
+                                           "revoked-written"))
     parser.add_argument("--project", required=True)
+    parser.add_argument("--json", action="store_true", help="revoked-written: machine-readable list")
     parser.add_argument("--out", help="private host export directory; export-changes only")
     parser.add_argument("--packet-file")
     parser.add_argument("--id")
@@ -620,6 +729,10 @@ def main(argv=None):
     parser.add_argument("--use-restriction", action="store_true", help="propose-document: mark a use restriction")
     args = parser.parse_args(argv)
     try:
+        if args.action == "revoked-written":
+            rows = revoked_written(args.project)  # accumulated first: no partial report survives a late failure
+            _print_revoked(rows, args.json)
+            return 0
         if args.action == "export-changes":
             from .packet_changes import export_changes
             _need(args.out, "out_required")

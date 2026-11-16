@@ -30,6 +30,9 @@ MAX_BYTES = 1024 * 1024
 BANNER = "DRAFT \u2014 NOT SENT. Needs the owner's signed approval and a review before anyone sends it."
 EDIT = "[EDIT ME: {}]"
 NOTES_RULE = "\n---\n"
+DRAFT_LAW = "DRAFT law-package wording \u2014 unreviewed; not a legal finding"
+VAGUE_QUESTION = ("For each exemption you cite, please identify the numbered items and records withheld under it "
+                  "and state the justification for withholding each.")
 # response type words (from received items and registers) -> playbook pattern id
 RESPONSE_TYPES = {
     "audit_no_documents": "audit_no_documents", "closed_new_request": "closed_new_request",
@@ -246,6 +249,14 @@ def draft(book, case, policy_rows=()):
     if case.get("precedent") is True:
         lines += ["Another county agency released an export of this kind.", ""]
 
+    law = (case.get("vague_answer") or {}).get("law_package") if kind == "vague_answer" else None
+    if law:  # package wording only; the agency's own quote and citation stay in structured queue evidence
+        _need(all(isinstance(law.get(k), str) and law[k].strip() for k in ("status", "citation", "duty", "review")),
+              "case_invalid", "vague_answer.law_package")
+        label = (DRAFT_LAW if law["status"] != "reviewed"
+                 else "Law-package wording (reviewed package; rule review: %s; not a legal finding)" % _clean(law["review"], 60))
+        lines += ["%s: %s: %s" % (label, _clean(law["citation"], 200), _clean(law["duty"], 1500)), ""]
+
     questions = []
     for text in (q for e in entries for q in e["questions"]) if open_asks else ():  # nothing open: nothing to ask
         text = _drop_dropped_sentences(text, open_asks, dropped_rows)
@@ -255,6 +266,8 @@ def draft(book, case, policy_rows=()):
         filled = _fill(text, slots, unfilled)
         if filled not in questions:
             questions.append(filled)
+    if law and open_asks:
+        questions.append(VAGUE_QUESTION)
     if questions:
         lines.append("Please:")
         lines += [f"{n}. {q}" for n, q in enumerate(questions, 1)]

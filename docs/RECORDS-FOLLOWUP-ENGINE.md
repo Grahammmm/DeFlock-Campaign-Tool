@@ -103,8 +103,8 @@ An operator may stage `P/followup-coverage/AGENCY_KEY.tsv` with columns
 letter, list comma-separated ask numbers or `none`; this overrides machine mapping.
 Duplicate rows, inactive/unknown queue ids or out-of-scope asks yield manual
 `coverage_table_invalid`. The table is read-only. Neither ask text nor quotes are
-printed. `records_contradict_policy` and `vague_answer` require reviewed findings (see Reviewed contradictions;
-`vague_answer` stays disabled).
+printed. `records_contradict_policy` requires a reviewed finding (see Reviewed contradictions). `vague_answer` is not a
+finding: it is an evidence-bound machine question (see Vague answers).
 
 ## Read-only follow-up cases
 
@@ -120,6 +120,55 @@ produced/pending text suppresses repeated asks; other statuses remain open.
 Missing ledgers carry the R1/R7 manual-check note. No recipient, contact or sender
 is inferred. Closed routes use the recorded request id and unsuperseded closure
 date; missing values remain edit placeholders. No ledger writes or network calls.
+
+## Proposing and confirming the asks ledger
+
+`records asks-propose --project P --run-id R [--agency K]` is a dry run: it checks the
+same run's register, received items and optional response items and prints counts
+only (`records-asks-proposal-summary-v1`); it writes nothing. Add `--apply` to create
+`P/agency-asks/K.proposed.tsv` (private 0700/0600) in the `case_builder` columns. It
+numbers asks exactly as the run's register does (`ask-1`, `ask-2`, ... in document
+order) and refuses with a named code (`ASKS_REGISTER_INVALID`, `ASKS_SCOPE_INCOMPLETE`,
+`ASKS_EVIDENCE_INVALID`, `ASKS_PROPOSAL_EXISTS`, ...) rather than write a clipped or
+incomplete ledger. It never overwrites an existing proposal and never touches `K.tsv`.
+
+`produced` and `pending` appear only when one exact received-item quote names that same
+numbered item and says it is attached/enclosed/produced/provided or will be provided;
+everything else, including a generic extension or acknowledgment, stays `unknown`. These
+are machine proposals for review, not findings.
+
+Confirm step, done by an operator and never by a command: (1) read each proposed row
+against the original request and its evidence; (2) correct statuses and `period`, keeping
+the original numbering; (3) only then rename `K.proposed.tsv` to `K.tsv`, and only if
+`K.tsv` does not already exist. If it does, compare and merge privately; never overwrite
+or force. `case_builder` never reads a `.proposed.tsv`, so until the rename the R1/R7
+manual-check note stays. There is no auto-confirm. Proposals are private and nothing is
+approved, sent or published.
+
+## Proposing and confirming the follow-up coverage table (FLK-REC-7)
+
+`followup_route` settles `coverage_unreconciled` only from an operator-staged
+`P/followup-coverage/AGENCY_KEY.tsv` (`queue_id, ask_numbers, confirmed_by, note`). The tool can propose one:
+
+```
+records coverage-propose --project P --run-id R            # dry run: counts only, writes nothing
+records coverage-propose --project P --run-id R --apply    # creates AGENCY_KEY.proposed.tsv only
+```
+
+It reads only the same run's register, timeline, received-items and response-items plus the approval queue, and
+reuses the router's own exact item-evidence mapper. A row whose scope maps cleanly gets its ask numbers and the note
+`machine mapping; review required`; a row that does not map, or whose numbers overlap another row of the same request,
+is left blank with the note `needs a person: unmapped scope` or `needs a person: overlapping scope` (every overlapping
+row is blank: no row is chosen as the winner, and `none` is never proposed because it is a person's judgment). Every
+`confirmed_by` is empty, so the router never reads a `.proposed.tsv` and refuses a naive rename (`coverage_table_invalid`).
+An existing `AGENCY_KEY.tsv` is never opened for writing; an identical proposal is a no-op and a differing one is refused
+(`COVERAGE_PROPOSAL_EXISTS`).
+
+Confirm step, done by a person and never by a command: read the whole draft and its evidence for every row, fill each
+`ask_numbers` (or write `none` deliberately) and put your label in `confirmed_by`, then rename the file to
+`AGENCY_KEY.tsv` only when no confirmed table exists; if one does, compare and merge privately and never overwrite it. If
+the run's sources change or a draft is rejected, review fresh sources rather than a stale proposal. Nothing here confirms,
+approves, signs, sends or publishes.
 
 ## Reviewed contradictions (FLK-REC-2)
 
@@ -155,6 +204,35 @@ edit placeholder. The queue row's evidence carries the locator, and its identity
 hashes, so a rerun adds nothing and changed evidence adds a distinct draft.
 
 Finding approval is not approval of the draft, a send or a publication. Scheduled root wiring is not part of this unit.
+
+## Vague answers (FLK-REC-4)
+
+A same-run denial that cites an exemption but does not tie it to numbered items gets one private, pending `vague_answer`
+reply-in-thread draft asking the agency to tie each cited exemption to the items it withholds and to state the
+justification. It is a machine reading, not a finding: no approval, send, placement or publication is wired.
+
+Eligibility (all required, otherwise the route is unchanged): a same-run denial-log entry (`denied_whole`, `withheld` or
+`exemption_cited`) with a complete quote (under 400 characters), a positive page, a 64-hex original-document hash and a
+section-numbered agency citation (`§ 7922.540`, `Gov. Code section 9999`; a bare "exempt" or "we conducted a search" never
+qualifies), and at least one open known ask left after the existing coverage reconciliation. The denial log quotes a
+whole denial only from the current hash-bound extraction of its exact source item, read-only (no extraction, no
+writes), one complete cited sentence; two distinct candidate sentences stay manual
+(`vague_answer_evidence_ambiguous`). Any item reference the agency itself wrote (`item 2`, `items 1, 2 and 3`, `#1`, a
+`1.` list heading, including an unknown `item 99`) makes the reply item-level: it never routes `vague_answer` and keeps
+its blanket-denial/coverer route. Statute digits are not item numbers.
+
+Precedence: closed/tier-1, closed, clarification and a queued fee answer still win. An eligible vague answer is checked
+next and therefore wins over silence, exceeded extension and waiting extension (and over the reviewed-contradiction
+branch and the residual rules); for unknown-state requests (no register issues) it also applies. Without eligible
+evidence every route is exactly as before. Fully covered scope keeps the existing covered disposition.
+
+The route carries only nontext locators (`vague_answer_evidence`: denial id, page, hash, quote digest); the case builder
+and engine re-resolve them against the same-run denial log and fail closed on any mismatch. Statute wording comes from
+the campaign-selected law package's written-denial rule (selected by rule identity, never a hardcoded paragraph or the
+agency's citation) and is prefixed `DRAFT law-package wording — unreviewed; not a legal finding` while the package is not
+reviewed; a missing package or rule refuses before any queue write. The agency's quote, page, document hash and
+citation (labelled `agency's citation; UNVERIFIED by us`) are queue evidence only (`evidence.vague_answer`), never in
+the letter body. The queue identity binds the evidence and the package wording, so changed evidence is a new draft.
 
 ## Agency events import
 
