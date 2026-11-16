@@ -122,6 +122,74 @@ is the real records-release.yml command: `pip wheel --no-deps
 requirements installed first. Run it from clean, committed source; this is not
 `python -m build`, an editable install or a deployment command.
 
+## Reviewed merge-forward integration
+
+Use an agent-owned worktree on the **existing PR branch**; never switch a
+canonical checkout to do integration. In a criss-cross history, GitHub's
+mergeability result is not proof that ordinary Git composition is impossible.
+Conversely, a clean local merge is not permission to bypass review.
+
+Resolve and retain exact identities before considering integration ready. Run
+this check in that worktree (a HOLD exits without merging):
+
+```sh
+# Resolve identities and require a single merge base
+hold() { printf 'HOLD: %s\n' "$*" >&2; exit 1; }
+git fetch origin || hold 'fetch failed'
+BASE=$(git rev-parse --verify 'origin/main^{commit}') || hold 'base unavailable'
+HEAD_SHA=$(git rev-parse --verify 'HEAD^{commit}') || hold 'head unavailable'
+check_single_base() {
+    MERGE_BASES=$(git merge-base --all "$1" "$2") || hold 'merge-base failed or no base'
+    set -- $MERGE_BASES
+    [ "$#" -eq 1 ] || hold 'expected exactly one merge base'
+    case "$1" in ''|*[!0-9a-f]*) hold 'invalid merge-base commit ID' ;; esac
+    [ "${#1}" -eq 40 ] || [ "${#1}" -eq 64 ] || hold 'incomplete merge-base commit ID'
+    MERGE_BASE=$1
+}
+check_single_base "$BASE" "$HEAD_SHA"
+printf 'BASE=%s\nHEAD_SHA=%s\nMERGE_BASE=%s\n' "$BASE" "$HEAD_SHA" "$MERGE_BASE"
+```
+
+Require exactly one nonempty full commit ID: zero bases, multiple bases and
+command failure are HOLD. Never take the first base or use
+`--allow-unrelated-histories`. Retain the printed base/head/base-of-merge tuple,
+not just the mutable `origin/main` ref. Multiple bases require an explicitly
+reviewed composition plan; this single-base check does not authorize guessing
+one or silently proceeding with integration.
+
+When integration is required and its composition plan is reviewed, merge the
+resolved fetched base **into** the existing PR branch, preserving both reviewed
+changes and the original head's ancestry:
+
+```sh
+# Merge forward on the existing PR branch
+git merge --no-ff --signoff "$BASE"
+```
+
+Resolve any conflicts on that same branch and sign off the resolution commit
+with `git commit -s`; a merge conflict stays HOLD until resolved and checked.
+Never rebase, squash away reviewed history, force-push, or open a replacement
+integration PR. Do not copy a command from this guide as authorization to
+integrate a held source.
+
+After every head/base movement, including a merge or reviewed conflict
+resolution, rerun the identity/single-base block above and record the resulting
+exact head. Re-run the affected composition tests under their existing skip
+policy; an unresolved skip or missing evidence stays HOLD. Previous test
+receipts and approvals belong only to their recorded head: a merge commit is a
+new head requiring fresh exact-head evidence and fresh review, even if it
+merged cleanly. A cancelled or expired review is not approval; duplicate
+receipts cannot supply missing evidence or make a stale receipt current.
+
+Before downstream review, incorporate the **reviewed upstream rework** using a
+normal merge, name the incorporated commit, and bind composition evidence to
+the resulting exact downstream head. Refresh identities and the single-base
+check there too; do not reuse historical October counts, tests or approvals as
+current evidence. Source integration and passing synthetic tests do not grant
+release authority: owner actions and all existing signing/trust-anchor,
+retire/delete, publication/launch and runtime holds remain unchanged. This
+procedure performs no tag, deployment, live run, publication or send.
+
 ## Acceptance and owner release action
 
 `test_wp0_acceptance` exercises the version CLI, old gate commands and strict
