@@ -255,7 +255,7 @@ def _meta_documents(primary, suggested, provenance, drafts, written, kept, stale
     return documents
 
 
-def _write_drafts(social_dir, suggested_dir, drafts, provenance=None):
+def _write_drafts(social_dir, suggested_dir, drafts, provenance=None, *, suggested_mode=0o777):
     for slug, text in sorted(drafts.items()):  # the shared privacy lint, before any file or folder is touched
         if note := refusal(f"social draft {slug}", text):
             raise ValueError(note)
@@ -272,7 +272,7 @@ def _write_drafts(social_dir, suggested_dir, drafts, provenance=None):
         if os.path.lexists(path):
             current = b"" if path.is_symlink() or not path.is_file() else path.read_bytes()
             if path.is_symlink() or (current != data and _sha(current) != record.get(slug)):
-                _kit_folder(suggested_dir)
+                _kit_folder(suggested_dir, mode=suggested_mode)
                 _write_text(suggested_dir / path.name, text)
                 kept.append(slug)
                 if slug in record:

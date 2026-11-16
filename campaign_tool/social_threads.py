@@ -139,10 +139,7 @@ def build_thread_social(root, finding_id, platforms=None):
     for p, (out, suggested) in places.items():
         for folder in (kit_dir, social_dir, thread_dir, out):
             _kit_folder(folder, mode=0o700)
-        had_suggestions = os.path.lexists(suggested)
-        report = _write_drafts(out, suggested, {slug: _draft(finding["id"], plan[p])})
-        if not had_suggestions and os.path.isdir(suggested):
-            os.chmod(suggested, 0o700)  # _write_drafts made it with the default mode
+        report = _write_drafts(out, suggested, {slug: _draft(finding["id"], plan[p])}, suggested_mode=0o700)
         report["stale"] = [s for s in report["stale"] if s not in published]  # another published finding's draft is not stale
         reports[p] = report
     threads = reports[None] if platforms is None else {"platforms": reports}
