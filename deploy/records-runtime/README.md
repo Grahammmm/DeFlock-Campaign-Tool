@@ -197,21 +197,31 @@ values, and a `RECORDS_DROP_DIR` separate from `RUNTIME_DIR`.
    The notify helper and env, and the pinned engine/image, are existing
    prerequisites verified separately; never put credentials in these files.
 3. After inspection, run `systemctl --user daemon-reload` (attended).
-4. After separate approval, enable `records-run.timer`. Do not start
+4. After separate approval, run `systemctl --user enable records-run.timer`.
+   Enabling alone does not start the timer or begin scheduling.
+5. After separate approval for activation, run
+   `systemctl --user start records-run.timer`. Do not start
    `records-run.service` or run a LIVE target by hand for this step.
+   Verify the timer is active and inspect its next scheduled slot.
 
-The timer is `Persistent=true`, so enabling it can immediately run a missed
-slot: enabling is operational authority, never a dry check. The arrival,
-health, analysis and backup-check timers are separate and are not enabled by
-T17.
+The timer is `Persistent=true`. Activating the timer can immediately run a missed
+slot: activation is operational authority, never a dry check. The arrival,
+health, analysis and backup-check timers are separate and are not enabled or
+started by T17.
 
 ### Rollback (operator only)
 
-Stop and reconcile any active writer before switching versions. Then, only
-after separate approval, disable the newly introduced `records-run.timer`,
-restore the previously recorded compatible wrapper, plans and user units and
-their prior enabled state, and run `systemctl --user daemon-reload`. If the
-prior unit or enabled state, or engine compatibility, is unknown, leave the
+Only after separate approval, first run
+`systemctl --user stop records-run.timer`, verify it is inactive with no pending
+timer activation, then run `systemctl --user disable records-run.timer`.
+Disabling alone does not stop an active timer, and
+stopping the timer does not stop a service it already triggered.
+Stop and reconcile any triggered `records-run.service` and any other active
+writer, including in-container work, before switching versions. If writer
+quiescence cannot be confirmed, leave the host blocked and do not restore files.
+Only then restore the previously recorded compatible wrapper, plans and user
+units and their prior enabled state, and run `systemctl --user daemon-reload`.
+If the prior unit or enabled state, or engine compatibility, is unknown, leave the
 host blocked; never guess a legacy unit name and never run two writers.
 
 Rollback never automatically restarts a legacy timer, and never deletes

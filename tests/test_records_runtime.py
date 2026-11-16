@@ -1649,13 +1649,28 @@ class ReadmeT17ContractTests(unittest.TestCase):
     def test_render_inert_and_activation_gated(self):
         self.assertIn("Rendering is inert", self.section)
         self.assertIn("TARGET_REQUIRED", self.section)
-        self.assertIn("enabling is operational authority", self.section)
+        self.assertIn("Enabling alone does not start the timer", self.section)
+        self.assertIn("After separate approval for activation", self.section)
+        self.assertIn("Activating the timer can immediately run a missed", self.section)
+        self.assertIn("activation is operational authority", self.section)
+        self.assertNotIn("enabling it can immediately run", self.section)
         self.assertLess(self.section.index("daemon-reload"),
-                        self.section.index("enable `records-run.timer`"))
+                        self.section.index("systemctl --user enable records-run.timer"))
+        self.assertLess(self.section.index("systemctl --user enable records-run.timer"),
+                        self.section.index("systemctl --user start records-run.timer"))
         self.assertIn("Do not start\n   `records-run.service`", self.section)
 
     def test_rollback_preserves_evidence_and_holds_when_unknown(self):
         rollback = self.section[self.section.index("### Rollback"):]
+        stop = rollback.index("systemctl --user stop records-run.timer")
+        disable = rollback.index("systemctl --user disable records-run.timer")
+        reconcile = rollback.index("reconcile any triggered `records-run.service`")
+        restore = rollback.index("restore the previously recorded compatible wrapper")
+        self.assertLess(stop, disable)
+        self.assertLess(disable, reconcile)
+        self.assertLess(reconcile, restore)
+        self.assertIn("Disabling alone does not stop an active timer", rollback)
+        self.assertIn("stopping the timer does not stop a service it already triggered", rollback)
         for phrase in ("never guess a legacy unit name", "never run two writers",
                        "never deletes\nreceipts, stamps or backups",
                        "not a data rollback", "leave the\nhost blocked"):
