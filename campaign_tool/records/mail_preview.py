@@ -10,11 +10,19 @@ def preview(project, row, drafts_config_path=None):
     Attachments are evidence metadata only: build_message sends a plain-text letter.
     Missing inputs are display values, not permission to place or send a draft.
     """
+    imported = row.get("kind") == "correspondence-draft"
+    envelope = None
     try:
-        thread, reason = mail_drafts._thread_for(project, row)
+        if imported:
+            envelope, thread, reason = mail_drafts.correspondence_envelope(project, row)
+        else:
+            thread, reason = mail_drafts._thread_for(project, row)
     except mail_drafts.MailDraftError as error:
         thread, reason = None, error.code
-    if thread is not None:
+    if imported:
+        to_note = ("operator-checked " + envelope["recipient_basis"]["source_type"] if envelope else
+                   str(reason) + ": placement will refuse until envelope provenance is resolved")
+    elif thread is not None:
         to_note = "from the agency's last message in this thread"
     else:
         to_note = "no thread found (%s)" % reason
@@ -34,10 +42,16 @@ def preview(project, row, drafts_config_path=None):
             and ("sha256" not in item or isinstance(item["sha256"], str))
             for item in attachments)):
         attachments = []
+    to = (thread.get("reply_to") or None) if thread is not None else None
+    subject = mail_drafts._subject(thread, row)
+    if imported:
+        to = envelope["to"] if envelope else None
+        subject = envelope["subject"] if envelope else None
     return {
-        "to": (thread.get("reply_to") or None) if thread is not None else None,
+        "to": to,
         "to_note": to_note, "from": from_addr, "from_note": from_note,
-        "subject": mail_drafts._subject(thread, row), "threaded": thread is not None,
+        "subject": subject,
+        "threaded": thread is not None,
         "attachments": [{key: item[key] for key in ("name", "sha256") if key in item}
                         for item in attachments],
         "residue": draft_residue.codes(row["body"]),
