@@ -15,7 +15,7 @@ from campaign_tool.records import campaign_readiness, cli
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "examples" / "fictional-campaign" / "content"
-SECRET = "SENTINEL-PRIVATE-7731"
+SENTINEL = "SENTINEL-PRIVATE-7731"
 HEADER = ("agency,system,vendor,data_layer,stated_period,period_days,bound,source_kind,quote,doc_sha256,page,"
           "confidence,checked")
 
@@ -28,7 +28,7 @@ def write(path, text, mode=0o600):
 
 def profile(agency, slug, method):
     return {"schema": "records-review-profile-v1", "records_agency_id": agency, "slug": slug,
-            "fact_agency": "x", "agency_name": SECRET, "portal": "x",
+            "fact_agency": "x", "agency_name": SENTINEL, "portal": "x",
             "review": {"method_dir": str(method), "method_python": str(method / "python"), "added_by": "x"},
             "rules_intake": {"law_specs": [], "policy_specs": [], "extra_specs": [], "f2_law_map": {}, "sources": []},
             "compare_f3": {"applicability": "x"}}
@@ -66,14 +66,14 @@ class Base(unittest.TestCase):
 
     def slo(self, ids=("ca-slo-county", "ca-slo-city", "ca-slo-town")):
         write(self.campaign / "content" / "agencies.json",
-              json.dumps([{"agency_id": i, "name": SECRET + i} for i in ids]))
+              json.dumps([{"agency_id": i, "name": SENTINEL + i} for i in ids]))
         self.project.mkdir(mode=0o700)
         write(self.project / ".campaign-root", str(self.campaign) + "\n")
         write(self.project / "campaign.json", json.dumps(
-            {"schema_version": 1, "campaign_id": "slo-test", "display_name": SECRET, "law_package": "us-ca",
-             "public_base_url": "https://example.org", "records_mailbox_label": SECRET, "timezone": "America/Los_Angeles"}))
+            {"schema_version": 1, "campaign_id": "slo-test", "display_name": SENTINEL, "law_package": "us-ca",
+             "public_base_url": "https://example.org", "records_mailbox_label": SENTINEL, "timezone": "America/Los_Angeles"}))
         write(self.project / "followup-settings.json", json.dumps(
-            {"schema": "records-followup-settings-v1", "default": {"signature": SECRET + " signature"},
+            {"schema": "records-followup-settings-v1", "default": {"signature": SENTINEL + " signature"},
              "agencies": {ids[0]: {"autonomy": "draft"}}}))
         write(self.project / "agency-asks" / (ids[0] + ".tsv"), "x\n")
         write(self.project / "agency-asks" / (ids[1] + ".tsv"), "x\n")
@@ -81,17 +81,101 @@ class Base(unittest.TestCase):
         write(self.project / "agency-asks" / (ids[2] + ".proposed.tsv"), "x\n")
         write(self.project / "followup-coverage" / (ids[0] + ".tsv"), "x\n")
         write(self.project / "agency-retention.csv",
-              HEADER + "\n%s,sys,flock,detections,30 days,30,exact,policy,%s,%s,1,medium,UNVERIFIED\n" % (ids[0], SECRET, "a" * 64))
+              HEADER + "\n%s,sys,flock,detections,30 days,30,exact,policy,%s,%s,1,medium,UNVERIFIED\n" % (ids[0], SENTINEL, "a" * 64))
         self.analysis, self.method = self.tmp / "analysis", self.tmp / "method"
         write(self.method / "python", "#!/bin/sh\n", 0o700)
         write(self.analysis / "profiles" / "county.json", json.dumps(profile(ids[0], "county", self.method)))
         write(self.analysis / "profiles" / "city.proposed.json", json.dumps({"records_agency_id": ids[1]}))
         self.approval = self.tmp / "approval.json"
-        write(self.approval, SECRET + " not json {")
+        write(self.approval, SENTINEL + " not json {")
         return ids
 
 
 class SloShapedTests(Base):
+    def test_all_linked_agencies_including_unselected_are_reported(self):
+        ids = self.slo()
+        write(self.campaign / "content" / "agencies.json", json.dumps([
+            {"agency_id": i, "name": SENTINEL, "selected": n == 0} for n, i in enumerate(ids)]))
+        report, code = self.report()
+        self.assertEqual(code, 0)
+        self.assertEqual([r["agency"] for r in report["agencies"]], sorted(ids))
+
+    def test_duplicate_agencies_are_refused_even_when_unselected(self):
+        ids = self.slo()
+        for selections in ((False, True), (False, False), (True, False)):
+            with self.subTest(selections=selections):
+                write(self.campaign / "content" / "agencies.json", json.dumps([
+                    {"agency_id": ids[0], "name": SENTINEL, "selected": selected} for selected in selections]))
+                done = self.run_cli()
+                self.assertEqual((done.returncode, done.stdout, done.stderr.strip()),
+                                 (2, "", "READINESS_AGENCIES_INVALID"))
+
+    def test_refused_table_ancestry_is_invalid_not_missing(self):
+        self.slo()
+        for folder, field, issue in (("agency-asks", "asks", "READINESS_ASKS_UNAVAILABLE"),
+                                     ("followup-coverage", "coverage", "READINESS_COVERAGE_UNAVAILABLE")):
+            parent = self.project / folder
+            saved = self.tmp / folder
+            parent.rename(saved)
+            for kind in ("symlink", "file", "missing"):
+                with self.subTest(folder=folder, kind=kind):
+                    if kind == "symlink":
+                        parent.symlink_to(saved, target_is_directory=True)
+                    elif kind == "file":
+                        write(parent, SENTINEL)
+                    before = snapshot(self.project, saved)
+                    report, code = self.report()
+                    self.assertEqual(code, 0 if kind == "missing" else 1)
+                    self.assertEqual({r[field] for r in report["agencies"]},
+                                     {"missing" if kind == "missing" else "invalid"})
+                    self.assertEqual(issue in self.codes(report), kind != "missing")
+                    self.assertEqual(snapshot(self.project, saved), before)
+                if kind != "missing":
+                    parent.unlink()
+            saved.rename(parent)
+
+    def test_invalid_profiles_directory_is_degraded(self):
+        self.slo()
+        parent = self.analysis / "profiles"
+        saved = self.tmp / "saved-profiles"
+        parent.rename(saved)
+        for kind in ("symlink", "file", "missing"):
+            with self.subTest(kind=kind):
+                if kind == "symlink":
+                    parent.symlink_to(saved, target_is_directory=True)
+                elif kind == "file":
+                    write(parent, SENTINEL)
+                before = snapshot(self.analysis, saved)
+                report, code = self.report("--analysis-root", str(self.analysis))
+                self.assertEqual(code, 0 if kind == "missing" else 1)
+                self.assertEqual({r["analysis_profile"] for r in report["agencies"]},
+                                 {"missing" if kind == "missing" else "invalid"})
+                self.assertEqual("READINESS_PROFILE_INVALID" in self.codes(report), kind != "missing")
+                self.assertEqual(before, snapshot(self.analysis, saved))
+            if kind != "missing":
+                parent.unlink()
+
+    def test_missing_configured_method_has_agency_remediation(self):
+        ids = self.slo()
+        for kind in ("python", "directory"):
+            with self.subTest(kind=kind):
+                if kind == "python":
+                    (self.method / "python").unlink()
+                else:
+                    self.method.rmdir()
+                before = snapshot(self.project, self.analysis)
+                report, code = self.report("--analysis-root", str(self.analysis))
+                self.assertEqual(code, 0)
+                row = next(r for r in report["agencies"] if r["agency"] == ids[0])
+                self.assertEqual((row["analysis_profile"], row["analysis_method"]), ("present", "missing"))
+                issues = [i for i in report["issues"]
+                          if i.get("agency") == ids[0] and i["field"] == "analysis_method"]
+                self.assertEqual(len(issues), 1)
+                self.assertEqual((issues[0]["code"], issues[0]["kind"]), ("READINESS_METHOD_MISSING", "command"))
+                self.assertIn("analysis-config --root R --slug S --check-only", issues[0]["remediation"])
+                self.assertNotIn(str(self.tmp), json.dumps(report))
+                self.assertEqual(before, snapshot(self.project, self.analysis))
+
     def test_states_privacy_parity_and_no_writes(self):
         ids = self.slo()
         before = snapshot(self.project, self.campaign, self.analysis, self.method, self.approval)
@@ -115,7 +199,7 @@ class SloShapedTests(Base):
             self.assertTrue(item["remediation"] and item["code"].startswith("READINESS_"))
         for line in campaign_readiness.render(report).splitlines():
             self.assertIn(line, text.stdout)
-        for marker in (SECRET, str(self.tmp), "example.org"):
+        for marker in (SENTINEL, str(self.tmp), "example.org"):
             self.assertNotIn(marker, text.stdout)
             self.assertNotIn(marker, json.dumps(report))
         self.assertEqual(before, snapshot(self.project, self.campaign, self.analysis, self.method, self.approval))

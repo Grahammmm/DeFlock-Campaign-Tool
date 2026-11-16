@@ -63,7 +63,7 @@ def _probe(path, want):
             fd = child
         mode = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False).st_mode
         return "present" if (stat.S_ISDIR(mode) if want == "dir" else stat.S_ISREG(mode)) else "invalid"
-    except (FileNotFoundError, NotADirectoryError):
+    except FileNotFoundError:
         return "missing"
     except (OSError, IndexError):
         return "invalid"
@@ -138,8 +138,7 @@ def _agencies(root):
                 or not content.AGENCY_ID.fullmatch(entry["agency_id"]) or not isinstance(entry.get("name"), str)
                 or entry["agency_id"] in ids):
             raise _Refusal("READINESS_AGENCIES_INVALID")
-        if entry.get("selected", True) is True:
-            ids.append(entry["agency_id"])
+        ids.append(entry["agency_id"])
     return sorted(ids)
 
 
@@ -176,8 +175,9 @@ def _profiles(analysis_root, ids, issues):
         return {i: ("not_configured", "not_configured") for i in ids}
     unknown = dict.fromkeys(ids, ("invalid", "invalid"))
     pdir = os.path.join(os.path.abspath(analysis_root), "profiles")
-    if _probe(pdir, "dir") != "present":
-        if _probe(os.path.abspath(analysis_root), "dir") != "present":
+    state = _probe(pdir, "dir")
+    if state != "present":
+        if state == "invalid" or _probe(os.path.abspath(analysis_root), "dir") != "present":
             _issue(issues, "READINESS_PROFILE_INVALID", "analysis_profile", "human",
                    _CLI + "campaign-readiness --project P --analysis-root R")
             return unknown
@@ -237,7 +237,11 @@ def _method(profile, agency, issues):
         _issue(issues, "READINESS_METHOD_UNAVAILABLE", "analysis_method", "command",
                _CLI + "analysis-config --root R --slug S --check-only", agency)
         return "invalid"
-    return "present" if states == ("present", "present") else "missing"
+    if "missing" in states:
+        _issue(issues, "READINESS_METHOD_MISSING", "analysis_method", "command",
+               _CLI + "analysis-config --root R --slug S --check-only", agency)
+        return "missing"
+    return "present"
 
 
 def collect(project, *, analysis_root=None, portal_approval_file=None):
