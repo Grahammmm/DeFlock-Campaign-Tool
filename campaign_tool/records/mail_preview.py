@@ -24,7 +24,7 @@ def preview(project, row, drafts_config_path=None):
     except mail_drafts.MailDraftError as error:
         thread, reason = None, error.code
     if imported:
-        to_note = ("operator-checked " + envelope["recipient_basis"] if envelope else
+        to_note = ("operator-checked " + envelope["recipient_basis"]["source_type"] if envelope else
                    str(reason) + ": placement will refuse until envelope provenance is resolved")
     elif thread is not None:
         to_note = "from the agency's last message in this thread"

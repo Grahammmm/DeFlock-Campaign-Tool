@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import console_board as cb, console_oversight as co, console_outstanding, console_standing, mail_send, public_packets
 from .outcomes.reading import BANNER, esc
-from . import console_calendar, console_layout, console_snapshot, followup_clock
+from . import console_calendar, console_layout, console_snapshot, followup_clock, site_prs
 
 GROUPS = ("request", "follow-up", "send", "site-update", "social-post", "status-line", "packet")
 LABELS = ("Requests", "Follow-ups", "Sends", "Site updates", "Social posts", "Status lines", "Packets")
@@ -18,7 +18,7 @@ PLAIN_KINDS = {
     "next-site-update": "Suggested site update", "next-followup-probe": "Suggested follow-up",
     "message_link": "Tie this message to a request",
 }
-DISCONNECTED = (("agency-page", "CON-SITEPR-1"), ("redaction", "CON-REDACT-1"), ("finding", "CON-FIND-1"))
+DISCONNECTED = (("redaction", "CON-REDACT-1"), ("finding", "CON-FIND-1"))
 NEXT = {"next-site-update": ("site-update", "site"), "next-social-post": ("social-post", "social"),
         "next-followup-probe": ("follow-up", "followup")}
 
@@ -381,6 +381,8 @@ def render_home(model, token):
     out.append('<details id="more"><summary>More detail</summary>')
     out.append(console_standing.render_standing(model, model["now"].date()))
     out.append(console_outstanding.render_outstanding(model))
+    if "site_prs" in model:  # DF2007-09: read from the operator-captured sidecar, never a count of zero when unavailable
+        out.append(site_prs.home_card(model["site_prs"]))
     for kind, code in DISCONNECTED:
         if kind == "finding":
             out.append('<p><a href="/findings/review">Finding review</a>: connected (%s).</p>' % code if model.get("findings_configured")
@@ -404,5 +406,6 @@ def serve(handler):
         handler._fail(503)
         return True
     model["findings_configured"] = getattr(handler.server, "analysis_root", None) is not None
+    model["site_prs"] = site_prs.read(handler)  # independent of the timeline and queue
     handler._send(200, render_home(model, handler.csrf_token()))
     return True

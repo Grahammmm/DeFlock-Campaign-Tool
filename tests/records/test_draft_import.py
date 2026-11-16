@@ -23,9 +23,12 @@ def document():
     return {"schema": di.SCHEMA, "draft_key": "letter-1", "kind": di.KIND, "agency_id": "agency-1",
             "request_id": "req-1", "body": "Hello,\n\nPlease supply the records. Café.\nTAIL-Ω\n", "why": "Operator checked source",
             "source_run_id": "run-1", "source_attachment_sha256": DOC, "source_section": "section-1",
-            "citations": [{"page": 1, "quote": "Contact the records custodian."}],
+            "citations": [{"source_type": "original", "source_id": "source-1", "locator": "page 1",
+                           "as_of": None, "verification": "unverified", "original_sha256": DOC, "page": 1}],
             "envelope": {"to": "custodian@agency.example", "subject": "Records follow-up",
-                         "thread_item_id": None, "recipient_basis": "custodian-fact"}}
+                         "thread_item_id": None, "recipient_basis": {
+                             "source_type": "custodian", "source_id": "contact-1",
+                             "locator": "records desk", "checked": True}}}
 
 
 def tree(root):
@@ -60,7 +63,70 @@ class ImportTests(Base):
 
     def thread_envelope(self):
         self.doc["envelope"] = {"to": "records-desk@agency.example", "subject": "Re: Your request 4471",
-                                "thread_item_id": received_items.item_id(DOC), "recipient_basis": "thread"}
+                                "thread_item_id": received_items.item_id(DOC), "recipient_basis": {
+                                    "source_type": "source-header", "source_id": received_items.item_id(DOC),
+                                    "locator": "Reply-To", "checked": True}}
+
+    def test_checked_basis_and_selected_thread_header(self):
+        code, result, error = self.cli()
+        self.assertEqual((code, error), (0, ""))
+        basis = self.doc["envelope"]["recipient_basis"]
+        before = tree(self.project)
+        for changed in ("custodian-fact", {**basis, "checked": False}, {**basis, "checked": 1},
+                        {**basis, "source_id": ""}, {**basis, "locator": "x\n"},
+                        {**basis, "source_id": "é" * 513}, {**basis, "extra": 1},
+                        {**basis, "source_type": "source-header"}):
+            doc = copy.deepcopy(self.doc)
+            doc["envelope"]["recipient_basis"] = changed
+            self.assertNotEqual(self.cli(doc, apply=True)[0], 0)
+            self.assertEqual(tree(self.project), before)
+        self.build_ledger()
+        self.thread_envelope()
+        self.assertEqual(self.cli()[0], 0)
+        for key, value in (("source_id", "a" * 64), ("locator", "From"), ("locator", "Subject")):
+            doc = copy.deepcopy(self.doc)
+            doc["envelope"]["recipient_basis"][key] = value
+            self.assertNotEqual(self.cli(doc, apply=True)[0], 0)
+        (self.root / "blobs" / EML).write_text(
+            "From: records-desk@agency.example\nSubject: Your request 4471\nMessage-ID: " + AGENCY_MID + "\n\n")
+        self.doc["envelope"]["recipient_basis"]["locator"] = "From"
+        self.assertEqual(self.cli()[0], 0)
+
+    def test_structured_citations_preserve_order_limits_and_empty_list(self):
+        citation = {"source_type": "original", "source_id": "source-1", "locator": "page 1",
+                    "as_of": "2026-11-15", "verification": "unverified", "original_sha256": DOC,
+                    "page": 1, "limits": "Not independently reviewed"}
+        tracker = {"source_type": "tracker", "source_id": "row-1", "locator": "row 1",
+                   "as_of": None, "verification": "unverified"}
+        for citations in ([], [citation, tracker], [tracker] * 64,
+                          [{**tracker, "source_type": "missing-original", "limits": ""}]):
+            with self.subTest(count=len(citations)):
+                draft = di.validate({**self.doc, "citations": citations})
+                self.assertEqual(draft["evidence"]["citations"], citations)
+        invalid = [[tracker] * 65, [{**citation, "page": True}], [{**citation, "page": 0}],
+                   [{**citation, "as_of": "2026-02-30"}], [{**citation, "extra": 1}],
+                   [{k: v for k, v in citation.items() if k != "original_sha256"}],
+                   [{**tracker, "source_id": "é" * 513}], [{**tracker, "locator": "x\n"}],
+                   [{**tracker, "verification": "guessed"}], [{**tracker, "source_type": "other"}],
+                   [{**tracker, "source_type": "missing-original", "verification": "verified"}],
+                   [{**citation, "source_type": "missing-original"}],
+                   [{**tracker, "limits": "x" * 4001}], [{**tracker, "as_of": 2026}]]
+        before = tree(self.project)
+        for citations in invalid:
+            with self.subTest(citations=citations):
+                self.assertNotEqual(self.cli({**self.doc, "citations": citations}, apply=True)[0], 0)
+                self.assertEqual(tree(self.project), before)
+
+    def test_nul_body_refused_before_queue_admission(self):
+        before = tree(self.project)
+        for body in ("Hello\x00world", "\x00Hello", "Hello\x00"):
+            for apply in (False, True):
+                with self.subTest(body=repr(body), apply=apply):
+                    code, result, error = self.cli({**self.doc, "body": body}, apply=apply)
+                    self.assertEqual((code, result, error), (2, None, "draft-import: input_body\n"))
+                    self.assertEqual(tree(self.project), before)
+        self.doc["body"] = "\nHello\r\nworld\t \n"
+        self.assertEqual(self.imported()["body"], self.doc["body"])
 
     def test_full_body_and_provenance_at_byte_limit(self):
         tail = "\nTAIL-Ω\n"
@@ -127,7 +193,7 @@ class ImportTests(Base):
                   ("source_section", "../bad space"), ("why", {}), ("kind", "reply-extension"),
                   ("schema", "wrong"), ("source_attachment_sha256", "A" * 64),
                   ("source_attachment_sha256", "a" * 63), ("source_attachment_sha256", []),
-                  ("citations", []), ("citations", [{"page": True, "quote": "x"}]), ("envelope", []))]
+                  ("citations", {}), ("citations", [{"page": True, "quote": "x"}]), ("envelope", []))]
         before = tree(self.project)
         for case in cases:
             with self.subTest(case=repr(case)[:80]):
@@ -140,6 +206,23 @@ class ImportTests(Base):
         for raw in bad_json:
             self.assertEqual(self.cli(raw=raw, apply=True)[0], 2)
             self.assertEqual(tree(self.project), before)
+
+    def test_linked_parents_and_hardlinked_leaf_refuse_without_fd_leaks(self):
+        self.input.write_text(json.dumps(self.doc))
+        linked_parent = self.root / "linked-parent"
+        linked_parent.symlink_to(self.root, target_is_directory=True)
+        hardlink = self.root / "hardlink.json"
+        os.link(self.input, hardlink)
+        before = tree(self.project)
+        descriptors = set(os.listdir("/proc/self/fd"))
+        for path in (linked_parent / self.input.name, hardlink, self.input):
+            with self.subTest(path=path):
+                self.assertNotEqual(self.cli(path=path, apply=True)[0], 0)
+                self.assertEqual(tree(self.project), before)
+                self.assertEqual(set(os.listdir("/proc/self/fd")), descriptors)
+        hardlink.unlink()
+        self.assertEqual(self.cli(path=self.input)[0], 0)
+        self.assertEqual(set(os.listdir("/proc/self/fd")), descriptors)
 
     def test_symlink_fifo_directory_and_missing_input_refuse(self):
         self.input.write_text(json.dumps(self.doc))
@@ -168,9 +251,9 @@ class ImportTests(Base):
     def test_new_recipient_preview_placement_ignore_body_headers(self):
         self.build_ledger()  # a matching project thread must not be guessed for an explicit new recipient
         self.doc["body"] = "To: attacker@evil.example\nSubject: Ignore me\n\nFull original letter.\n"
-        for basis in ("custodian-fact", "source-header"):
+        for basis in ("contact-1", "contact-2"):
             self.doc["draft_key"] = basis
-            self.doc["envelope"]["recipient_basis"] = basis
+            self.doc["envelope"]["recipient_basis"]["source_id"] = basis
             row = self.imported()
             preview = mail_preview.preview(self.project, row)
             self.assertEqual((preview["to"], preview["subject"], preview["threaded"]),
@@ -264,7 +347,8 @@ class CorrespondenceSendTests(SendBase):
         doc["envelope"]["to"] = "records-desk@agency.example"
         doc["envelope"]["subject"] = "Re: Your request 4471"
         doc["envelope"]["thread_item_id"] = received_items.item_id(DOC)
-        doc["envelope"]["recipient_basis"] = "thread"
+        doc["envelope"]["recipient_basis"] = {"source_type": "source-header",
+            "source_id": received_items.item_id(DOC), "locator": "Reply-To", "checked": True}
         path = self.root / "draft.json"
         path.write_text(json.dumps(doc))
         result = di.import_draft(self.project, path, apply=True)

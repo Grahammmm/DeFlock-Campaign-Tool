@@ -201,6 +201,9 @@ def _check_correspondence_thread(envelope, thread):
             raise MailDraftError("thread_provenance_unresolved")
         _need(thread.get("reply_to") == envelope["to"]
               and _subject(thread, {"request_id": ""}) == envelope["subject"], "thread_provenance_contradiction")
+        basis = envelope["recipient_basis"]
+        if basis["source_type"] == "source-header":
+            _need(basis["locator"] == thread.get("recipient_header"), "thread_provenance_contradiction")
 
 
 def correspondence_envelope(project, row):
@@ -258,9 +261,12 @@ def find_thread(project, item_id, *, strict=False):
     mids = _MSGID.findall(str(headers.get("Message-ID") or ""))
     if len(mids) != 1:
         return None, "message_id_missing"
-    return {"message_id": mids[0], "references": _MSGID.findall(str(headers.get("References") or "")),
+    thread = {"message_id": mids[0], "references": _MSGID.findall(str(headers.get("References") or "")),
             "subject": " ".join(str(headers.get("Subject") or "").split()),
-            "reply_to": _address(headers.get("Reply-To")) or _address(headers.get("From"))}, None
+            "reply_to": _address(headers.get("Reply-To")) or _address(headers.get("From"))}
+    if strict:
+        thread["recipient_header"] = "Reply-To" if headers.get("Reply-To") else "From"
+    return thread, None
 
 
 # ---- private journal -----------------------------------------------------------------------

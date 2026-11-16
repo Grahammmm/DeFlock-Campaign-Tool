@@ -99,6 +99,7 @@ class AnalysisReadyTests(unittest.TestCase):
         with self.assertRaises(OSError):
             ar.write_run_analysis_ready(self.project, "r1")
 
+    @mock.patch("campaign_tool.records.followup_engine.run", new=lambda *args, **kwargs: None)  # needs full engine inputs; covered in test_outputs_followup_engine
     def test_writer_failure_warns_and_keeps_earlier_outputs(self):
         processing = self.project / "processing-v1" / "runs"
         (processing / "extract-r1.json").write_text(json.dumps({
@@ -114,6 +115,7 @@ class AnalysisReadyTests(unittest.TestCase):
         self.assertTrue((self.project / "run-outputs" / "r1.json").is_file())
         self.assertFalse((directory / "outcomes" / "analysis-ready.json").exists())
 
+    @mock.patch("campaign_tool.records.followup_engine.run", new=lambda *args, **kwargs: None)  # needs full engine inputs; covered in test_outputs_followup_engine
     def test_stage_writes_manifest_after_earlier_outputs(self):
         (self.project / "processing-v1" / "runs" / "extract-r2.json").write_text(json.dumps({
             "schema": "records-extract-outcomes-v1", "run_id": "r2", "documents": []}))

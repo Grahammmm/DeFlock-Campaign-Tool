@@ -26,6 +26,21 @@ optional `roster_doc_id`, `ocr_log_doc_ids`, `training_join`, `region_config`, `
 `not_posted_analysis_only_ids`, `log_doc_ids`. See `tests/fixtures/records/analysis-profile.json`.
 `profiles/morro-bay.json` is the candidate profile for Morro Bay, derived from the agency-review method file `agencies/morro-bay.yaml`; the operator copies it to `<root>/profiles/` (the repo changes nothing live) and sets `portal` to the agency's real portal host in that copy (the committed value is a placeholder: the public scan refuses portal hostnames), and `--check` (the default, so no flag is needed) prints `CONFIG_WRITTEN` for it and `PROFILE_MISSING` for a slug with no profile; `rules_intake.added_by`/`added_at` are optional and default to `review.added_by` and the run date.
 
+## Scaffolding a new agency profile (FLK-CMP-2)
+`records analysis-config --scaffold --root R --slug S --records-agency-id ID [--campaign-root C]` exclusively creates
+`R/profiles/S.json.candidate` (0600, `profiles/` 0700) from the one `content/agencies.json` entry of campaign C whose `agency_id` is
+ID. C is the explicit `--campaign-root`, else the absolute one-line path in `R/.campaign-root` (operator-made; never inferred), else
+`SCAFFOLD_CAMPAIGN_REQUIRED`. `agency_name` and `fact_agency` both take the campaign's agency name (review `fact_agency` by hand);
+nothing else is copied. `portal`, `review.method_dir`, `review.method_python`, `review.added_by`, `rules_intake.law_specs`,
+`policy_specs`, `f2_law_map` and `compare_f3.applicability` are `null` placeholders. Outcomes: `PROFILE_SCAFFOLDED` or `SCAFFOLD_EXISTS`
+(any entry already at `S.json` or `S.json.candidate`: never overwritten), `SCAFFOLD_AGENCY_MISSING`, `SCAFFOLD_AGENCIES_INVALID`,
+`SCAFFOLD_SOURCE_UNAVAILABLE`, `ROOT_REFUSED` and similar fixed codes.
+
+`--check-only` with no live profile reads the candidate: `PROFILE_INCOMPLETE <sorted dotted fields>` while any placeholder remains,
+`PROFILE_CANDIDATE` once complete (still not a live profile, no CONFIG). The default/`--check` mode ignores candidates and the analysis
+bridge never reads them, so a candidate enrols nothing. Promotion is the operator's own step: fill and review the candidate, then
+copy it to `S.json` only when none exists; `--check-only` then gives `CONFIG_PENDING` and `--check` writes the CONFIG.
+
 ## Export (DFGL-06A, container side)
 
 `records analysis-export` is a read-only command that runs inside the records container. It exports, per

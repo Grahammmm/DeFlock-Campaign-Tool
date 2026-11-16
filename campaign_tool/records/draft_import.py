@@ -2,15 +2,18 @@
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
+from datetime import date
 from email.headerregistry import Address
 
 from . import approval_queue as aq, draft_templates
 
 SCHEMA = "records-console-draft-input-v1"
 KIND = "correspondence-draft"
-MAX_INPUT = draft_templates.MAX_BODY_BYTES * 2 + 64 * 1024
+MAX_INPUT = 128 * 1024
 FIELDS = {"schema", "draft_key", "kind", "agency_id", "request_id", "body", "why", "source_run_id",
           "source_attachment_sha256", "source_section", "citations", "envelope"}
 SHA = re.compile(r"[a-f0-9]{64}")
@@ -27,11 +30,57 @@ def _text(value):
     return isinstance(value, str) and bool(value.strip()) and not any(ord(c) < 32 or ord(c) == 127 for c in value)
 
 
+def _bounded_text(value, limit):
+    if not _text(value):
+        return False
+    try:
+        return len(value.encode("utf-8")) <= limit
+    except UnicodeEncodeError:
+        return False
+
+
+def _validate_citations(citations):
+    _need(isinstance(citations, list) and len(citations) <= 64, "input_citations")
+    required = {"source_type", "source_id", "locator", "as_of", "verification"}
+    optional = {"original_sha256", "page", "limits"}
+    for citation in citations:
+        _need(isinstance(citation, dict) and required <= set(citation)
+              and set(citation) <= required | optional, "input_citations")
+        _need(citation["source_type"] in ("original", "tracker", "timeline", "public", "missing-original")
+              and citation["verification"] in ("verified", "unverified", "missing-original")
+              and all(_bounded_text(citation[k], 1024) for k in ("source_id", "locator")), "input_citations")
+        as_of = citation["as_of"]
+        if as_of is not None:
+            _need(isinstance(as_of, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", as_of),
+                  "input_citations")
+            try:
+                date.fromisoformat(as_of)
+            except ValueError:
+                raise aq.ApprovalQueueError("input_citations") from None
+        if "original_sha256" in citation:
+            _need(isinstance(citation["original_sha256"], str)
+                  and SHA.fullmatch(citation["original_sha256"]), "input_citations")
+        if "page" in citation:
+            _need(type(citation["page"]) is int and citation["page"] > 0, "input_citations")
+        if "limits" in citation:
+            _need(citation["limits"] == "" or _bounded_text(citation["limits"], 4000), "input_citations")
+        if citation["source_type"] == "original":
+            _need("original_sha256" in citation, "input_citations")
+        if citation["source_type"] == "missing-original":
+            _need(citation["verification"] != "verified" and not {"original_sha256", "page"} & set(citation),
+                  "input_citations")
+
+
 def validate_envelope(envelope):
     """One literal address and subject, with an explicit thread-or-new-recipient basis."""
     _need(isinstance(envelope, dict) and set(envelope) == {"to", "subject", "thread_item_id", "recipient_basis"},
           "envelope_invalid")
-    _need(all(_text(envelope[k]) for k in ("to", "subject", "recipient_basis")), "envelope_invalid")
+    _need(_text(envelope["to"]) and _bounded_text(envelope["subject"], 998), "envelope_invalid")
+    basis = envelope["recipient_basis"]
+    _need(isinstance(basis, dict) and set(basis) == {"source_type", "source_id", "locator", "checked"},
+          "thread_provenance_invalid")
+    _need(basis["source_type"] in ("custodian", "source-header") and basis["checked"] is True
+          and all(_bounded_text(basis[k], 1024) for k in ("source_id", "locator")), "thread_provenance_invalid")
     _need(ADDRESS.fullmatch(envelope["to"]) is not None, "recipient_invalid")
     try:
         address = Address(addr_spec=envelope["to"])
@@ -40,10 +89,12 @@ def validate_envelope(envelope):
     _need(address.addr_spec == envelope["to"], "recipient_invalid")
     ident = envelope["thread_item_id"]
     if ident is None:
-        _need(envelope["recipient_basis"] in ("custodian-fact", "source-header"), "thread_provenance_invalid")
+        _need(basis["source_type"] == "custodian", "thread_provenance_invalid")
     else:
-        _need(isinstance(ident, str) and SHA.fullmatch(ident) is not None
-              and envelope["recipient_basis"] == "thread", "thread_provenance_invalid")
+        _need(isinstance(ident, str) and SHA.fullmatch(ident) is not None, "thread_provenance_invalid")
+        if basis["source_type"] == "source-header":
+            _need(basis["source_id"] == ident and basis["locator"] in ("Reply-To", "From"),
+                  "thread_provenance_invalid")
     return envelope
 
 
@@ -91,20 +142,19 @@ def validate(doc):
           and SHA.fullmatch(doc["source_attachment_sha256"]) is not None, "input_sha256")
     _need(_text(doc["why"]), "input_why")
     body = doc["body"]
-    _need(isinstance(body, str) and bool(body.strip()), "input_body")
+    _need(isinstance(body, str) and bool(body.strip()) and "\x00" not in body, "input_body")
     try:
         data = body.encode("utf-8")
         aq._canon(doc).encode("utf-8")
     except (UnicodeEncodeError, ValueError, TypeError, RecursionError):
         raise aq.ApprovalQueueError("input_utf8") from None
     _need(len(data) <= draft_templates.MAX_BODY_BYTES, "body_bound")
-    citations = doc["citations"]
-    _need(isinstance(citations, list) and bool(citations), "input_citations")
-    for citation in citations if not copy else []:
-        _need(isinstance(citation, dict) and set(citation) == {"page", "quote"}
-              and type(citation["page"]) is int and citation["page"] >= 1
-              and isinstance(citation["quote"], str) and bool(citation["quote"].strip()), "input_citations")
-    validate_copy(doc) if copy else validate_envelope(doc["envelope"])
+    if copy:
+        _need(isinstance(doc["citations"], list) and bool(doc["citations"]), "input_citations")
+        validate_copy(doc)
+    else:
+        _validate_citations(doc["citations"])
+        validate_envelope(doc["envelope"])
     # Bind original body and run too: the queue compares evidence, not body, on re-import.
     evidence = {k: doc[k] for k in ("schema", "draft_key", "why", "source_run_id", "source_attachment_sha256",
                                    "source_section", "citations")}
@@ -118,10 +168,32 @@ def validate(doc):
     return draft
 
 
+def read_input(path):
+    """Read one capped single-link regular leaf beneath no-follow directory descriptors."""
+    parent_fd = leaf_fd = None
+    try:
+        parent, name = os.path.split(os.path.abspath(path))
+        parent_fd = aq._open_chain(parent)
+        leaf_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+        info = os.fstat(leaf_fd)
+        _need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= MAX_INPUT,
+              "source_invalid")
+        raw = aq._read_capped(leaf_fd, MAX_INPUT)
+        _need(len(raw) <= MAX_INPUT, "source_invalid")
+        return raw
+    except (OSError, aq.ApprovalQueueError):
+        raise aq.ApprovalQueueError("source_invalid") from None
+    finally:
+        if leaf_fd is not None:
+            os.close(leaf_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
 def import_draft(project, path, *, apply=False):
     """Read a bounded no-follow regular file. Apply only adds a pending queue row."""
     from . import mail_drafts
-    doc = aq._strict_load(aq._read_input(path, MAX_INPUT), "input_json")
+    doc = aq._strict_load(read_input(path), "input_json")
     draft = validate(doc)
     try:
         if draft["kind"] == KIND:

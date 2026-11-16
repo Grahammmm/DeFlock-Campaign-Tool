@@ -375,6 +375,7 @@ class RegisterIntegrationTests(unittest.TestCase):
         with closing(sqlite3.connect(portal / "portal.sqlite")) as con, con:
             con.execute("CREATE TABLE portal_items(id TEXT)")
 
+    @mock.patch("campaign_tool.records.followup_engine.run", new=lambda *args, **kwargs: None)  # needs full engine inputs; covered in test_outputs_followup_engine
     def test_actual_outputs_stage_writes_both_files_and_preserves_counts(self):
         # The extract stage's per-run list (input to the DOC-2 text-state pair).
         (self.processing / "runs").mkdir(mode=0o700)
