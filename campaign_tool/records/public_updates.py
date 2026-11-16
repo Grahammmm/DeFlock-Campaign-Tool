@@ -214,7 +214,7 @@ def fold(events):
 
 def line_revision(row):
     """SHA-256 of the line's content (never its lifecycle or approval state), so approving cannot void itself."""
-    body = {k: row[k] for k in ("id", "template", "fields", "text", "agency_key", "event")}
+    body = {k: row.get(k) for k in ("id", "template", "fields", "text", "agency_key", "event")}
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":"), allow_nan=False,
                                      ensure_ascii=False).encode("utf-8")).hexdigest()
 
