@@ -105,8 +105,7 @@ def _load(path):
     if not isinstance(entries, list) or not all(
             isinstance(e, dict) and set(e) in (KEYS, KEYS | {"records"}) and all(isinstance(e[k], str) for k in KEYS)
             for e in entries):
-        raise ValueError("the register must hold only a list of {name, directory, added_at}"
-                         " (plus an optional records binding)")
+        raise ValueError("the register must hold only a list of {name, directory, added_at}")
     # RF1900-3: two rows with one decoded (case-sensitive) name are ambiguous; refuse the whole register, never echoed
     if len({e["name"] for e in entries}) != len(entries):
         raise ValueError("the register contains a repeated campaign name")
