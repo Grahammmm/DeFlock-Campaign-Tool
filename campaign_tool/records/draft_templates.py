@@ -17,9 +17,10 @@ from .. import kit_track
 
 NEXT_STEP_KINDS = ("next-social-post", "next-site-update", "next-followup-probe")  # REC-AUTO-10 recommendations
 MESSAGE_LINK = "message_link"  # DFGL-04: a decision, never a mail draft
-NON_MAIL_KINDS = NEXT_STEP_KINDS + (MESSAGE_LINK,)
+REVIEW_COPY_KINDS = ("draft-agency-summary", "draft-correction-notice")
+NON_MAIL_KINDS = NEXT_STEP_KINDS + (MESSAGE_LINK,) + REVIEW_COPY_KINDS
 KINDS = ("reply-extension", "appeal-denial", "fee-reply", "followup-missing-records", "first-request",
-         "reminder-no-response", "reminder-promised-date", "formal-notice-no-response") + NEXT_STEP_KINDS + ("followup-playbook", "correspondence-draft")
+         "reminder-no-response", "reminder-promised-date", "formal-notice-no-response") + NEXT_STEP_KINDS + ("followup-playbook", "correspondence-draft") + REVIEW_COPY_KINDS
 FOLLOWUP_KINDS = KINDS[5:8]
 DRAFT_BANNER = "DRAFT — NOT SENT. Review before sending it yourself."
 FOOTER = ("---\nDraft only. Not legal advice. Review required; the law package is draft and every reference above "
