@@ -51,7 +51,7 @@ def _thread(project, route, items):
     return ident, "replies to the latest agency message on this request received " + sources[0]["received_at"], None
 
 
-def _identity(route, state, ratings, thread_id):
+def _identity(route, state, ratings, thread_id, vague=None):
     # Queue lifecycle events are effects, not new agency evidence (avoid self-triggering).
     ids = {k + ":" + str(v) for e in state["evidence"]["events"]
            for k, v in e["ids"].items() if k != "draft_id"}
@@ -62,6 +62,13 @@ def _identity(route, state, ratings, thread_id):
     identity += [thread_id, sorted(ids), state["state"], sorted(state["flags"])]
     if route.get("finding"):  # contradiction rows only: legacy identity serialization is unchanged
         identity += [[route["finding"][k] for k in ("finding_id", "finding_sha256", "evidence_sha256")]]
+    if vague:  # vague_answer rows only: changed source evidence or law wording is a new draft, never a collision
+        law = vague["law_package"]
+        identity += [[sorted([e["denial_id"], e["page"], e["doc_sha256"], followup_route.quote_digest(e["quote"])]
+                             for e in vague["entries"]),
+                      [law["package"], law["rule_id"], law["package_sha256"],
+                       hashlib.sha256(json.dumps([law["citation"], law["duty"], law["review"], law["status"]],
+                                                 ensure_ascii=False).encode()).hexdigest()]]]
     raw = json.dumps(identity, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "route:" + hashlib.sha256(raw.encode()).hexdigest()[:32]
 
@@ -115,7 +122,8 @@ def run(project, run_id, *, apply=False, as_of=None, analysis_root=None):
             summary["manual"].append(dict(agency_id=key[0], request_id=key[1], reason=reason, unreconciled=[]))
             continue
         state, items = by_state[key], by_items[key]
-        ident = _identity(route, state, items, thread_id)
+        vague = case_builder.vague_context(project, run_id, route) if route["pattern"] == "vague_answer" else None
+        ident = _identity(route, state, items, thread_id, vague)
         qid = aq.draft_id(ident, KIND)
         if qid in existing:
             summary["duplicate"] += 1
@@ -128,7 +136,7 @@ def run(project, run_id, *, apply=False, as_of=None, analysis_root=None):
             descriptor = next((d for d in findings or () if followup_findings.locator(d) == route["finding"]
                                and (d["agency_key"], d["request_id"]) == key), None)
         case = case_builder.build(route, requests[key], items, asks_rows=case_builder._asks(project, key[0]),
-                                  finding=descriptor)
+                                  finding=descriptor, vague=vague)
         draft = followup_drafter.draft(book, case, ())  # No policy section is selected implicitly.
         if not draft["open_asks"]:
             summary["no_open_asks"] += 1
@@ -140,6 +148,8 @@ def run(project, run_id, *, apply=False, as_of=None, analysis_root=None):
                         unfilled=len(draft["unfilled"]))
         if route.get("finding"):
             evidence["finding"] = route["finding"]
+        if vague:  # structured evidence only; neither the quote nor the agency citation is in the letter body
+            evidence["vague_answer"] = {"entries": vague["entries"], "law_package": vague["law_package"]}
         planned.append(dict(item_id=ident, kind=KIND, agency_id=key[0], request_id=key[1],
                             body=draft["body"], evidence=evidence, source_run_id=run_id))
         existing.add(qid)
