@@ -237,7 +237,7 @@ class WorkflowContract(unittest.TestCase):
             block = blocks[name]
             self.assertIn('    if: ' + event, block)
             self.assertIn(f'    timeout-minutes: {timeout}\n', block)
-            self.assertIn('    strategy:\n      fail-fast: false\n      max-parallel: 1\n      matrix:', block)
+            self.assertIn(f'    strategy:\n      fail-fast: false\n      max-parallel: {shards if name == "affected" else 6}\n      matrix:', block)
             self.assertIn('        shard: ' + str(list(range(shards))), block)
             self.assertIn(f'tools/ci_affected.py --tier {tier} --shard ${{{{ matrix.shard }}}} --shards {shards} --jobs 2\n', block)
         self.assertIn("python: ['3.11', '3.12', '3.13']", blocks['full'])

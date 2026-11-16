@@ -97,11 +97,12 @@ in place, including their deliberately separate scanner implementations.
 
 ## Bounded source-executor candidate (AUDINV-FIX-144)
 
-`affected` and `full` now each use `strategy.max-parallel: 1` and
-`ci_affected.py --jobs 2`. Their event predicates are mutually exclusive, so at
-most two source-test **executor children per workflow run** can be live at once.
-All five PR shards and all two-shard × three-Python full entries remain; matrices
-queue sequentially rather than removing coverage. Parent SERIAL tests run only
+`affected` and `full` use `ci_affected.py --jobs 2` and
+`strategy.max-parallel: 5` / `6` (CI-DF-FANOUT-1, 2026-11-16; was 1, which queued
+PR legs ~50 min). Each leg is its own hosted VM, so at most two source-test
+**executor children per leg** are live at once; AUDINV-FIX-144 bounds per-VM I/O
+and does not require serial legs. All five PR shards and all two-shard ×
+three-Python full entries remain and now run in parallel. Parent SERIAL tests run only
 after children finish. Nested subprocesses deliberately launched by individual
 tests are outside this executor-child bound. The selector's general jobs API,
 workflow concurrency identity, failure aggregation and security scans are unchanged.
@@ -120,7 +121,7 @@ checked head; the two uncapped commands and unbounded matrix concurrency remain)
 The unchanged selector source SHA-256 is
 `4a1605a05299ac8663a57151d1772aaedec2191e88c50e506585b2c0cceb4b48`.
 The candidate workflow diff consists only of two `--jobs 0` → `--jobs 2`
-arguments and two `max-parallel: 1` keys. Candidate file SHA-256 values:
+arguments and two `max-parallel` keys (5 and 6). Candidate file SHA-256 values:
 
 - `.github/workflows/records.yml`: `37affc5e9ab64700b26c659bee4ca68c90035847f07150b5e648ff5f98ad7ded`.
 - `tests/test_ci_contention_cap.py`: `74e1c1f4220583e9c74eeef95c054d958289f291bb113015a104b27335a2a624`.
