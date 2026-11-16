@@ -70,7 +70,10 @@ def _public_source(value, sources):
             return address.is_global and not address.is_multicast and not address.is_reserved
         except ValueError:
             # Reject legacy numeric IPv4 forms rather than relying on browser normalization/DNS.
-            return not (re.fullmatch(r'[0-9.]+', host) or host.startswith('0x'))
+            # A host whose last label is numeric (decimal or 0x hex) is parsed as IPv4 by browsers,
+            # so mixed-radix aliases such as 127.0.0x1 must be refused too.
+            return not (re.fullmatch(r'[0-9.]+', host) or host.startswith('0x')
+                        or re.fullmatch(r'[0-9]+|0x[0-9a-f]*', host.rsplit('.', 1)[-1]))
     except (ContentError, ValueError):
         return False
 
