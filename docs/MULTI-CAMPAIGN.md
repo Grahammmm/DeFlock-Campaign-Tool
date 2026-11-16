@@ -18,7 +18,7 @@ python3 -m campaign_tool campaigns remove humboldt      # unregisters; the direc
 ## The register
 
 - One file, `$XDG_CONFIG_HOME/deflock-campaign/campaigns.json` (default `~/.config/...`; `DEFLOCK_CAMPAIGN_REGISTER`
-  names another), mode 0600, never inside the repository. It holds `name`, `directory` and `added_at` and nothing else:
+  names another), mode 0600, never inside the repository. It holds `name`, `directory` and `added_at`, plus optionally one `records` binding (below), and nothing else:
   no agency, request, document or record text.
 - `add` refuses a duplicate name, a missing or non-directory path, a symlinked path, a path inside (or around) the
   repository, a directory with no readable `campaign.json`, and a directory that is the same as, inside or around one
@@ -90,9 +90,53 @@ campaign | NAME | NOT CURRENT: <ErrorType> | private; review-required
   register or folder is created. A bad `--as-of` stops with exit 1 before anything is read. `--as-of` plans one day
   from the files as they are now; it is not a historical view. Without it, today's date is taken once for every
   campaign.
-- Exit codes: 0 every campaign read, 3 at least one `NOT CURRENT`, 1 a bad date or an unreadable register.
+- Exit codes: 0 every campaign read, 3 at least one `NOT CURRENT` (or a degraded records summary, below), 1 a bad date
+  or an unreadable register.
 - Read-only: no lock, cache, index or ledger, and the register and every campaign keep their bytes, paths and modes.
   `today --directory D` and `today --campaign NAME` for one campaign are unchanged.
+
+### Records work per campaign (optional binding)
+
+A campaign can be bound, by editing the private register, to the console export of its records project. This is an
+explicit operator edit: there is no command, no automatic registration and no scan; `campaigns add` still creates an
+unbound entry. Add one `records` object to that entry (placeholder values; take the identity from `source_project_id`
+in your imported export's `EXPORT.json`):
+
+```json
+{"name": "example", "directory": "/path/to/campaign", "added_at": "2026-01-01T00:00:00Z",
+ "records": {"export_root": "/path/to/console-exports/example", "source_project_id": "0123456789abcdef"}}
+```
+
+`export_root` is the host directory that holds `exports/` and `current` (an absolute, normalised path with no symlink
+in it; it may sit inside its own campaign but never inside, around or equal to another campaign's directory, another
+binding's export root or the repository). `source_project_id` is exactly 16 lowercase hex characters, and two
+campaigns may not share one. Any other key, shape or overlap refuses the whole register without echoing the values.
+Unbound entries and their output are unchanged.
+
+For each bound, readable campaign `today` appends one `records_summary` row right after that campaign's site-kit rows
+(`rank` null, `due` null, `command` null, `what` "Records work (on our records; not a legal finding)", plus a
+`records` object: `state` (`ok`, `no_export` or `unavailable`), `code`, `exported_at`, `age_hours`, `stale`, the four
+counts and `unavailable`). A bound campaign with nothing due shows this row instead of "Nothing due". The counts come
+from `console-model/campaign-summary.json`, written by `records console-export` and sealed by the normal export
+manifest, and are as of the export, not today's live state:
+
+- `drafts_waiting`: pending drafts (suggested next steps included) except message ties.
+- `messages_to_tie`: pending message-to-request ties only, not every unjoined message.
+- `requests_overdue`: the console Home's "overdue" waiting-request count, i.e. an overdue mark is recorded; it is a
+  computed date on our records, not a legal finding.
+- `holds_needing_decision`: Home decisions that are public status lines or update packets only (a subset of Home's
+  "need your decision" count).
+
+A count that could not be loaded is `null`/`unknown`, never zero; the row lists it in `unavailable` and `today` exits
+3. Only `EXPORT.json` and that one summary file of the campaign's `current` export are opened (no originals, mail,
+journals, live project or older export), and the summary is bound to its manifest by a hash, which is not a signature
+or an approval. `age_hours` is whole hours from the export time to the moment `today` runs (not `--as-of`); 24 hours
+or more is `stale` and printed as `stale (N hours old)`; this is a display threshold, not a records or legal policy. A
+missing, unreadable or future export time gives code `RECORDS_EXPORT_TIME_UNAVAILABLE` and exit 3. No export prints
+`records: no records export` (exit 0). An export made before this feature says `records summary not in this export;
+refresh the console export` (exit 3), and a damaged one gives `RECORDS_EXPORT_UNAVAILABLE` (exit 3); neighbouring
+campaigns and the campaign's own site-kit rows are still shown. Re-run `records console-export` and `console-import` to
+refresh. Nothing here sends, publishes, approves or deploys anything.
 
 ## Records campaign readiness
 

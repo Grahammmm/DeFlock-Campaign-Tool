@@ -315,20 +315,26 @@ def _model_ocr_pages(project, now):
 
 MODEL = {"queue.json": _model_queue, "packets.json": _model_packets, "public-updates.json": _model_public_updates,
          "mail-drafts.json": _model_mail_drafts, "sends.json": _model_sends, "ocr-pages.json": _model_ocr_pages}
+PLAIN = {"campaign-summary.json"}  # the count projection (campaign_summary): its own schema, written last
 MODEL_SCHEMA = "records-console-model-v1"
 MODEL_DIR = "console-model"
 
 
-def write_model(project, out_dir, now):
-    """Write console-model/*.json for the live project, read by the existing readers (nothing is written to it)."""
+def write_model(project, out_dir, now, models=None):
+    """Write console-model/*.json for the live project, read by the existing readers (nothing is written to it).
+
+    `models` is MODEL unless a caller writes one more file; a name in PLAIN is a self-describing document of its own schema."""
     project = os.path.abspath(project)
     pid = approval_queue._project_id(project)
     os.makedirs(os.path.join(out_dir, MODEL_DIR), mode=0o700, exist_ok=True)
-    for name, make in MODEL.items():
+    for name, make in (MODEL if models is None else models).items():
         head = {"schema": MODEL_SCHEMA, "source_project_id": pid}
         try:
-            body = {**head, "state": "ok", **make(project, now)}
-            if body.get("state") != "ok":  # a source that reports its own unavailable state
+            if name in PLAIN:
+                body = make(project, now)
+            else:
+                body = {**head, "state": "ok", **make(project, now)}
+            if body.get("state") != "ok" and name not in PLAIN:  # a source that reports its own unavailable state
                 body = {**head, "state": "unavailable", "code": body.get("code") or "model_unreadable"}
         except (approval_queue.ApprovalQueueError, public_packets.PacketError, public_updates.PublicUpdatesError,
                 mail_drafts.MailDraftError, mail_send.MailSendError) as error:
@@ -367,7 +373,8 @@ def build(project, run_id, dest):
             _copy_tree(run_fd, os.path.join("run-outputs", run_id), dest)
         finally:
             os.close(run_fd)
-        model = write_model(project, dest, time.time())
+        now = time.time()  # one instant for the model, the count summary and the manifest
+        model = write_model(project, dest, now)
         for rel in FILES:
             parts = rel.split("/")
             parent = _open_chain(root, parts[:-1])
@@ -383,6 +390,9 @@ def build(project, run_id, dest):
                 os.close(parent)
     finally:
         os.close(root)
+    from . import campaign_summary  # local: console_home/console_snapshot import this module
+    summary = campaign_summary.project(dest, run_id, approval_queue._project_id(project), "building", now)
+    write_model(project, dest, now, {"campaign-summary.json": lambda _project, _now: summary})
     files = {}
     for base, _, names in os.walk(dest):
         for name in names:
@@ -390,7 +400,7 @@ def build(project, run_id, dest):
             files[os.path.relpath(path, dest)] = _sha256_file(path)
     _need(sum(os.path.getsize(os.path.join(dest, rel)) for rel in files) <= MAX_BYTES, "EXPORT_TOO_LARGE")
     manifest = {"approval_anchor": approval.anchor_state(), "schema": SCHEMA, "run_id": run_id, "source_project_id": approval_queue._project_id(project),
-                "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "exported_at": _iso(now),
                 "files": dict(sorted(files.items())), "model": model, **_applied(project)}
     Path(dest, MANIFEST).write_text(json.dumps(manifest, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     return manifest
