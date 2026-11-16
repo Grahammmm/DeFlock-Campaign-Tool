@@ -104,6 +104,11 @@ class Journey(Base):
     def test_item_level_and_uncited_denials_keep_the_old_routes(self):
         for label, text in (("item", "Item 2 is withheld under Gov. Code section 9999."),
                             ("heading", "2.\nWithheld under Gov. Code section 9999."),
+                            ("descriptive item heading", "Item 2: ALPR logs\n" + QUOTE),
+                            ("descriptive request item heading", "Request item 2: ALPR logs\n" + QUOTE),
+                            ("descriptive numbered heading", "2. ALPR logs\n" + QUOTE),
+                            ("descriptive parenthesized heading", "(2) ALPR logs\n" + QUOTE),
+                            ("descriptive colon heading", "2: ALPR logs\n\n" + QUOTE),
                             ("bare exempt", "These records are exempt."), ("search", "We conducted a search."),
                             ("two quotes", QUOTE + "\nWe also deny this under \u00a7 7923.600.")):
             with self.subTest(label):

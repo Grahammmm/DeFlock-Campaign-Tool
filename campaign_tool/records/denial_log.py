@@ -15,7 +15,8 @@ from .campaign_config import DEFAULT_TIMEZONE, load_timezone
 LABEL = "Machine reading of the response; review required; not proof of a lawful or unlawful denial."
 CITATION = "agency's citation; UNVERIFIED by us"
 _DENIAL_CUE = re.compile(response_items.WITHHELD.pattern + r"|\bexempt(?:ed|ion)?\b", re.I)
-_HEADING = re.compile(r"^\s*(?:(?:request\s+)?item\s+\d{1,3}|\(\d{1,3}\)|\d{1,3}[.):])\s*[:.]?\s*$", re.I)
+# Item headings may include a description after the agency's number.
+_HEADING = re.compile(r"^\s*(?:(?:request\s+)?item\s+\d{1,3}\b|\(\d{1,3}\)|\d{1,3}[.):])", re.I)
 
 
 def _whole_quote(source, pages):
