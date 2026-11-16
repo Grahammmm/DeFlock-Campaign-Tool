@@ -75,13 +75,38 @@ def _resolve(schema, root):
     return merged
 
 
+def _json_equal(left, right):
+    """JSON equality for const/enum: bool never equals a number, at any depth.
+
+    Numbers keep numeric equality (1 == 1.0); objects ignore key order. Uses an
+    explicit work stack so deep values do not exhaust the call stack.
+    """
+    stack = [(left, right)]
+    while stack:
+        a, b = stack.pop()
+        if isinstance(a, bool) or isinstance(b, bool):
+            if not (isinstance(a, bool) and isinstance(b, bool) and a == b):
+                return False
+        elif isinstance(a, list) or isinstance(b, list):
+            if not (isinstance(a, list) and isinstance(b, list) and len(a) == len(b)):
+                return False
+            stack.extend(zip(a, b))
+        elif isinstance(a, dict) or isinstance(b, dict):
+            if not (isinstance(a, dict) and isinstance(b, dict) and a.keys() == b.keys()):
+                return False
+            stack.extend((a[key], b[key]) for key in a)
+        elif a != b:
+            return False
+    return True
+
+
 def validate(document, schema, root=None, where="$"):
     """Check ``document`` against the JSON-schema subset; raise ValueError."""
     root = root if root is not None else schema
     schema = _resolve(schema, root)
-    if "const" in schema and document != schema["const"]:
+    if "const" in schema and not _json_equal(document, schema["const"]):
         raise ValueError(f"{where}: expected constant {schema['const']!r}, got {document!r}")
-    if "enum" in schema and document not in schema["enum"]:
+    if "enum" in schema and not any(_json_equal(document, option) for option in schema["enum"]):
         raise ValueError(f"{where}: {document!r} is not one of {schema['enum']}")
     declared = schema.get("type")
     if declared is not None:
