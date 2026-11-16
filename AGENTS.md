@@ -44,3 +44,38 @@ composed candidate tree before requesting review, including single-lane candidat
 An isolated-green head is not a composed-tree receipt. Follow the
 [composed-tree test workflow and review receipt](docs/RUN-STAGES-PRE-REVIEW.md);
 record every admitted constituent and rerun after any head/tree change.
+
+## Import-manifest pin refresh checklist
+
+Authors and independent code reviewers: if a PR changes any file in this table,
+the matching manifest entry and the scanner approval of that whole manifest must
+be refreshed in the same PR. Focused intake/gate functional tests alone do not
+catch a stale pin: stale manifest or scanner pins can fail the package, shell,
+WP5, intake or detect-secrets checks even when the narrow tests pass.
+
+| Affected file | Manifest whose matching entry must refresh |
+|---|---|
+| `campaign_tool/records/intake/folder.py` | `docs/records-intake-import.json` |
+| `campaign_tool/records/intake/repair_intake.py` | `docs/records-intake-import.json` |
+| `campaign_tool/records/intake/scope_quarantine.py` | `docs/records-intake-import.json` |
+| `tests/records/test_intake.py` | `docs/records-intake-import.json` |
+| `campaign_tool/records/gates/batch_report.py` | `docs/records-gates-import.json` |
+| `campaign_tool/records/gates/collect_reviews.py` | `docs/records-gates-import.json` |
+| `campaign_tool/records/gates/reconcile_coverage.py` | `docs/records-gates-import.json` |
+| `campaign_tool/records/gates/validate_findings.py` | `docs/records-gates-import.json` |
+| `campaign_tool/records/gates/tests/test_gate.py` | `docs/records-gates-import.json` |
+
+Order, all in the same PR:
+
+1. Hash the changed file's final bytes into the matching manifest entry's `engine_sha256`.
+   Keep the historical `source_sha256` and `schema_sha256` unless a real source or schema change justifies it.
+2. After the manifest bytes are final, hash the entire manifest file and update only its
+   corresponding `APPROVED_MANIFESTS` entry in `tools/check_secret_report.py`. A manifest-only
+   byte change also invalidates the whole-file approval, and so does any later formatting or
+   newline change. If both groups change, refresh both manifests and both approvals.
+3. Do not copy stale hashes, strip fields, add a blanket allowlist or weaken the scanner.
+4. Run `python3 -B -m unittest tests.test_provenance_scan -v` in addition to the relevant
+   functional tests and the repository credential/privacy scans. That module is not a complete
+   secret scan, and a correct pin is not publication clearance or independent review.
+
+If no pinned file changed, say so in the PR body with a not-applicable rationale.
