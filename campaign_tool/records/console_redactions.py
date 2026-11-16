@@ -130,6 +130,7 @@ def load(store):
     from . import admin_panel
     try:
         tool()
+        _private_chain(Path(store), Path(store))  # a store that moved or lost its mode is unavailable, never an empty list
         agencies = Path(store) / "agencies"
         names = sorted(e.name for e in os.scandir(agencies) if e.is_dir(follow_symlinks=False)) if os.path.lexists(agencies) else []
         rows, refused, overflow = [], 0, False
