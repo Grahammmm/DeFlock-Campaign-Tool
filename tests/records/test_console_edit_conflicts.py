@@ -67,6 +67,21 @@ class EditConflictTests(ServerCase):
         self.assertEqual(rejected["reason"], "not needed")
         self.assertEqual(aq.approval_payload(self.project, self.draft_row["id"]), payload)
 
+    def test_revise_stale_approved_tab_409_no_journal_or_hooks(self):
+        ident = self.draft_row["id"]
+        aq.approve(self.project, ident, {"kind": "ssh", "signature": self.signer.sign(aq.approval_payload(self.project, ident))})
+        revision = self.form_revision(path=self.review())
+        self.assertEqual(revision, "1")
+        with mock.patch.object(ap, "_place_after_approve") as place, mock.patch.object(ap.mail_send, "send_one") as send:
+            self.assertEqual(self.save(revision, "Current approved revision intentionally revised")[0], 303)
+            before = journal(self.project)
+            for _ in range(2):
+                self.assert_conflict(self.save(revision, STALE_MARK))
+                self.assertEqual(journal(self.project), before)
+        place.assert_not_called()
+        send.assert_not_called()
+        self.assertEqual((self.row()["status"], self.row()["revision"]), ("pending", 2))
+
     def test_revision_zero_and_fresh_reload_save(self):
         first = self.form_revision(path=self.review())
         self.assertEqual(first, "0")  # zero is a real precondition, not an omission

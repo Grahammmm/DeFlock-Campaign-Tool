@@ -1,7 +1,7 @@
 """One draft's editor; decisions reuse the existing signed approval POSTs."""
 import urllib.parse
 
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from . import approval_queue, console_journal, console_layout, console_snapshot, draft_templates, mail_drafts, mail_preview, mail_send
@@ -26,7 +26,7 @@ def approval_label(row, switches):
     return "Approve - sending is off (%s). This marks it Approved, not sent." % mail_send.REASONS.get(reason, reason)
 
 
-def approval_status(project, row, switches, source=None):
+def approval_status(project, row, switches, source=None, delivery_block=None):
     if row["kind"] in draft_templates.REVIEW_COPY_KINDS:
         return esc("Approved copy; draft-copy decision only; nothing is posted, sent or published.")
     source = source or console_snapshot.LiveSource(project)
@@ -40,6 +40,8 @@ def approval_status(project, row, switches, source=None):
             when.strftime("%Y-%m-%d %H:%M %Z"), str(result.get("message_id") or "")[:12]))
     if result.get("state") in ("attempt", "unknown"):
         return esc("Delivery unresolved; reconcile in the outbox before any retry")
+    if delivery_block:
+        return esc(delivery_block)
     placement = next((r for r in reversed(source.mail_drafts())
                       if (r["queue_id"], r["revision"]) == (row["id"], row["revision"])), {})
     if placement.get("state") not in ("placed", "found_existing"):
@@ -50,6 +52,56 @@ def approval_status(project, row, switches, source=None):
                 '(it re-checks the mailbox copy and switches and asks for your outbox signature).') % esc(row["id"])
     reason = switches["reason"]
     return esc("Approved, not sent. Sending is off: %s." % mail_send.REASONS.get(reason, reason))
+
+
+def export_note(pin):
+    """Age of this exact snapshot, not the historical run's as-of date."""
+    now = datetime.now(timezone.utc)
+    try:
+        stamp = datetime.fromisoformat(pin.exported_at.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            raise ValueError("missing timezone")
+        seconds = (now - stamp).total_seconds()
+        if seconds < 0:
+            age = "clock skew: export timestamp is in the future; refresh needed"
+        else:
+            minutes = int(seconds // 60)
+            age = "%d days, %d hours, %d minutes old" % (minutes // 1440, minutes // 60 % 24, minutes % 60)
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        age = "age unknown; refresh needed"
+    return "<p>Snapshot export %s — %s. Status is as of export; not proof of current trust or delivery.</p>" % (
+        esc(pin.exported_at), esc(age))
+
+
+def recovery_note(marker):
+    if marker == "unavailable":
+        text = "Approval verification unavailable; this is not a final signature refusal."
+    elif marker == "untrusted":
+        text = ("Approval recorded but not verified under the live project's trust at this read/export; "
+                "the signing key may no longer be trusted.")
+    else:
+        text = "Approval recorded but unverified; decisions are withheld."
+    return "<p role=\"status\">%s Restoring the same trust may restore the old decision without an edit. " \
+           "To deliberately revise: Edit, save, wait for a fresh export, review, then Approve with a current key. " \
+           "A second Approve or Reject cannot replace the recorded approval.</p>" % esc(text)
+
+
+def delivery_context(source, row):
+    """All revisions of this identity; unavailable history must not mean unsent."""
+    results = [r for r in source.send_results() if r["queue_id"] == row["id"]]
+    placements = [r for r in source.mail_drafts() if r["queue_id"] == row["id"]]
+    for entry in results + placements:
+        if type(entry.get("revision")) is not int or not isinstance(entry.get("state"), str):
+            raise ValueError("delivery_context_invalid")
+    if any(r.get("state") == "sent" for r in results):
+        return False, "Already delivered: revision cannot recall the old delivery. No resend is offered here."
+    if any(r.get("state") not in ("sent", "failed", "refused") for r in results):
+        return False, "Delivery unresolved; reconcile in the outbox before any retry or revision."
+    if any(r["state"] not in ("placed", "found_existing", "superseded", "failed", "refused") for r in placements):
+        return False, "Delivery context unavailable; reconcile before revision."
+    if any(r.get("state") in ("placed", "found_existing") for r in placements):
+        return True, "An older mailbox copy remains; revision does not rewrite or recall it."
+    return True, "Available delivery history records no send for this draft."
 
 
 def refusal_panel(project, row, run_id):
@@ -166,12 +218,36 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
 
     title = "Review: %s for %s / %s" % (row["kind"].replace("-", " "), row["agency_id"], row["request_id"])
     pending = row["status"] == "pending"
+    unverified = row.get("approval_unverified")
+    decisions = pending and not unverified
     switches = mail_send.switch_state(project, send_config)
-    status = approval_status(project, row, switches, source) if row["status"] == "approved" else esc(
+    source = source or console_snapshot.LiveSource(project)
+    unsent, delivery = delivery_context(source, row) if row["status"] == "approved" or unverified else (True, "")
+    status = approval_status(project, row, switches, source, None if unsent else delivery) if row["status"] == "approved" else esc(
         "Pending" if pending else "Rejected: " + str(row.get("reason") or ""))
+    if not unsent and row["status"] != "approved":
+        status = esc(delivery)
+    if unverified:
+        status = esc("Approval recorded but unverified (not an ordinary new pending draft)")
     message, field_name, typed = refusal or (None, None, None)
     live = export is None or journal  # a read-only export (no journal) renders no form
     out = ["<h1>%s</h1><p role=\"status\">%s%s</p>" % (esc(title), status, pending_note(row))]
+    if export is not None:
+        out.append(export_note(export))
+    if unverified:
+        out.append(recovery_note(unverified))
+    if row["kind"] in draft_templates.REVIEW_COPY_KINDS + draft_templates.NEXT_STEP_KINDS:
+        out.append("<p>Revision changes the copy decision only; it does not undo any prior mail or site use.</p>")
+    if delivery:
+        out.append("<p>%s</p>" % esc(delivery))
+    revise = row["status"] == "approved" and unsent
+    editable = live and unsent and (pending or revise)
+    if row.get("edit_pending"):
+        out.append('<p role="status">Waiting for edit to apply. Wait for a fresh live-derived export; '
+                   'live approval has not been cleared by this hosted page.</p>')
+    if revise or unverified:
+        out.append("<p>Saving appends an edit, retains the original and approval event, clears approval for the new "
+                   "revision, and requires a fresh review and signature. Save, wait for a fresh export, then approve again.</p>")
     if export is not None and row["status"] == "approved":
         proof = row.get("approval_evidence") or {}
         out.append("<p>Approved by %s: signature verified on the live project (%s) at export %s (signed revision %s, "
@@ -215,16 +291,17 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
         out.append("<h2>Warnings</h2><ul>" + "".join("<li>%s</li>" % esc(w) for w in warnings) + "</ul>")
     # The initial newline prevents HTML's textarea newline stripping from losing a body newline.
     field = '<label for="body">Draft text</label><textarea id="body" name="body" rows="28"%s>\n%s</textarea>' % (
-        " required" if pending and live else " readonly", esc(typed if field_name == "body" else row["body"]))
-    if pending and live:
+        " required" if editable else " readonly", esc(typed if field_name == "body" else row["body"]))
+    if editable:
         # Keep the editor form open through the signing controls. Both buttons submit
         # this very textarea and revision; Save remains a separate action.
         out.append('<form method="post" action="/approvals/edit">'
                    '<input type="hidden" name="csrf_token" value="%s">'
                    '<input type="hidden" name="id" value="%s">'
                    '<input type="hidden" name="return" value="review">%s%s'
-                   '<button type="submit">Save edit</button>' %
-                   (esc(token), esc(row["id"]), ap.revision_field(row), field))
+                   '<button type="submit">%s</button>' %
+                   (esc(token), esc(row["id"]), ap.revision_field(row), field,
+                    "Revise; clears approval" if revise else "Save edit"))
     else:
         out.append(field)
     edits = history["edits"]
@@ -247,12 +324,14 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
     limits = evidence.get("limits") or []
     for limit in limits if isinstance(limits, list) else [limits]:
         out.append("<p>%s</p>" % esc(limit))
-    if pending and not live:
+    if editable and not decisions:
+        out.append("</form>")
+    if decisions and not live:
         out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre><p>%s</p>' % (esc(payload.decode("utf-8")), READ_ONLY))
-    elif pending and row.get("edit_pending"):
+    elif decisions and row.get("edit_pending"):
         out.append('<h2>Approve</h2><p role="status">Waiting for edit to apply. '
                    'Wait for the refreshed export, then review and approve.</p></form>')
-    elif pending:
+    elif decisions:
         out.append('<h2>Approve</h2><pre id="approval-payload">%s</pre>' % esc(payload.decode("utf-8")))
         if journal:
             out.append("<p>%s</p>" % esc(console_journal.NOTE))
@@ -270,7 +349,7 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
                             '<input id="reason" name="reason" required maxlength="2000" value="%s">' % esc(
                                 typed if field_name == "reason" else ""),
                             "Reject with reason", back="review"))
-    if pending and live and row.get("edit_pending"):
+    if decisions and live and row.get("edit_pending"):
         out.append(ap._form("/approvals/reject", token, row["id"], "",
                             '<label>Rejection reason<input name="reason" required maxlength="2000"></label>',
                             "Reject with reason", back="review"))
@@ -352,7 +431,7 @@ def _show(handler, ident, status, refusal, choice=None):
         else:
             preview = (mail_preview.preview(project, row, handler.server.mail_drafts_config)
                        if handler.server.mail_drafts_config is not None else context["preview"])
-        payload = source.queue_payload(ids[0]) if row["status"] == "pending" else None
+        payload = source.queue_payload(ids[0]) if row["status"] == "pending" and not row.get("approval_unverified") else None
         page = render(project, row, history, preview, handler.csrf_token(), payload,
                       options.get("send_config"), run_id=options["run_id"], refusal=refusal, source=source, export=pin,
                       journal=journal, context=context, pending_rows=rows.values())

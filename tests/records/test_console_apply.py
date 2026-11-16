@@ -451,3 +451,67 @@ class EditedApprovalCycle(Apply):
         self.assertEqual(self.apply(), ["ALREADY", "ALREADY", "ALREADY", "APPLIED"])
         self.assertEqual(self.row(self.pending_id)["status"], "approved")
         self.assertEqual(self.row(self.approved_id), other)
+
+
+class ApprovedRevisionCycle(Apply):
+    def test_hosted_revise_waits_for_applied_edit_and_new_export(self):
+        ident = self.approved_id
+        original = aq.history(self.live, ident)["original"]
+        other = self.row(self.pending_id)
+        old = self.sign(aq.approval_payload(self.live, ident).decode())
+        queue = self.live / "approvals/queue.jsonl"
+        before = queue.read_bytes()
+        self.make_export()
+        self.up()
+        page = self.get("/review?id=" + ident)
+        self.assertIn("Revise; clears approval", page)
+        self.assertNotIn('id="approval-payload"', page)
+        body = "\nRevised copy café <unsafe>&\n" + "complete words " * 500 + "NEW-TAIL"
+        self.assertEqual(self.decide("/approvals/edit", id=ident, body=body, expected_revision="1")[0], 303)
+        self.assertEqual(queue.read_bytes(), before)  # intent only
+        self.assertEqual(self.row(ident)["status"], "approved")
+        page = self.get("/review?id=" + ident)
+        self.assertIn("Waiting for edit to apply", page)
+        self.assertNotIn("NEW-TAIL", page)
+        self.assertEqual(self.apply(), ["APPLIED"])
+        self.assertIn("Waiting for edit to apply", self.get("/review?id=" + ident))
+        self.assertTrue(queue.read_bytes().startswith(before))
+        row = self.row(ident)
+        self.assertEqual((row["status"], row["revision"], row["body"]), ("pending", 2, body))
+        self.assertNotIn("approval_evidence", row)
+        self.assertEqual(aq.history(self.live, ident)["original"], original)
+        self.make_export(RUN + "-2")
+        page = self.get("/review?id=" + ident)
+        self.assertIn("NEW-TAIL", page)
+        self.assertNotIn("Waiting for edit to apply", page)
+        self.assertEqual(self.decide("/approvals/approve", id=ident, signature=old)[0], 303)
+        self.assertEqual(self.apply(), ["ALREADY", "SIGNATURE_REFUSED"])
+        fresh = self.exported("queue.json", ident)
+        self.assertEqual(fresh, aq.approval_payload(self.live, ident).decode())
+        self.assertEqual(self.decide("/approvals/approve", id=ident, signature=self.sign(fresh))[0], 303)
+        self.assertEqual(self.apply(), ["ALREADY", "ALREADY", "APPLIED"])
+        self.assertEqual(self.row(ident)["status"], "approved")
+        self.assertEqual(self.row(self.pending_id), other)
+
+    def test_revoked_signer_edit_new_export_current_key_approval(self):
+        from tests.approval_signing import Signer
+        ident = self.approved_id
+        new = Signer("replacement@example.invalid")
+        self.addCleanup(new.close)
+        with new.trust():
+            self.make_export()
+            self.up()
+            page = self.get("/review?id=" + ident)
+            self.assertIn("may no longer be trusted", page)
+            self.assertNotIn('id="approval-payload"', page)
+            for route, fields in (("approve", {"signature": "sig"}), ("reject", {"reason": "no"})):
+                self.assertEqual(self.decide("/approvals/" + route, id=ident, **fields)[0], 409)
+            self.assertEqual(self.lines(), [])
+            self.assertEqual(self.decide("/approvals/edit", id=ident, body="New current-key copy", expected_revision="1")[0], 303)
+            self.assertEqual(self.apply(), ["APPLIED"])
+            self.make_export(RUN + "-2")
+            self.assertNotIn("approval_unverified", self.row(ident))
+            payload = self.exported("queue.json", ident)
+            self.assertEqual(self.decide("/approvals/approve", id=ident, signature=new.sign(payload.encode()))[0], 303)
+            self.assertEqual(self.apply(), ["ALREADY", "APPLIED"])
+            self.assertEqual(self.row(ident)["approved_by"], new.principal)

@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 import re
 from html import unescape
 from unittest import mock
+from types import SimpleNamespace
+from campaign_tool.records import console_review as review
+from campaign_tool import approval
+from tests.approval_signing import Signer
 
 from campaign_tool.records import admin_panel as ap, approval_queue as aq, mail_preview, mail_send as ms, mail_drafts as md, draft_templates
 from tests.records.test_admin_panel import ServerCase, RUN, journal, tree_state
@@ -103,8 +107,9 @@ class ReviewTests(ServerCase):
         self.assertEqual(self.post("approve", signature=signature)[0], 303)
         page = self.get()[2]
         self.assertIn("Approved, not sent. Not in the Drafts mailbox yet: not_placed.", page)
-        self.assertIn(" readonly", page)
-        self.assertNotIn("<form", page)
+        self.assertNotIn(" readonly", page)
+        self.assertIn("Revise; clears approval", page)
+        self.assertNotIn('formaction="/approvals/approve"', page)
         before = journal(self.project)
         self.assertEqual(self.post("approve", signature=signature)[0], 303)
         self.assertEqual(self.post("reject", reason="late")[0], 409)
@@ -256,6 +261,123 @@ class ReviewTests(ServerCase):
         for hook in self.server.send_hooks.values():
             hook.assert_not_called()
 
+    def test_approved_unsent_revise_clears_evidence_retains_original_and_other_rows(self):
+        other = self.draft(2, body="Unrelated original")
+        original = aq.history(self.project, self.draft_row["id"])["original"]
+        old = self.signer.sign(aq.approval_payload(self.project, self.draft_row["id"]))
+        self.assertEqual(self.post("approve", signature=old)[0], 303)
+        before = journal(self.project)
+        other_before = self.row(other["id"])
+        revision = self.form_revision(path="/review?id=" + self.draft_row["id"])
+        self.assertEqual(revision, "1")
+        body = "\nRevised Unicode café <unsafe>&\n" + "Full text. " * 1000 + "NEW-TAIL"
+        with mock.patch.object(ms, "send_one") as send, mock.patch.object(md, "place") as place:
+            self.assertEqual(self.post("edit", body=body, expected_revision=revision)[0], 303)
+        send.assert_not_called()
+        place.assert_not_called()
+        row = self.row()
+        self.assertEqual((row["status"], row["revision"], row["body"]), ("pending", 2, body))
+        for key in ("approval_evidence", "approved_by", "approval_unverified"):
+            self.assertNotIn(key, row)
+        self.assertTrue(journal(self.project).startswith(before))
+        self.assertEqual(aq.history(self.project, row["id"])["original"], original)
+        self.assertEqual(self.row(other["id"]), other_before)
+        before = journal(self.project)
+        self.assertEqual(self.post("approve", signature=old)[0], 403)
+        self.assertEqual(journal(self.project), before)
+        page = self.get()[2]
+        self.assertIn("NEW-TAIL", page)
+        self.assertEqual(unescape(re.search(r'<textarea id="body"[^>]*>\n(.*?)</textarea>', page, re.S)[1]), body)
+        self.approve_review()
+        self.assertEqual(self.row()["status"], "approved")
+
+    def test_untrusted_recorded_approval_is_not_new_pending(self):
+        self.approve_review()
+        before = journal(self.project)
+        new = Signer("replacement@example.invalid")
+        self.addCleanup(new.close)
+        with new.trust():
+            page = self.get()[2]
+            for text in ("Approval recorded but unverified", "may no longer be trusted", "Restoring the same trust",
+                         "fresh export", "current key", 'action="/approvals/edit"'):
+                self.assertIn(text, page)
+            for control in ('id="approval-payload"', 'formaction="/approvals/approve"', 'action="/approvals/reject"'):
+                self.assertNotIn(control, page)
+            for action, fields in (("approve", {"signature": new.sign(aq.approval_payload(self.project, self.draft_row["id"]))}),
+                                   ("reject", {"reason": "second decision"})):
+                # Existing live HTTP maps approval_unverified to 503; the writer refuses explicitly.
+                self.assertEqual(self.post(action, **fields)[0], 503)
+                with self.assertRaises(aq.ApprovalQueueError) as caught:
+                    if action == "approve":
+                        aq.approve(self.project, self.draft_row["id"], {"kind": "ssh", **fields})
+                    else:
+                        aq.reject(self.project, self.draft_row["id"], "operator", fields["reason"])
+                self.assertEqual(caught.exception.code, "approval_unverified")
+                self.assertEqual(journal(self.project), before)
+            self.assertEqual(self.post("edit", body="New words", expected_revision="1")[0], 303)
+            self.assertEqual(self.post("approve", signature=new.sign(aq.approval_payload(self.project, self.draft_row["id"])))[0], 303)
+            self.assertEqual(self.row()["status"], "approved")
+
+    def test_unavailable_approval_is_not_revoked_and_can_restore(self):
+        self.approve_review()
+        row, before = self.row(), journal(self.project)
+        with mock.patch.object(approval, "_require_root", side_effect=approval.TrustUnavailable("missing")):
+            page = self.get()[2]
+            self.assertIn("Approval verification unavailable; this is not a final signature refusal", page)
+            self.assertNotIn("may no longer be trusted", page)
+            self.assertNotIn('id="approval-payload"', page)
+            self.assertNotIn('action="/approvals/reject"', page)
+        self.assertEqual(self.row()["approval_evidence"], row["approval_evidence"])
+        self.assertEqual(journal(self.project), before)
+
+    def test_snapshot_age_is_point_in_time_not_current_trust(self):
+        now = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
+        cases = (("2026-11-13T10:59:00Z", "3 days, 1 hours, 1 minutes old"),
+                 ("2026-11-16T11:59:00Z", "0 days, 0 hours, 1 minutes old"),
+                 ("2026-11-17T00:00:00Z", "clock skew"), ("<bad>&", "age unknown"),
+                 (None, "age unknown"), ("2026-11-16", "age unknown"))
+        with mock.patch.object(review, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            for stamp, expected in cases:
+                page = review.export_note(SimpleNamespace(exported_at=stamp))
+                self.assertIn(expected, page)
+                self.assertIn("as of export; not proof of current trust or delivery", page)
+                self.assertNotIn("<bad>", page)
+            self.assertEqual(clock.now.call_count, len(cases))
+        self.assertNotIn("Snapshot export", self.get()[2])
+
+    def test_sent_or_unresolved_any_revision_withholds_revise_and_resend(self):
+        self.approve_review()
+        self.configure_send()
+        oldrev = self.row()["revision"] - 1
+        for state, warning in (("sent", "cannot recall the old delivery"), ("attempt", "Delivery unresolved"),
+                               ("unknown", "Delivery unresolved"), ("unexpected", "Delivery unresolved")):
+            self.write_mail_rows(ms.RESULTS, ms.SCHEMA, [{"state": state, "revision": oldrev}])
+            page = self.get()[2]
+            self.assertIn(warning, page)
+            self.assertNotIn("Revise; clears approval", page)
+            self.assertNotIn('href="/send?', page)
+        # A definitive failure resolves the same-revision attempt; a different id is irrelevant.
+        self.write_mail_rows(ms.RESULTS, ms.SCHEMA, [{"state": "attempt"}, {"state": "failed"},
+                                                  {"state": "sent", "queue_id": "f" * 64}])
+        self.assertIn("Revise; clears approval", self.get()[2])
+        self.write_mail_rows(md.JOURNAL, md.SCHEMA, [{"state": "placed", "revision": oldrev}])
+        page = self.get()[2]
+        self.assertIn("older mailbox copy remains", page)
+        self.assertIn("Revise; clears approval", page)
+        for method in ("send_results", "mail_drafts"):
+            with mock.patch.object(review.console_snapshot.LiveSource, method, side_effect=OSError("unavailable")):
+                self.assertEqual(self.get()[0], 503)
+        self.write_mail_rows(ms.RESULTS, ms.SCHEMA, [])
+        self.write_mail_rows(md.JOURNAL, md.SCHEMA, [{"state": None}])
+        self.assertEqual(self.get()[0], 503)
+        self.write_mail_rows(md.JOURNAL, md.SCHEMA, [{"state": "future-state"}])
+        self.assertNotIn("Revise; clears approval", self.get()[2])
+        self.write_mail_rows(md.JOURNAL, md.SCHEMA, [])
+        (self.project / "approvals" / ms.RESULTS).write_text("corrupt\n")
+        self.assertEqual(self.get()[0], 503)
+
+
 
 class RefusalReview(ServerCase):
     get = ReviewTests.get
@@ -298,3 +420,19 @@ class RefusalReview(ServerCase):
         with mock.patch.object(review.denial_log, "load", return_value={"state": "available", "entries": [entry]}), \
                 mock.patch.object(review.followup_clock, "read_register", return_value=None):
             self.assertEqual(review.refusal_panel(self.project, row, RUN), "")
+
+
+class SameBodyRevision(ServerCase):
+    def test_same_body_intentional_revision_still_clears_approval(self):
+        ident = self.draft_row["id"]
+        signature = self.signer.sign(aq.approval_payload(self.project, ident))
+        aq.approve(self.project, ident, {"kind": "ssh", "signature": signature})
+        body = self.row()["body"]
+        before = journal(self.project)
+        self.assertEqual(self.http.post("/approvals/edit", {"csrf_token": self.tok, "id": ident,
+                         "body": body, "expected_revision": "1", "return": "review"})[0], 303)
+        self.assertEqual((self.row()["revision"], self.row()["status"]), (2, "pending"))
+        self.assertNotIn("approval_evidence", self.row())
+        self.assertTrue(journal(self.project).startswith(before))
+        with self.assertRaises(aq.ApprovalQueueError):
+            aq.approve(self.project, ident, {"kind": "ssh", "signature": signature})
