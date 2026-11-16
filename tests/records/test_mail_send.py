@@ -235,6 +235,19 @@ class DraftChecks(SendBase):
         self.assertEqual(self.click("f" * 64, sign=False, signature="x", fingerprint="f")["code"], "unknown_draft")
         self.assertEqual(self.smtp.connections, 0)
 
+    def test_superseded_revision_cannot_send_after_revise(self):
+        ident = self.draft_row["id"]
+        info = self.prepared()
+        signature = self.signer.sign(info["payload"].encode())
+        aq.edit(self.project, ident, "operator", "Revised copy", expected_revision=1)
+        before = list(self.fake.calls)
+        prepared = ms.prepare(self.project, self.send_path, ident, imap_factory=self.imap(), now=NOW)
+        self.assertEqual(prepared["code"], "not_approved")
+        self.assertEqual(self.click(signature=signature, fingerprint=info["fingerprint"])["code"], "not_approved")
+        self.assertEqual(self.fake.calls, before)
+        self.assertEqual(self.smtp.connections, 0)
+        self.assertEqual(self.outbox_rows(), [])
+
     def test_only_an_outbox_signature_approves(self):
         info = self.prepared()
         queue_sig = self.signer.sign(aq.approval_payload(self.project, self.draft_row["id"]))

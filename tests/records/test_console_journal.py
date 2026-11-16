@@ -77,6 +77,45 @@ class Journal(Panel):
 
 
 class Decisions(Journal):
+    def test_unverified_recorded_decisions_refuse_before_append(self):
+        def unverified(dest):
+            path = dest / "console-model" / "queue.json"
+            doc = json.loads(path.read_text())
+            row = next(r for r in doc["rows"] if r["id"] == self.pending_id)
+            row["approval_unverified"] = marker
+            path.write_text(json.dumps(doc))
+        # Unknown nonempty markers fail closed too. Public rows do not contain approval_recorded.
+        for run, marker in ((RUN, "untrusted"), (RUN2, "unavailable"), (RUN3, "future-marker")):
+            self.make_export(run, unverified)
+            if self.server is None:
+                self.up()
+            page = self.get("/review?id=" + self.pending_id)
+            self.assertIn("Approval recorded but unverified", page)
+            self.assertNotIn('id="approval-payload"', page)
+            for route, fields in (("approve", {"signature": "signature"}), ("reject", {"reason": "no"})):
+                self.assertEqual(self.decide("/approvals/" + route, id=self.pending_id, **fields)[0], 409)
+            self.assertEqual(self.lines(), [])
+        self.assertEqual(self.decide("/approvals/edit", id=self.pending_id, body="recovery", expected_revision="0")[0], 303)
+        self.assertEqual([e["action"] for e in self.lines()], ["edit"])
+
+    def test_old_approved_export_is_not_current_trust_after_rotation(self):
+        from tests.approval_signing import Signer
+        from campaign_tool.records import console_review
+        from datetime import datetime, timezone
+        self.make_export(RUN, set_manifest(exported_at="2026-11-01T00:00:00Z"))
+        self.up()
+        new = Signer("replacement@example.invalid")
+        self.addCleanup(new.close)
+        with new.trust(), mock.patch.object(approval, "verify", side_effect=AssertionError("host verifier")), \
+                mock.patch.object(console_review, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 11, 16, 0, tzinfo=timezone.utc)
+            page = self.get("/review?id=" + self.approved_id)
+        self.assertIn("Approved by", page)  # historical truth, not a new live verification
+        self.assertIn("2026-11-01T00:00:00Z", page)
+        self.assertIn("15 days, 0 hours, 0 minutes old", page)
+        self.assertIn("as of export; not proof of current trust or delivery", page)
+        self.assertEqual(self.lines(), [])
+
     def test_a_decision_between_two_refreshes_persists_while_export_and_project_stay_unchanged(self):
         self.make_export()
         live_before = tree_state(self.live)

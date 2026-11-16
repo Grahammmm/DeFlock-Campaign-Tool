@@ -108,6 +108,48 @@ converted by `public_packets.from_queue` or automatically become `next-site-upda
 Copy approval never makes an eligible public packet or supplies human/legal/source
 acceptance. No public-content write, fact resolution or publication is performed.
 
+## Revising an approved copy and recovering unverified approval (CONDRAFT-05)
+
+On a current `/review?id=...`, an approved, unsent ordinary queue row offers
+**Revise; clears approval** in the same full-text editor. Saving submits the
+existing guarded `/approvals/edit` with the displayed revision. It appends an
+edit, retains the original and approval event, increments the revision and makes
+the new body pending without the old approval evidence. Even saving identical
+words requires a new signature. An older tab receives 409; reload instead of
+retrying it. Opening, Back and Next do not save anything.
+
+In live mode the save updates the queue, never places or sends. In hosted journal
+mode it records an intent only: **Waiting for edit to apply** does not mean live
+approval is already cleared. Wait for real apply and a fresh live-derived export,
+reread the complete saved words and new payload, then sign with a currently trusted
+key and Approve again. Do not reuse the old signature, or sign the pre-edit export.
+Base exports without a decision journal remain read-only.
+
+**Approval recorded but unverified** is not an ordinary new pending draft. An
+untrusted signature may indicate that the signer is no longer trusted, but is not
+proof of revocation. **Approval verification unavailable** is a trust/verifier
+outage, not a final signature refusal. Restoring the same trust may restore the
+old decision without edits. Deliberate text changes use Edit → save → apply →
+fresh export → current-key Approve. Neither UI nor hosted journal accepts a second
+Approve/Reject over the recorded unverified approval. Trust files are not edited
+by this recovery path. Unknown unverified markers also withhold decision controls.
+
+Exported reviews show their pinned timestamp and age at rendering: status is
+**as of export; not proof of current trust or delivery**. Missing/invalid timestamps
+mean age unknown and refresh needed; future timestamps report clock skew, not
+freshness. An old snapshot can truthfully show historical Approved, not current
+trust. Live views do not invent export ages.
+
+Delivery checks cover every revision of the queue identity. Sent rows cannot be
+recalled and offer no Revise or disguised resend. Unresolved delivery must be
+reconciled first; unavailable/corrupt history never means unsent. Placed or
+found-existing mailbox drafts may be revised, but the older copy remains and is
+not rewritten/recalled here. Review-copy and next-step revision changes only the
+copy decision; it does not undo prior mail/site use or authorize publication.
+Message ties, rejected rows and packet pages gain no Revise action. Packet key
+recovery stays **cancel → re-propose → new signature**, not queue-style pending
+recovery. Exact-revision placement/send checks remain unchanged.
+
 ## Roots, run and report are distinct
 
 - `PROJECT` holds `processing-v1/ledger.sqlite` (canonical ledger), `run-outputs/RUN_ID/` (the selected run's

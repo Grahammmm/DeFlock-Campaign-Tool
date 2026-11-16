@@ -244,7 +244,7 @@ def queue(handler, action, ident, value, row, expected, choice):
     True: journaled; False: the refusal page was sent."""
     if row is None:
         return handler._fail(404) or False
-    if action != "edit" and row["status"] != "pending":
+    if action != "edit" and (row["status"] != "pending" or row.get("approval_unverified")):
         return handler._fail(409) or False
     if (action == "reject" and len(value) > 2000) or (action == "edit" and len(value.encode()) > aq.MAX_BODY):
         return handler._fail(400) or False
