@@ -175,6 +175,20 @@ def queue(handler, action, ident, value, row, expected, choice):
     return _record(handler, action, ident, row["revision"], value, choice)
 
 
+def relink(handler, message_sha256, supersedes):
+    """"This tie is wrong": journal the queue-only ``message_link_relink`` action. The message must be tied in the pinned
+    export (its metadata present) and the page's fingerprint must be the exported current line. Applying it only queues the
+    replacement decision; it never appends a link. True: journaled; False: the refusal page was sent."""
+    try:
+        links = handler.options["source"].message_links()
+    except (aq.ApprovalQueueError, OSError, ValueError, KeyError, TypeError):
+        return handler._fail(503) or False  # an export without link metadata: refresh it
+    current = links.get(message_sha256)
+    if not isinstance(current, dict) or current.get("line_sha256") != supersedes:
+        return handler._fail(409) or False
+    return _record(handler, "message_link_relink", message_sha256, None, supersedes)
+
+
 def packet(handler, field, ident, revision, value):
     """Packet approve / reject against the exported pending packets (revision, status and expiry as the writer)."""
     try:

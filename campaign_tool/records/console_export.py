@@ -26,6 +26,7 @@ from pathlib import Path
 
 from .. import approval
 from . import approval_queue, console_ocr, draft_templates, mail_drafts, mail_send, public_packets, public_updates
+from .outcomes import unmatched
 
 SCHEMA = "records-console-export-v1"
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")  # same grammar as admin_panel.check_run_id
@@ -253,14 +254,27 @@ def _link_payloads(project, row):
     return found
 
 
+def _message_links(project):
+    """The current ties for the "This tie is wrong" control (hashes, request ids, link-line fingerprint only). None when the
+    file cannot be read (the control is then withheld)."""
+    try:
+        return unmatched.link_fingerprints(project)
+    except (OSError, ValueError):
+        return None
+
+
 def _model_queue(project, now):
     rows = approval_queue.load_queue(project)
     pending = [r for r in rows if r["status"] == "pending"]
-    return {"rows": rows,
-            "payloads": {r["id"]: approval_queue.approval_payload(project, r["id"]).decode("utf-8")
-                         for r in pending if r["kind"] != draft_templates.MESSAGE_LINK},
-            "link_payloads": {r["id"]: _link_payloads(project, r) for r in pending if r["kind"] == draft_templates.MESSAGE_LINK},
-            "history": {r["id"]: approval_queue.history(project, r["id"]) for r in rows}}
+    model = {"rows": rows,
+             "payloads": {r["id"]: approval_queue.approval_payload(project, r["id"]).decode("utf-8")
+                          for r in pending if r["kind"] != draft_templates.MESSAGE_LINK},
+             "link_payloads": {r["id"]: _link_payloads(project, r) for r in pending if r["kind"] == draft_templates.MESSAGE_LINK},
+             "history": {r["id"]: approval_queue.history(project, r["id"]) for r in rows}}
+    links = _message_links(project)
+    if links is not None:
+        model["message_links"] = links
+    return model
 
 
 def _model_packets(project, now):
