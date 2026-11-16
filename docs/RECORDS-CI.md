@@ -120,8 +120,10 @@ Checked main: `8c10b9fe186d54c233d89de4862eb4383a83e440` (newer than the spec's
 checked head; the two uncapped commands and unbounded matrix concurrency remain).
 The unchanged selector source SHA-256 is
 `4a1605a05299ac8663a57151d1772aaedec2191e88c50e506585b2c0cceb4b48`.
-The candidate workflow diff consists only of two `--jobs 0` → `--jobs 2`
-arguments and two `max-parallel` keys (5 and 6). Candidate file SHA-256 values:
+The historical candidate workflow diff consists only of two `--jobs 0` → `--jobs 2`
+arguments and two `max-parallel: 1` keys. The later CI-DF-FANOUT-1 configuration
+changes those limits to 5 and 6, as described above; it is not the workflow bound
+to this historical measurement. Historical candidate file SHA-256 values:
 
 - `.github/workflows/records.yml`: `37affc5e9ab64700b26c659bee4ca68c90035847f07150b5e648ff5f98ad7ded`.
 - `tests/test_ci_contention_cap.py`: `74e1c1f4220583e9c74eeef95c054d958289f291bb113015a104b27335a2a624`.
