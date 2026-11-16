@@ -172,7 +172,15 @@ The evidence is an attestation the operator makes. The library does not authenti
    password database, never HOME), every readable process's cwd and open files are scanned whatever its owner, and any
    process still unreadable keeps `PROC_UNREADABLE`. Only root may use it (`ROOTS_USER_REQUIRES_ROOT`, exit 2; unknown
    NAME is `ROOTS_USER_UNKNOWN`, exit 2). E then carries `roots_user`, and only the backup run by that same user
-   accepts it. In this mode `open_files.count` and `proc_unreadable` count distinct processes, not targets; no pid or
+   accepts it. **Required ownership handoff:** the audit does not change E's owner. A newly created E is root-owned
+   mode 0600 and NAME cannot read it until root transfers ownership. Choose a fresh, non-symlink E in NAME's private
+   0700 handoff directory outside P, with every parent traversable by NAME. After a successful audit, in the same
+   container/filesystem namespace as E, run as root `chown --no-dereference NAME E` (owner only, not `NAME:GROUP`).
+   Verify E is a regular file owned by NAME, still mode 0600, and that its SHA-256 matches the digest printed by the
+   audit. Do not make E group/world-readable, replace it through a symlink, or run backup as root to work around
+   `EACCES`: root does not match `roots_user=NAME`. Keep the printed digest for step 4; ownership transfer does not
+   change evidence bytes or extend the 120-second freshness window. If the window expires, repeat the audit using
+   another fresh E and transfer it again. In this mode `open_files.count` and `proc_unreadable` count distinct processes, not targets; no pid or
    path is printed. Run lock and arrival are the live ones of `--runtime-socket` (one-shot helper and consumer need the
    same effective uid); no recorded state is accepted. Never skip unreadable processes or loosen permissions to pass. `ROOTS_UNSAFE` means
    a declared root failed the path-safety check. For `ARRIVAL_PENDING` drain it with one records run, then repeat from

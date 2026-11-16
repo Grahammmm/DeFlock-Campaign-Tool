@@ -1,5 +1,7 @@
 """DF0652-06: quiescence-audit --roots-user NAME (root auditor, named account's backup roots), fake /proc tree."""
 import errno
+import hashlib
+import traceback
 import io
 import json
 import os
@@ -206,6 +208,86 @@ class RootsUser(unittest.TestCase):
         with mock.patch.object(records_backup.pwd, "getpwuid", lambda uid: caller):
             self.run_main("--roots-user", "coder")
             self.assertEqual(records_backup._evidence(str(self.out), None, roots).roots, roots)
+
+
+@unittest.skipUnless(os.geteuid() == 0, "real cross-UID handoff needs root (a mapped user namespace suffices)")
+class CrossUidHandoff(unittest.TestCase):
+    def test_root_evidence_handoff_preserves_owner_only_access_and_digest(self):
+        # Chroot only a forked child: synthetic paths remain traversable after dropping UID,
+        # even when the host's TMPDIR has private ancestors. No host account/files are changed.
+        with tempfile.TemporaryDirectory() as directory:
+            read_fd, write_fd = os.pipe()
+            pid = os.fork()
+            if pid == 0:
+                os.close(read_fd)
+                try:
+                    os.chroot(directory)
+                    os.chdir("/")
+                    self.exercise_handoff()
+                except BaseException:
+                    os.write(write_fd, traceback.format_exc().encode())
+                    os._exit(1)
+                os._exit(0)
+            os.close(write_fd)
+            with os.fdopen(read_fd) as result:
+                detail = result.read()
+            _, status = os.waitpid(pid, 0)
+            self.assertEqual(status, 0, detail)
+
+    def exercise_handoff(self):
+        uid, gid = 1000, 1000
+        Path("/").chmod(0o755)
+        project, home = Path("/project"), Path("/home-coder")
+        for path in (project, home, Path("/runtime"), Path("/proc"), Path("/handoff")):
+            path.mkdir(mode=0o700)
+        for rel in rp.EXTRA_ROOTS:
+            (home / rel).mkdir(parents=True)
+        os.chown("/handoff", uid, gid)
+        # Only account lookup and /proc are synthetic; UID checks, DAC, audit output,
+        # evidence parsing, digest validation and backup's quiescence boundary are real.
+        account = SimpleNamespace(pw_name="coder", pw_dir=str(home))
+        root = SimpleNamespace(pw_name="root", pw_dir="/root")
+        Path("/units").write_text("Captured=%d\n\n" % time.time() + units_text())
+        with mock.patch.object(qa, "PROC_ROOT", "/proc"), \
+                mock.patch.object(rp.pwd, "getpwnam", return_value=account), \
+                mock.patch.object(records_backup.pwd, "getpwuid", side_effect=lambda n: account if n == uid else root):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                code = qa.main(["--project", str(project), "--runtime", "/runtime", "--units-file", "/units",
+                                "--roots-user", "coder", "--out", "/handoff/e.json"])
+            self.assertEqual(code, 0)
+            evidence = Path("/handoff/e.json")
+            raw = evidence.read_bytes()
+            digest = stdout.getvalue().strip().split("evidence_sha256=")[-1]
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), digest)
+            roots = tuple(json.loads(raw)["roots"])
+            self.assertEqual((evidence.stat().st_uid, evidence.stat().st_mode & 0o777), (0, 0o600))
+            with self.assertRaises(ValueError):  # running backup as root cannot bypass the named caller
+                records_backup._evidence(str(evidence), digest, roots)
+
+            for handed_off in (False, True):
+                if handed_off:
+                    # chown --no-dereference NAME E: owner-only, no permission widening.
+                    os.chown(evidence, uid, -1, follow_symlinks=False)
+                    self.assertEqual((evidence.stat().st_uid, evidence.stat().st_mode & 0o777), (uid, 0o600))
+                os.setresgid(gid, gid, 0)
+                os.setresuid(uid, uid, 0)
+                try:
+                    self.assertEqual((os.getuid(), os.geteuid()), (uid, uid))
+                    if not handed_off:
+                        with self.assertRaises(PermissionError):
+                            records_backup._evidence(str(evidence), digest, roots)
+                        continue
+                    accepted = records_backup._evidence(str(evidence), digest, roots)
+                    records_backup.v2._boundary(accepted, tuple(Path(r) for r in roots))
+                    self.assertEqual(accepted.evidence_sha256, digest)
+                    self.assertEqual(evidence.read_bytes(), raw)
+                    with self.assertRaises(ValueError):
+                        records_backup._evidence(str(evidence), "0" * 64, roots)
+                finally:
+                    os.seteuid(0)
+                    os.setresuid(0, 0, 0)
+                    os.setresgid(0, 0, 0)
 
 
 if __name__ == "__main__":
