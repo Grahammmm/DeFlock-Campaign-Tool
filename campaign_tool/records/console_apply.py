@@ -173,6 +173,8 @@ def _apply(project, entry):
         pp.decide(project, ident, "rejected", _journal_actor(actor), revision=revision, reason=value)
     elif action == "retract":
         pu.retract(project, ident, _journal_actor(actor))
+    elif action == cj.LINE_APPROVAL_ACTION:  # DF2007-10: records the signed approval only; never advances or posts
+        pu.approve_line(project, ident, value, revision=revision)
     elif action in ("off", "kill"):
         (pu.turn_off if action == "off" else pu.kill)(project, _journal_actor(actor))
     elif action in OCR_ACTIONS:
@@ -199,7 +201,7 @@ def _mark(project, entry):
         return row["revision"] if row else None
     if action in ("packet_approve", "packet_reject"):
         return len(_events(pp, project))
-    if action == "retract":
+    if action in ("retract", cj.LINE_APPROVAL_ACTION):
         return len(_events(pu, project))
     return None
 
@@ -235,6 +237,9 @@ def _landed(project, entry, base):
     if action == "retract":
         return any(e.get("event") == "retract" and e.get("id") == ident and e.get("actor") == who
                    for e in _events(pu, project)[base:])
+    if action == cj.LINE_APPROVAL_ACTION:
+        return any(e.get("event") == "line_approval" and e.get("id") == ident and e.get("revision") == revision
+                   and e.get("signature") == value for e in _events(pu, project)[base:])
     return False
 
 

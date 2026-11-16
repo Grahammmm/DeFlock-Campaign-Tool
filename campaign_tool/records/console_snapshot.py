@@ -279,10 +279,15 @@ class SnapshotSource:
     def public_updates(self):
         name, error = "public-updates.json", pu.PublicUpdatesError
         try:
-            return {"state": "ok", "lines": self._doc(name, error, "lines", list),
-                    "switch": self._doc(name, error, "switch", str), "alerts": self._doc(name, error, "alerts", list)}
+            doc = {"state": "ok", "lines": self._doc(name, error, "lines", list),
+                   "switch": self._doc(name, error, "switch", str), "alerts": self._doc(name, error, "alerts", list)}
         except error as failure:
             return {"state": "unavailable", "code": failure.code}
+        try:  # an export taken before CON-LINE-APPROVE-1 has none: its lines show no approval form
+            doc["line_payloads"] = self._doc(name, error, "line_payloads", dict)
+        except error:
+            doc["line_payloads"] = {}
+        return doc
 
     def public_updates_switch(self):
         return self._doc("public-updates.json", pu.PublicUpdatesError, "switch", str)
