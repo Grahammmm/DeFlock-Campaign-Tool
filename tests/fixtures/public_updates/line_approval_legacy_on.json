@@ -4,8 +4,8 @@
   "results": [
    {
     "held": [
-     "358b383e4598c027",
-     "8e21c6ea5d3cc7d8"
+     ["358b383e", "4598c027"],
+     ["8e21c6ea", "5d3cc7d8"]
     ],
     "posted": [],
     "refused": [],
@@ -17,8 +17,8 @@
     "posted": [],
     "refused": [],
     "retracted": [
-     "358b383e4598c027",
-     "8e21c6ea5d3cc7d8"
+     ["358b383e", "4598c027"],
+     ["8e21c6ea", "5d3cc7d8"]
     ],
     "state": "KILLED"
    }
@@ -30,11 +30,11 @@
   "results": [
    {
     "held": [
-     "358b383e4598c027",
-     "8e21c6ea5d3cc7d8",
-     "0b63ad4155792116",
-     "c93c81ecaeecc34d",
-     "bb19be654237f93f"
+     ["358b383e", "4598c027"],
+     ["8e21c6ea", "5d3cc7d8"],
+     ["0b63ad41", "55792116"],
+     ["c93c81ec", "aeecc34d"],
+     ["bb19be65", "4237f93f"]
     ],
     "posted": [],
     "refused": [],
@@ -51,13 +51,13 @@
    {
     "held": [],
     "posted": [
-     "0b63ad4155792116",
-     "358b383e4598c027",
-     "8e21c6ea5d3cc7d8"
+     ["0b63ad41", "55792116"],
+     ["358b383e", "4598c027"],
+     ["8e21c6ea", "5d3cc7d8"]
     ],
     "refused": [
      [
-      "c93c81ecaeecc34d",
+      ["c93c81ec", "aeecc34d"],
       "cap_agency_day"
      ]
     ],

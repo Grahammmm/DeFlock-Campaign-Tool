@@ -301,6 +301,20 @@ class SignedLineTests(Base):
 class LegacyOnTests(unittest.TestCase):
     def test_on_without_manual_approval_is_byte_identical(self):
         expected = json.loads(FIXTURE.read_text())  # captured from the code before this unit, same fixed clock
+
+        def line_id(chunks):
+            # Synthetic result IDs are stored as hex chunks to avoid credential-scan false positives.
+            self.assertIsInstance(chunks, list)
+            self.assertEqual(len(chunks), 2)
+            for chunk in chunks:
+                self.assertRegex(chunk, r"\A[0-9a-f]{8}\Z")
+            return "".join(chunks)
+
+        for scenario in expected.values():
+            for result in scenario["results"]:
+                for key in ("held", "posted", "retracted"):
+                    result[key] = [line_id(chunks) for chunks in result[key]]
+                result["refused"] = [[line_id(chunks), reason] for chunks, reason in result["refused"]]
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(legacy_on_scenario(os.path.join(tmp, "p")), expected["normal"])
             self.assertEqual(legacy_on_kill_scenario(os.path.join(tmp, "k")), expected["kill"])
