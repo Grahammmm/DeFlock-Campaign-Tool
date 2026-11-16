@@ -11,6 +11,31 @@ records panel --project PROJECT --run-id RUN_ID [--run-report FILE] [--kit-root 
 records panel --project PROJECT --run-id RUN_ID ... --render out.html     # static snapshot, no socket
 ```
 
+## Prepared export review context (CONDRAFT-03)
+
+The owning project's export prepares `console-model/queue.json`'s `review_context`
+map, keyed by stable queue id. Each entry binds `source_project_id`, `queue_id`,
+`revision` and SHA-256 of the canonical signed row evidence. It carries the resolved
+recipient or website/page/section target, subject, typed citations, source section
+and attachment hash, purpose and limitations. The imported correspondence envelope
+is resolved by the same validator/thread rules as mailbox placement; it is not an
+editable preview override. This map never authorizes placement or sending.
+
+`SnapshotSource.review_context(id)` reads only the sealed model. It does not open
+originals, mail or mailbox configuration or recompute the source project's identity.
+Old exports without context, or entries whose binding is stale, ask **Refresh the
+export to see recipient and sources**. A producer whose recipient cannot be resolved
+shows **Unknown / Not send-ready**; a missing citation list means sources unknown,
+not zero citations. A resolved recipient is not send authorization.
+
+Home's queue index, dashboard queue and `/review?id=...` show every citation and
+its original/tracker type, locator, as-of, verification and supplied caveats outside
+the signing JSON. Source text is escaped; no original hash, date or verification
+is invented. The complete draft body remains available at the existing size cap.
+**Leave pending** and **Next** follow sorted stable pending ids (wrapping to the
+first remaining id). They are GET navigation only: no decision, snooze, deletion
+or bulk action. Rejection changes only that row and leaves others reachable.
+
 ## Review-only agency summaries and corrections (CONDRAFT-02)
 
 ### Implementation scope amendment

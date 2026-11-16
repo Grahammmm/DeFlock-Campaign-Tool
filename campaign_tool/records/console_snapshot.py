@@ -147,6 +147,13 @@ class LiveSource:
     def queue_history(self, ident):
         return aq.history(self.project, ident)
 
+    def review_context(self, ident):
+        from . import mail_preview
+        row = next((r for r in self.queue_rows() if r["id"] == ident), None)
+        if row is None:
+            raise aq.ApprovalQueueError("unknown_id")
+        return mail_preview.review_context(self.project, row)
+
     def message_links(self):
         """{message_sha256: {agency_id, request_id, line_sha256}}: the current ties, read live and read-only."""
         return unmatched.link_fingerprints(self.project)
@@ -251,6 +258,22 @@ class SnapshotSource:
 
     def queue_history(self, ident):
         return self._queue_item("history", ident)
+
+    def review_context(self, ident):
+        from . import mail_preview
+        doc = self._doc("queue.json", aq.ApprovalQueueError)
+        mapping = doc.get("review_context")
+        row = next((r for r in self.queue_rows() if r["id"] == ident), None)
+        if row is None:
+            raise aq.ApprovalQueueError("unknown_id")
+        context = mapping.get(ident) if isinstance(mapping, dict) else None
+        if not isinstance(context, dict):
+            return None  # old export: absence is not a recipient or a count of zero
+        if (context.get("source_project_id"), context.get("queue_id"), context.get("revision"),
+                context.get("evidence_sha256")) != (self.pin.source_project_id, ident, row["revision"],
+                                                    mail_preview.evidence_sha256(row)):
+            return None  # stale/mismatched context must ask for a refresh, never resolve live
+        return context
 
     def message_links(self):
         """The exported current ties. An export without the field (older) is refused so the control asks for a refresh; an
