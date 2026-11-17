@@ -947,7 +947,7 @@ _MODULES = {
         records.schedule_snapshot records.site_prs records.draft_promote
         records.admin_panel records.agency_reconciliation records.analysis_bridge records.analysis_config records.analysis_packets records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links records.finding_review records.finding_review_apply
         records.catalog_stage records.console_calendar records.console_documents records.console_export records.contained_resume records.e2e_proof records.container_host records.export_clearance
-        records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes records.first_request
+        records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes records.first_request records.agency_response_sheet
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
         records.gates.safe_output records.gates.validate_findings records.intake.document_drop
         records.intake.eml_export records.intake.folder records.intake.local_capture records.intake.mail_delta
@@ -1073,6 +1073,7 @@ MODULE_FUNCTIONS = {
     'records.export_clearance': ('clearance',),
     'records.project_init': ('_write', '_starters', 'init_project',),  # one new private records project: campaign.json, .campaign-root, empty ledger and queue, plus disabled starters (followup-settings.json, header-only agency-retention.csv, README-only agency-asks/ and followup-coverage/); refuses an existing root; sends nothing
     'records.first_request': ('main',),  # prints a draft to stdout; --queue appends only via the approval journal
+    'records.agency_response_sheet': ('main',),  # writes only the new --out sheet outside the project
     'records.extract.ocr': (
         '_hold', '_index', '_link_new', '_page_lock', '_prune_unrecorded', '_publish_blocked_disposition',
         '_reconcile_page', '_write_new', 'extract_image_only_pages'
