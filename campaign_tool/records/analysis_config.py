@@ -92,6 +92,28 @@ def _read_regular(path, dir_fd=None):
     return _strict_json(data.decode("utf-8"))
 
 
+def _read_retained(path):
+    """Exact bytes of the retained CONFIG, None when the final entry is absent; OSError/ValueError when unsafe or over MAX_BYTES."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        data = b""
+        while len(data) <= MAX_BYTES:
+            chunk = os.read(fd, MAX_BYTES + 1 - len(data))
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        os.close(fd)
+    if len(data) > MAX_BYTES:
+        raise ValueError("too large")
+    return data
+
+
 def _open_dir(path):
     """Open an absolute directory with no symlink in any component; returns an fd (OSError otherwise)."""
     path = Path(os.path.abspath(path))
@@ -324,7 +346,10 @@ def write_config(root, slug, *, created_date=None, check_only=False):
         return "PROFILE_CANDIDATE"
     target = root / "agencies" / slug / "review-config.json"
     run_date = created_date or datetime.date.today().isoformat()
-    old = target.read_bytes() if target.is_file() else None
+    try:
+        old = _read_retained(target)
+    except (OSError, ValueError):
+        return "CONFIG_INVALID existing_config"
     try:  # the run date is stable: kept from the existing config, new only when none exists
         kept = json.loads(old)["review"]["run_date"]
         run_date = kept if tool.facts_tool.valid_date(kept) else run_date
