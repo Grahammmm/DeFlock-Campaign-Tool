@@ -173,6 +173,19 @@ def _starts(meeting):
     return datetime.fromisoformat(stamp[:-1] + "+00:00" if stamp.endswith("Z") else stamp)
 
 
+def _within(start, now, window):
+    """``start <= now + window days`` without building a date past the calendar's end."""
+    try:
+        return start <= now + timedelta(days=window)
+    except OverflowError:
+        return start - now <= timedelta(days=window)
+
+
+def _in_days(now, day, window):
+    """True when the calendar day is today or at most ``window - 1`` days before it."""
+    return 0 <= (now.date() - day).days < window
+
+
 # --- per kind: stale reasons, required stems, fresh draft, edited-draft problems --------------------------------
 
 def _eligible_meetings(ctx, window):
@@ -180,7 +193,7 @@ def _eligible_meetings(ctx, window):
     if got is None:
         return {}
     meetings, now = got
-    return {i: m for i, m in meetings.items() if m["status"] == "scheduled" and now <= _starts(m) <= now + timedelta(days=window)
+    return {i: m for i, m in meetings.items() if m["status"] == "scheduled" and now <= _starts(m) and _within(_starts(m), now, window)
             and m["participation"] is not None}
 
 
@@ -189,9 +202,8 @@ def _eligible_outcomes(ctx, window):
     if got is None:
         return {}
     meetings, now = got
-    first = now.date() - timedelta(days=window - 1)
     return {i: m for i, m in meetings.items() if m["status"] == "scheduled" and m["outcome"] is not None
-            and first <= S.date.fromisoformat(m["outcome"]["on"]) <= now.date()}
+            and _in_days(now, S.date.fromisoformat(m["outcome"]["on"]), window)}
 
 
 def _stale_meeting(ctx, stem, meta):
@@ -222,20 +234,19 @@ def _stale_outcome(ctx, stem, meta):
     if meta:
         if meta["outcome"] != meeting["outcome"]:
             reasons.append("outcome changed")
-        first = ctx.meetings()[1].date() - timedelta(days=meta["within_days"] - 1)
-        if not first <= S.date.fromisoformat(meeting["outcome"]["on"]) <= ctx.meetings()[1].date():
+        if not _in_days(ctx.meetings()[1], S.date.fromisoformat(meeting["outcome"]["on"]), meta["within_days"]):
             reasons.append(f"outcome left its {meta['within_days']}-day window")
     else:
         # No bound provenance: fall back to what a fresh default-14-day generation would select.
         now = ctx.meetings()[1]
-        if not now.date() - timedelta(days=13) <= S.date.fromisoformat(meeting["outcome"]["on"]) <= now.date():
+        if not _in_days(now, S.date.fromisoformat(meeting["outcome"]["on"]), 14):
             reasons.append("outcome is outside the default 14-day window and its original window is unknown; rebuild with social --outcomes")
     return reasons
 
 
 def _eligible_events(ctx, window):
     return {i: e for i, e in ctx.events().items()
-            if ctx.event_now <= S.parse_moment(e["starts_at"]) <= ctx.event_now + timedelta(days=window)}
+            if ctx.event_now <= S.parse_moment(e["starts_at"]) and _within(S.parse_moment(e["starts_at"]), ctx.event_now, window)}
 
 
 def _stale_event(ctx, stem, meta):
@@ -247,7 +258,7 @@ def _stale_event(ctx, stem, meta):
     if meta and meta["starts_at"] != event["starts_at"]:
         reasons.append(f"rescheduled (was {meta['starts_at']}, now {event['starts_at']})")
     window = meta["within_days"] if meta else 14
-    if starts > ctx.event_now + timedelta(days=window):
+    if not _within(starts, ctx.event_now, window):
         reasons.append(f"event left its {window}-day window" if meta else
                        "event is outside the default 14-day window and its original window is unknown; rebuild with social --events")
     return reasons
