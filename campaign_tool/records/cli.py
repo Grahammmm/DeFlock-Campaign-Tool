@@ -57,6 +57,7 @@ COMMANDS = {
     "agency-events": ("agency_run.events_ingest", "main"),
     "agency-policy-matrix": ("agency_policy_matrix", "main"),
     "agency-retention": ("agency_retention", "main"),
+    "agency-evidence": ("agency_run.evidence_index", "main"),
     "agency-lint-asks": ("agency_run.lint_asks", "main"),
     "agency-response-sheet": ("agency_response_sheet", "main"),
     "agency-next": ("agency_next", "main"),
