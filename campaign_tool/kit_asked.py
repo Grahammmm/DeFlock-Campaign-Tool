@@ -169,6 +169,8 @@ def _read_agencies(path, limit=MAX_JSON_BYTES):
         return json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ContentError(f"{path.name}: not valid UTF-8 JSON ({exc})") from None
+    except RecursionError:  # decoder exhaustion only; fixed text, no payload or limit advice
+        raise ContentError(f"{path.name}: JSON nesting is too deep") from None
 
 
 def _show(value):
