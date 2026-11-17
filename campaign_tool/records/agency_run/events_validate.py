@@ -10,7 +10,7 @@ from .events_ingest import COLUMNS, PACIFIC
 MAX_BYTES, MAX_LINES = 2 * 1024 * 1024, 200
 TYPES = {"request_sent", "follow_up_sent", "clock_start", "clock_due", "determination", "request_received",
          "reconsideration_sent"}
-TIME = re.compile(r"[0-9]{2}:[0-9]{2} P[DS]T")
+TIME = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9] P[DS]T")
 DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(?::[0-9]{2})?Z")
 LATE = re.compile(r"(?<![a-z0-9])(overdue|late|past due)(?![a-z0-9])", re.I)
@@ -25,7 +25,7 @@ def _real_date(text):
 
 def _read(path):
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         return None
     try:
@@ -39,13 +39,22 @@ def _read(path):
         return None
 
 
-def _utc_pacific_mismatch(row):
-    for text in (row["source"], row["clock_note"]):
-        for stamp in STAMP.findall(text):
-            utc = datetime.fromisoformat(stamp[:-1] + "+00:00").astimezone(timezone.utc)
-            if row["date"] == utc.date().isoformat() and utc.astimezone(PACIFIC).date() < utc.date():
-                return True
-    return False
+def _utc_pacific_mismatch(row, hit):
+    mismatch = False
+    for column in ("source", "clock_note"):
+        invalid = False
+        for stamp in STAMP.findall(row[column]):
+            try:
+                utc = datetime.fromisoformat(stamp[:-1] + "+00:00").astimezone(timezone.utc)
+                pacific = utc.astimezone(PACIFIC)
+            except (ValueError, OverflowError):
+                invalid = True
+                continue
+            if row["date"] == utc.date().isoformat() and pacific.date() < utc.date():
+                mismatch = True
+        if invalid:
+            hit(column, "timestamp_invalid")
+    return mismatch
 
 
 def validate(path):
@@ -86,7 +95,7 @@ def validate(path):
         bad = next((c for c in COLUMNS if "<" in row[c] or ">" in row[c]), None)
         if bad:
             hit(bad, "angle_bracket")
-        if _real_date(row["date"]) and _utc_pacific_mismatch(row):
+        if _utc_pacific_mismatch(row, hit):
             hit("date", "date_is_utc_date")
         if any(LATE.search(row[c]) for c in ("what_happened", "clock_note", "event_type")):
             note = row["clock_note"].lower()

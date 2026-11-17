@@ -2,6 +2,8 @@
 import io
 import json
 import os
+import subprocess
+import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 import tempfile
@@ -100,6 +102,44 @@ class Tests(Case):
         self.assertEqual(hits("2026-11-02", "2026-11-02T00:20Z"), [(2, "date", "date_is_utc_date")])
         self.assertEqual(hits("2026-11-01", "2026-11-02T00:20Z"), [])
         self.assertEqual(hits("2026-11-05", "2026-11-05T21:00Z"), [])
+
+    def test_invalid_stamp_reports_and_continues_in_both_formats(self):
+        path = self.write([row(source=CANARY + ' 2026-99-99T99:99Z',
+                               note='2026-02-30T00:00:00Z 2026-11-02T00:20Z'),
+                           row('T-2', kind='bogus')])
+        expected = [{'line': 2, 'column': 'source', 'code': 'timestamp_invalid'},
+                    {'line': 2, 'column': 'clock_note', 'code': 'timestamp_invalid'},
+                    {'line': 2, 'column': 'date', 'code': 'date_is_utc_date'},
+                    {'line': 3, 'column': 'event_type', 'code': 'event_type_unknown'}]
+        for extra in ([], ['--json']):
+            code, out, err = self.run_cli(['--validate', str(path)] + extra)
+            self.assertEqual(code, 1)
+            self.assertEqual(err, '')
+            self.assertNotIn(CANARY, out)
+            self.assertNotIn('2026-99-99T99:99Z', out)
+            if extra:
+                self.assertEqual(json.loads(out), {'ok': False, 'problems': expected})
+            else:
+                self.assertEqual(out.splitlines(), [f"events.tsv line {p['line']}: {p['code']} ({p['column']})"
+                                                    for p in expected])
+
+    def test_fifo_without_writer_is_rejected_promptly(self):
+        fifo = self.dir / 'events.fifo'
+        os.mkfifo(fifo)
+        result = subprocess.run([sys.executable, '-m', 'campaign_tool.records.agency_run.events_ingest',
+                                 '--validate', str(fifo), '--json'], capture_output=True, text=True, timeout=2)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout), {'ok': False, 'problems': [
+            {'line': 0, 'column': 'file', 'code': 'file_invalid'}]})
+        self.assertEqual(result.stderr, '')
+
+    def test_time_clock_boundaries(self):
+        for value in ('00:00 PST', '23:59 PDT', '12:00 PST'):
+            with self.subTest(value=value):
+                self.assertEqual(self.codes([row(time=value)]), [])
+        for value in ('24:00 PST', '99:99 PST', '23:60 PDT', '00:99 PST'):
+            with self.subTest(value=value):
+                self.assertEqual(self.codes([row(time=value)]), [(2, 'time_local', 'time_invalid')])
 
     def test_overdue_wording_rule(self):
         def hits(what, note):
