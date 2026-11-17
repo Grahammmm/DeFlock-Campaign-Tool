@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 
 from .evidence_index import HEADER, MAX_PDF, clean, inside, write_private
 
@@ -51,7 +52,15 @@ def ocr_pages(path, doc, pages, failures):
         return {}
     found = {}
     for i, m in enumerate(marks):
-        n = int(m.group(1))
+        digits = m.group(1)
+        start = 0
+        while start < len(digits) and unicodedata.decimal(digits[start]) == 0:
+            start += 1
+        digits = digits[start:] or "0"
+        if len(digits) > len(str(pages)):
+            failures.append("ocr_page_out_of_range:" + doc)
+            continue
+        n = int(digits)
         end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
         if not 1 <= n <= pages:
             failures.append("ocr_page_out_of_range:" + doc)
@@ -88,7 +97,7 @@ def process(row, doc, root, ocr_dir, failures):
         return None
     if len(failures) > before:
         return None
-    if int(row["pdf_pages"]) != count:
+    if (row["pdf_pages"].lstrip("0") or "0") != str(count):
         failures.append("page_count_mismatch:" + doc)
         return None
     native = {}

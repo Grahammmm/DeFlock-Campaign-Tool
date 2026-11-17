@@ -69,6 +69,12 @@ class AgencyPagesTests(Base):
         self.assertIn("Synthetic Alpha", self.read("pages/D1_p001.txt"))
         self.assertIn("\tnative+ocr\t", self.read("inventory.tsv"))
 
+    def test_padded_counts_and_markers_remain_valid(self):
+        self.rows[0][6] = "0" * 5000 + "2"
+        (self.ocr / (sha(self.a) + ".txt")).write_text("Page " + "٠" * 5000 + "2\nScanned page two words\n")
+        self.assertEqual(self.run_tool()[0], 0)
+        self.assertEqual(self.read("pages/D1_p002.txt"), "=== D1 p.2 ===\nScanned page two words\n")
+
     def test_hash_mismatch_refuses_and_writes_nothing(self):
         (self.root / "a.pdf").write_bytes(self.a + b"\n")
         code, _, err = self.run_tool()
@@ -77,7 +83,8 @@ class AgencyPagesTests(Base):
         self.assertFalse(self.out.exists())
 
     def test_page_count_and_hash_unknown(self):
-        for cell, value, expect in ((6, "3", "page_count_mismatch:D1"), (6, "unknown - not held", "page_count_unknown:D1"),
+        for cell, value, expect in ((6, "3", "page_count_mismatch:D1"), (6, "9" * 5000, "page_count_mismatch:D1"),
+                                    (6, "unknown - not held", "page_count_unknown:D1"),
                                     (5, "unknown - too large", "hash_unknown:D1")):
             rows = [list(r) for r in self.rows]
             rows[0][cell] = value
@@ -101,6 +108,7 @@ class AgencyPagesTests(Base):
 
     def test_ocr_marker_errors(self):
         for text, expect in (("no markers here\n", "ocr_markers_unrecognised:D1"), ("Page 5\nx\n", "ocr_page_out_of_range:D1"),
+                             ("Page " + "9" * 5000 + "\nx\n", "ocr_page_out_of_range:D1"),
                              ("Page 2\nx\nPage 2\ny\n", "ocr_page_duplicate:D1")):
             (self.ocr / (sha(self.a) + ".txt")).write_text(text)
             code, _, err = self.run_tool()
