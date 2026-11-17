@@ -1755,8 +1755,12 @@ class Swap:
         self.log(f"    mounts differing from S1: {self.rbc_differs or 'none'}")
 
     def rb_restore(self, path):
+        # Preserve every changed mount before clearing any of them. In
+        # particular, a later mount's shortfall or failed verification must
+        # not leave an earlier mount already restored.
+        prepared = self.prepare_restores(self.rbc_differs)
         for label in self.rbc_differs:
-            self.restore_mount(label)
+            self.restore_mount(label, prepared[label])
         if not self.rbc_differs:
             self.log("    nothing to restore")
 
@@ -1813,16 +1817,6 @@ class Swap:
 
     def preserve_current(self, label, current):
         """Capture live <label> into a new, exclusive attempt directory and verify it."""
-        if self.state.get("space_rule") == SPACE_RULE_SAME_IMAGE_TRUST_ADD:
-            # SPACE-RULE-1 did not budget a preservation up front: gate it now,
-            # before anything is written, and leave live data untouched if short.
-            estimate = snapshot_evidence.space_estimate(current["entries"])
-            need = estimate["tar_bytes"] + estimate["extract_bytes"] + MARGIN
-            free = self.system.disk_free(self.run_dir)
-            if free < need:
-                raise StepFailed(f"{label}: preserving the current state needs {need} bytes free, the private dir "
-                                 f"has {free} (space rule {SPACE_RULE_SAME_IMAGE_TRUST_ADD}); live data left "
-                                 "untouched")
         dirs = self._attempt_dirs(label)
         number = 1 + max((int(ATTEMPT_RE.fullmatch(p.name).group(1)) for p in dirs), default=0)
         name = f"attempt-{number:03d}"
@@ -1853,23 +1847,53 @@ class Swap:
         self.log(f"    {label}: current state preserved and verified in $RUN/{rel}")
         return path
 
-    def restore_mount(self, label):
-        """Preserve the current state (immutably), verify it, then restore S1."""
-        if not self.gate_ok():
-            raise StepFailed("refusing to restore without a passed snapshot gate")
-        receipt = self.read_json("snapshot-receipt.json")
-        archive = self.run_dir / "s1" / f"{label}.tar"
-        if sha256_file(archive) != receipt["archives_sha256"].get(label):
-            raise StepFailed(f"{label}: S1 archive hash differs from the receipt")
-        previous = self.validated_preservations(label)
-        current = self.live_manifest(label)
-        match = next((p for p, _ in reversed(previous)
-                      if not self.compare(json.loads((p / "current.json").read_text()), current)[0]),
-                     None)
-        if match is not None:
-            self.log(f"    {label}: live already preserved in $RUN/rollback/{label}/{match.name}; not re-archived")
-        else:
-            match = self.preserve_current(label, current)
+    def prepare_restores(self, labels):
+        """Validate S1 and preserve all live states, without writing any live mount."""
+        prepared = {}
+        for label in labels:
+            if not self.gate_ok():
+                raise StepFailed("refusing to restore without a passed snapshot gate")
+            receipt = self.read_json("snapshot-receipt.json")
+            archive = self.run_dir / "s1" / f"{label}.tar"
+            if sha256_file(archive) != receipt["archives_sha256"].get(label):
+                raise StepFailed(f"{label}: S1 archive hash differs from the receipt")
+            previous = self.validated_preservations(label)
+            current = self.live_manifest(label)
+            match = next((p for p, _ in reversed(previous)
+                          if not self.compare(json.loads((p / "current.json").read_text()), current)[0]),
+                         None)
+            prepared[label] = (previous, current, match)
+
+        missing = [label for label, (_, _, match) in prepared.items() if match is None]
+        if missing and self.state.get("space_rule") == SPACE_RULE_SAME_IMAGE_TRUST_ADD:
+            # All new archives coexist, but their verification extracts are
+            # sequential and removed after verification. Reused receipts need
+            # neither another archive nor a verification extract.
+            estimates = [snapshot_evidence.space_estimate(prepared[label][1]["entries"])
+                         for label in missing]
+            need = sum(e["tar_bytes"] for e in estimates) + max(e["extract_bytes"] for e in estimates) + MARGIN
+            free = self.system.disk_free(self.run_dir)
+            if free < need:
+                raise StepFailed(f"{', '.join(missing)}: preserving the current state needs {need} bytes free, "
+                                 f"the private dir has {free} (space rule {SPACE_RULE_SAME_IMAGE_TRUST_ADD}); "
+                                 "live data left untouched")
+
+        for label, (previous, current, match) in prepared.items():
+            if match is not None:
+                self.log(f"    {label}: live already preserved in $RUN/rollback/{label}/{match.name}; not re-archived")
+            else:
+                match = self.preserve_current(label, current)
+            # Also validate newly written receipt/hash/state identities before
+            # any mount can enter the destructive phase.
+            self.validated_preservations(label)
+            prepared[label] = (previous, current, match)
+        return prepared
+
+    def restore_mount(self, label, prepared=None):
+        """Restore S1 only after the caller's preservation phase has completed."""
+        if prepared is None:
+            prepared = self.prepare_restores([label])[label]
+        previous, current, match = prepared
         # Invariant before any destructive step: a receipted, validated
         # attempt holds exactly the live state about to be cleared.
         self.state.setdefault("restoring", {})[label] = {"preserved_in": match.name, "clear_started": True}

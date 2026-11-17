@@ -362,6 +362,145 @@ class SameImageTrustAddRunTests(rs.RunMixin, unittest.TestCase):
         self.assert_live_unchanged()
 
 
+class TwoMountRollbackTests(unittest.TestCase):
+    """Exercise RB-C across two changed synthetic mounts, not two isolated restores."""
+
+    def setUp(self):
+        self.fixture = SameImageTrustAddRunTests(methodName="runTest")
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.fixture.replacement_writes()
+        original = self.fixture.fake.hooks["start:" + "9" * 64]
+
+        def write_both():
+            original()
+            (self.fixture.fake.bind / "replacement.txt").write_bytes(b"synthetic second mount work\n")
+
+        self.fixture.fake.hooks["start:" + "9" * 64] = write_both
+        code, out = self.fixture.go(self.fixture.swap_argv())
+        self.assertEqual(code, swap.EXIT_HELD, out)
+        self.fixture.fake.hooks.clear()
+        self.run_path = self.fixture.new_run()
+        self.mounts = {"m00": self.fixture.fake.volume, "m01": self.fixture.fake.bind}
+        self.before = self.live_bytes()
+        self.helpers_before = len(self.fixture.fake.helper_runs)
+        self.estimates = {label: evidence.space_estimate(evidence.manifest(root)["entries"])
+                          for label, root in self.mounts.items()}
+
+    def live_bytes(self):
+        return {label: {p.relative_to(root).as_posix(): p.read_bytes()
+                        for p in root.rglob("*") if p.is_file()}
+                for label, root in self.mounts.items()}
+
+    def need(self, labels):
+        estimates = [self.estimates[label] for label in labels]
+        return sum(e["tar_bytes"] for e in estimates) + max(e["extract_bytes"] for e in estimates) + MARGIN
+
+    def rollback(self):
+        return self.fixture.go(["--rollback", str(self.run_path)])
+
+    def assert_no_live_write(self):
+        helpers = self.fixture.fake.helper_runs[self.helpers_before:]
+        self.assertEqual([r for r in helpers if any(d.startswith("/live/") and not ro
+                                                  for d, ro in r["mounts"])], [])
+        self.assertEqual(self.live_bytes(), self.before)
+        self.assertNotIn("restoring", json.loads((self.run_path / "state.json").read_text()))
+
+    def test_aggregate_shortfall_stops_before_any_capture_or_live_write(self):
+        # Each mount fits on its own; retaining both archives does not.
+        free = max(self.need([label]) for label in self.mounts)
+        self.assertLess(free, self.need(self.mounts))
+        self.fixture.fake.free = free
+        with mock.patch.object(self.fixture.fake, "disk_free", wraps=self.fixture.fake.disk_free) as disk_free:
+            code, out = self.rollback()
+        self.assertEqual(code, swap.EXIT_ESCALATE, out)
+        self.assertIn(f"m00, m01: preserving the current state needs {self.need(self.mounts)} bytes free", out)
+        disk_free.assert_called_once_with(self.run_path)
+        self.assert_no_live_write()
+        self.assertEqual(list((self.run_path / "rollback").glob("*/attempt-*")), [])
+
+    def test_second_mount_verification_failure_leaves_both_live_trees_untouched(self):
+        self.fixture.fake.free = self.need(self.mounts)
+        self.fixture.fake.faults["manifest /private/rollback/verify/m01-attempt-001"] = (
+            1, "", "synthetic second preservation verification failure")
+        code, out = self.rollback()
+        self.assertEqual(code, swap.EXIT_ESCALATE, out)
+        self.assertIn("synthetic second preservation verification failure", out)
+        self.assertTrue((self.run_path / "rollback/m00/attempt-001/receipt.json").is_file())
+        self.assertFalse((self.run_path / "rollback/m01/attempt-001/receipt.json").exists())
+        self.assert_no_live_write()
+
+    def test_both_preservations_verify_before_first_clear_then_both_restore(self):
+        self.fixture.fake.free = self.need(self.mounts)
+        events = []
+        preserve, helper = swap.Swap.preserve_current, swap.Swap.helper
+
+        def preserved(driver, label, current):
+            path = preserve(driver, label, current)
+            self.assertTrue((path / "receipt.json").is_file())
+            events.append("verified:" + label)
+            return path
+
+        def effect(driver, argv, *args, **kwargs):
+            if argv[0] == "find":
+                label = argv[1].rsplit("/", 1)[1]
+                events.append("clear:" + label)
+                state = json.loads((self.run_path / "state.json").read_text())
+                self.assertTrue(state["restoring"][label]["clear_started"])
+                self.assertEqual(set(state["preservations"]), set(self.mounts))
+                for mount in self.mounts:
+                    self.assertTrue((self.run_path / f"rollback/{mount}/attempt-001/receipt.json").is_file())
+            elif "-xpf" in argv and argv[-1].startswith("/live/"):
+                events.append("extract:" + argv[-1].rsplit("/", 1)[1])
+            return helper(driver, argv, *args, **kwargs)
+
+        with mock.patch.object(swap.Swap, "preserve_current", preserved), \
+                mock.patch.object(swap.Swap, "helper", effect), \
+                mock.patch.object(self.fixture.fake, "disk_free", wraps=self.fixture.fake.disk_free) as disk_free:
+            code, out = self.rollback()
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        disk_free.assert_called_once_with(self.run_path)
+        self.assertEqual(events, ["verified:m00", "verified:m01", "clear:m00", "extract:m00",
+                                  "clear:m01", "extract:m01"])
+        self.fixture.assert_live_unchanged()
+        state = json.loads((self.run_path / "state.json").read_text())
+        self.assertTrue(all(state["restoring"][label]["extracted"] for label in self.mounts))
+
+    def test_retry_reuses_both_receipts_without_capture_space(self):
+        self.fixture.fake.faults["/live/m00 -mindepth 1 -delete"] = (1, "", "synthetic clear failure")
+        self.assertEqual(self.rollback()[0], swap.EXIT_ESCALATE)
+        self.fixture.fake.faults.clear()
+        self.fixture.fake.free = 0
+        with mock.patch.object(swap.Swap, "preserve_current", side_effect=AssertionError("recaptured")), \
+                mock.patch.object(self.fixture.fake, "disk_free", side_effect=AssertionError("re-gated")):
+            code, out = self.rollback()
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.fixture.assert_live_unchanged()
+
+    def test_retry_aggregate_budgets_only_mount_still_needing_capture(self):
+        self.fixture.fake.faults["manifest /private/rollback/verify/m01-attempt-001"] = (
+            1, "", "synthetic second preservation verification failure")
+        self.assertEqual(self.rollback()[0], swap.EXIT_ESCALATE)
+        self.fixture.fake.faults.clear()
+        self.fixture.fake.free = self.need(["m01"])
+        self.assertLess(self.fixture.fake.free, self.need(self.mounts))
+        code, out = self.rollback()
+        self.assertEqual(code, swap.EXIT_ROLLED_BACK, out)
+        self.assertIn("m00: live already preserved", out)
+        self.assertTrue((self.run_path / "rollback/m01/attempt-002/receipt.json").is_file())
+        self.assertFalse((self.run_path / "rollback/m00/attempt-002").exists())
+        self.fixture.assert_live_unchanged()
+
+    def test_second_s1_hash_failure_precedes_all_captures_and_live_writes(self):
+        archive = self.run_path / "s1/m01.tar"
+        archive.write_bytes(archive.read_bytes() + b"synthetic tamper")
+        code, out = self.rollback()
+        self.assertEqual(code, swap.EXIT_ESCALATE, out)
+        self.assertIn("m01: S1 archive hash differs from the receipt", out)
+        self.assert_no_live_write()
+        self.assertEqual(list((self.run_path / "rollback").glob("*/attempt-*")), [])
+
+
 class AcceptedA2ResumeTableTests(unittest.TestCase):
     """Real preservation helpers over synthetic mounts; every runtime call is fake."""
 
