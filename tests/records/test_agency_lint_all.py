@@ -31,6 +31,8 @@ class AgencyLintAllTests(unittest.TestCase):
         self.agency = self.root / "agency"
         (self.agency / "pages").mkdir(parents=True)
         (self.agency / "inventory.tsv").write_text("doc\n")
+        (self.agency / "asks.tsv").write_text("text\n")
+        (self.agency / "events.tsv").write_text("event\n")
         (self.agency / "pages" / "DOC1_p001.txt").write_text("page")
         self.package = self.root / "package.md"
         self.package.write_text("pkg")
@@ -125,6 +127,74 @@ class AgencyLintAllTests(unittest.TestCase):
 
     def test_cli_registered(self):
         self.assertEqual(cli.COMMANDS["agency-lint"], ("agency_run.lint_all", "main"))
+
+
+class RealAgencyLintAllTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.agency = self.root / "agency"
+        (self.agency / "pages").mkdir(parents=True)
+        (self.agency / "pages" / "D1_p001.txt").write_text("Unrelated page text.\n")
+        for name, header in (("inventory.tsv", "doc_id\ttitle\trequest_ref"),
+                             ("asks.tsv", "request_ref\ttext\trating"),
+                             ("events.tsv", "request_ref\tevent_type")):
+            (self.agency / name).write_text(header + "\n")
+        self.package = self.root / "package.json"
+        self.package.write_text('{"records_law": {}}')
+        self.draft = self.root / "draft.md"
+        self.draft.write_text("1. Please send existing records.\n")
+
+    def run_real(self, package=None):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = lint_all.main([str(self.draft), "--agency-dir", str(self.agency),
+                                  "--package", str(package or self.package)])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_missing_each_actual_input_is_skipped(self):
+        for name in ("inventory.tsv", "asks.tsv", "events.tsv"):
+            with self.subTest(name=name):
+                path = self.agency / name
+                saved = path.read_bytes()
+                path.unlink()
+                code, out, err = self.run_real()
+                self.assertEqual(code, 3, out + err)
+                self.assertIn("asks: skipped: no " + name.removesuffix(".tsv"), out)
+                self.assertIn("agency-lint: INCOMPLETE", out)
+                self.assertNotIn("error", out)
+                path.write_bytes(saved)
+        empty_package = self.root / "empty-package"
+        empty_package.mkdir()
+        code, out, err = self.run_real(empty_package)
+        self.assertEqual(code, 3, out + err)
+        self.assertIn("cites: skipped: no package", out)
+        self.assertNotIn("error", out)
+
+    def test_clean_real_run_and_failed_quote_preserve_limitation(self):
+        code, out, err = self.run_real()
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("quotes: pass; text check only; no visual check", out)
+        self.assertIn("agency-lint: PASS", out)
+        self.draft.write_text('1. Please send records.\n"made up page wording" (D1 p.1),\n'
+                              '"fabricated message wording" (msg M1),\n')
+        code, out, err = self.run_real()
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("quotes: FAIL, 1 hits", out)
+        self.assertIn("message quotes not checked against pages", out)
+        self.assertIn("no visual check", out)
+        self.assertNotIn("fabricated message wording", out + err)
+
+    def test_message_quote_coverage_is_not_misrepresented(self):
+        self.draft.write_text('1. Please send existing records.\n"this is fabricated wording" (msg M1),\n')
+        code, out, err = self.run_real()
+        self.assertEqual(code, 3, out + err)
+        self.assertIn("message quotes not checked against pages", out)
+        self.assertIn("no visual check", out)
+        self.assertIn("agency-lint: INCOMPLETE", out)
+        self.assertNotIn("fabricated wording", out + err)
+        self.assertNotIn("M1", out + err)
 
 
 if __name__ == "__main__":
