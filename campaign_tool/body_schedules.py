@@ -89,8 +89,24 @@ def load_body_schedules(document, *, today=None):
     return sorted(loaded, key=lambda item: item["body"])
 
 
+class _RepeatedMember(Exception):
+    """Private marker (not a ValueError, so the numeric-decode handler cannot misclassify it)."""
+
+
+def _unique_members(pairs):
+    """RF1210-13: ``object_pairs_hook`` refusing any object with a repeated decoded member name."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _RepeatedMember
+        result[key] = value
+    return result
+
+
 def _read_document(path):
     """RF0325-2: the parsed JSON of one opened schedule file, never holding more than the cap plus one byte.
+
+    RF1210-13: a repeated decoded object member name anywhere in the document is refused as ambiguous.
 
     Per-open payload contract: the file is opened read-only, no-follow and nonblocking, and its descriptor must be a
     regular file. A descriptor size over ``MAX_JSON_BYTES`` is refused before any payload read; otherwise at most
@@ -118,7 +134,9 @@ def _read_document(path):
     if len(data) > MAX_JSON_BYTES:
         raise ContentError(f"{FILE}: file too large")
     try:
-        return json.loads(data.decode("utf-8"))
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_unique_members)
+    except _RepeatedMember:  # RF1210-13: a repeated decoded member name is ambiguous; never echo the key or value
+        raise ContentError(f"{FILE}: duplicate JSON keys") from None
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ContentError(f"{FILE}: not valid UTF-8 JSON ({exc})") from None
     except RecursionError:  # RF1255-2: byte-admitted but decoder-recursion-exhausting nesting is a refusal, not a crash
