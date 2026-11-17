@@ -74,6 +74,21 @@ class LintCitesTest(unittest.TestCase):
         self.assertEqual(self.codes("Gov. Code § 1798.90.51 UNVERIFIED.")[0], 0)
         self.assertEqual(self.codes("- Fine.\n- Got 44 items.\n")[1], [(2, "C4_unsourced_fact")])
 
+    def test_wrapped_fact_sentence_locations_and_boundaries(self):
+        c4 = "C4_unsourced_fact"
+        cases = [
+            ("We received five\ndocuments.", [(1, c4)]),
+            ("The letter was sent March\n4.", [(1, c4)]),
+            ("We sent 12 documents\naccording to D3.", []),
+            ("Introduction. We received\nfive documents. Then D3.", [(2, c4)]),
+            ("- We received 12 documents\n- D3 confirms it.", [(1, c4)]),
+            ("We received 12 documents\n\nD3 confirms it.", [(1, c4)]),
+            ("We received 12 documents\n```\nD3\n```\nD3.", [(1, c4)]),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual([hit for hit in self.codes(text)[1] if hit[1] == c4], expected)
+
     def test_overdue_whole_word_and_paragraph(self):
         self.assertEqual(self.codes("We translate the latest note.")[0], 0)
         self.assertEqual(self.codes("It is past due.\nOn our records. Also not a legal finding.")[0], 0)

@@ -7,6 +7,7 @@ human reviewer). Limit: sections compare as the dotted number only (1798.90.51(a
 ignoring the code name; the package's section numbers do not collide across codes today.
 """
 import argparse
+from bisect import bisect_right
 import json
 import os
 import re
@@ -95,13 +96,33 @@ def lint(text, sections):
                 hits.append((number, "C1_label_missing"))
             elif (label.group() == "UNVERIFIED") != (section not in sections):
                 hits.append((number, "C2_label_mismatch"))
-        blanked = CITATION.sub(lambda m: " " * len(m.group()), raw)
-        blanked = ET_SEQ.sub(" ", blanked)
-        for sentence in SENTENCE_SPLIT.split(blanked):
-            if FACT.search(sentence) and not SOURCE_TOKEN.search(sentence):
-                hits.append((number, "C4_unsourced_fact"))
     _flush(paragraphs, current)
     for paragraph in paragraphs:
+        # List items delimit C4 sentence spans even without terminal punctuation.
+        spans, span = [], []
+        for number, raw in paragraph:
+            if re.match(r"^\s*(?:[-+*]|\d+[.)])\s+", raw) and span:
+                spans.append(span)
+                span = []
+            blanked = CITATION.sub(lambda m: " " * len(m.group()), raw)
+            span.append((number, ET_SEQ.sub(lambda m: " " * len(m.group()), blanked)))
+        if span:
+            spans.append(span)
+        for span in spans:
+            joined = "\n".join(row for _, row in span)
+            offsets = [0]
+            for _, row in span[:-1]:
+                offsets.append(offsets[-1] + len(row) + 1)
+            start = 0
+            for boundary in list(SENTENCE_SPLIT.finditer(joined)) + [None]:
+                end = boundary.start() if boundary else len(joined)
+                sentence = joined[start:end]
+                fact = FACT.search(sentence)
+                if fact and not SOURCE_TOKEN.search(sentence):
+                    line_index = bisect_right(offsets, start + fact.start()) - 1
+                    hits.append((span[line_index][0], "C4_unsourced_fact"))
+                if boundary:
+                    start = boundary.end()
         flat = " ".join(" ".join(row for _, row in paragraph).lower().split())
         first = next((n for n, row in paragraph if OVERDUE.search(row)), None)
         if first and not ("on our records" in flat and "not a legal finding" in flat):
