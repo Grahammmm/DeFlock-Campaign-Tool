@@ -150,6 +150,19 @@ class Tests(Case):
             self.aliases.write_text(text)
             self.assertEqual(self.run_cmd(out=self.root / "o3")[2].strip(), "agency-events: aliases_invalid")
 
+    def test_unhashable_folder_is_bad_receipt_and_valid_ones_continue(self):
+        self.add()
+        bad = receipt(2)
+        bad["folder"] = ["Sent"]
+        (self.store / "receipts" / "2.json").write_text(json.dumps(bad))
+        self.n = 2
+        self.add(when="06-Sep-2026 17:00:00 +0000")
+        code, out, _ = self.run_cmd()
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["bad_receipts"], 1)
+        self.assertIn("bad_receipt", (self.out / "unclassified.tsv").read_text())
+        self.assertGreaterEqual(len(self.rows()), 3)
+
     def test_store_bytes_unchanged_and_no_body_text(self):
         self.add()
         self.add(folder="INBOX")

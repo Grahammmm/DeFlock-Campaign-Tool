@@ -109,6 +109,8 @@ def read_store(root):
             data = json.loads(path.read_bytes())
             if not isinstance(data, dict) or not isinstance(data.get("headers", {}), dict):
                 raise ValueError("shape")
+            if not all(isinstance(data.get(k, ""), (str, int)) for k in ("folder", "uid")):
+                raise ValueError("shape")
             receipts.append(data)
         except (OSError, ValueError):
             bad.append(("receipts/" + json.dumps(path.name, ensure_ascii=True), "", "", "bad_receipt"))
