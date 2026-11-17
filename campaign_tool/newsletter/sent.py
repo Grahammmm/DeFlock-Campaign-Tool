@@ -98,6 +98,8 @@ def _load(root):
             if previous and day < previous:
                 raise ValueError(f"issues[{index}] is out of date order")
             previous = day
+    except RecursionError:
+        raise ValueError(f"kit/{SENT_NAME} unreadable: JSON nested too deeply") from None
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise ValueError(f"kit/{SENT_NAME} unreadable: {exc}") from None
     return issues
@@ -165,6 +167,8 @@ def record_sent(root, sent_on, today=None):
         subject = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_pairs).get("subject")
     except _DuplicateKeys:
         raise ValueError(f"kit/{DRAFT_NAME} unreadable: duplicate JSON keys") from None
+    except RecursionError:
+        raise ValueError(f"kit/{DRAFT_NAME} unreadable: JSON nested too deeply") from None
     except (UnicodeDecodeError, ValueError, AttributeError):
         subject = None
     if not isinstance(subject, str):
