@@ -86,6 +86,9 @@ def ledger_snapshot(c):
             if total_rows>MAX_SNAPSHOT_ROWS or total_bytes>MAX_SNAPSHOT_BYTES:_no("snapshot_bound")
         rows.sort(key=_canon);state["tables"][t]={"columns":[list(x) for x in cols],"rows":rows}
     return _sha(_canon(state))
+def _ro_uri(p):
+    # Validated absolute filename -> percent-encoded file: URI, so #, ?, % stay literal filename characters.
+    return Path(p).as_uri()+"?mode=ro"
 def _connect(db,expected):
     p=_path(db)
     try:s=p.stat()
@@ -93,7 +96,7 @@ def _connect(db,expected):
     if not stat.S_ISREG(s.st_mode) or s.st_uid!=os.geteuid() or stat.S_IMODE(s.st_mode)&0o077 or s.st_size>MAX_DB:_no("database_permissions_or_size")
     c=None
     try:
-        c=sqlite3.connect("file:"+str(p)+"?mode=ro",uri=True,timeout=2)
+        c=sqlite3.connect(_ro_uri(p),uri=True,timeout=2)
         c.row_factory=sqlite3.Row;c.execute("pragma query_only=on");c.execute("begin")
         if ledger_snapshot(c)!=expected:_no("ledger_snapshot_stale")
         return c,p,(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
@@ -179,7 +182,7 @@ def read_current_units(database,evidence_root,expected_snapshot,expected_imports
         if (now.st_dev,now.st_ino,now.st_size,now.st_mtime_ns,now.st_ctime_ns)!=did:_no("ledger_changed_during_read")
         if ledger_snapshot(c)!=expected_snapshot:_no("ledger_changed_during_read")
         # A second read transaction detects a commit that landed after our pinned snapshot began.
-        fresh=sqlite3.connect("file:"+str(db)+"?mode=ro",uri=True,timeout=2)
+        fresh=sqlite3.connect(_ro_uri(db),uri=True,timeout=2)
         try:
             if ledger_snapshot(fresh)!=expected_snapshot:_no("ledger_changed_during_read")
         finally:fresh.close()
@@ -247,7 +250,7 @@ def search_index(index_path,expected_snapshot,query,*,expected_content_sha256,li
     if not stat.S_ISREG(s.st_mode) or s.st_uid!=os.geteuid() or stat.S_IMODE(s.st_mode)&0o077 or s.st_size>MAX_TOTAL:_no("index_permissions_or_size")
     c=None
     try:
-        c=sqlite3.connect("file:"+str(p)+"?mode=ro",uri=True,timeout=2);c.execute("pragma query_only=on");c.execute("begin")
+        c=sqlite3.connect(_ro_uri(p),uri=True,timeout=2);c.execute("pragma query_only=on");c.execute("begin")
         binding=c.execute("select snapshot_sha256,unit_count,content_sha256 from index_binding").fetchone()
         if binding is None or binding[0]!=expected_snapshot or binding[2]!=expected_content_sha256 or type(binding[1]) is not int or not 0<binding[1]<=MAX_UNITS:_no("index_content_pin_mismatch")
         all_rows=c.execute("select unit_id,original_sha256,locator,text from units_fts order by unit_id limit ?",(MAX_UNITS+1,)).fetchall()
