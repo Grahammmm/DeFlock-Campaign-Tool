@@ -150,6 +150,88 @@ Message ties, rejected rows and packet pages gain no Revise action. Packet key
 recovery stays **cancel → re-propose → new signature**, not queue-style pending
 recovery. Exact-revision placement/send checks remain unchanged.
 
+## Proposed-only promotion of approved review copy (CONDRAFT-06)
+
+Local-only syntax, shown for a **disposable synthetic project**, not a live run:
+
+```sh
+records draft-promote --project SYNTHETIC_PROJECT --id SYNTHETIC_QUEUE_ID --reviewed-sources SYNTHETIC_MANIFEST.json
+# Add --apply only to propose the exact approved words; this never writes a site change.
+```
+
+The default validates current owning-project queue signatures, bindings and source
+stores, then reports `records-draft-promote-plan-v1`, `action: would_propose`, queue
+id/revision and packet id/revision. `revision_is_prediction: true` means no revision
+is reserved. It creates no packet, receipt, lock, switch or export. It never trusts
+an exported Approved flag. On apply, the queue shared lock prevents cooperating
+edit/approve/reject writers from changing the copy through proposal and receipt.
+
+The closed `records-draft-reviewed-sources-v1` manifest has exactly `schema`,
+`project_id`, `queue_id`, `queue_revision` (non-bool integer), `body_sha256`,
+`evidence_sha256`, `title`, `sources`, `correction`. Hash exact UTF-8 body bytes and
+canonical signed evidence (sorted keys, compact separators, UTF-8, no ASCII escape
+conversion). The title must meet existing packet caps/lints. This is a locator and
+binding manifest, **not an approval certificate**, packet editor or verification override.
+One synthetic source entry has this shape (placeholders must be replaced by hashes
+computed from the disposable fixture):
+
+```json
+{"citation_index":0,"original_sha256":"SYNTHETIC_ORIGINAL_SHA256","page":1,"redaction_record_id":"SYNTHETIC_ELIGIBILITY_SHA256"}
+```
+
+`1..64` sources must cover all staged citation indices exactly once. Only signed
+`original` / `verified` citations with exact `source_id` `<64 lowercase hex>` or
+`sha256:<64 lowercase hex>` and `locator` `page N` (positive decimal, no leading
+zeros) resolve in v1, matching the received-items resolver. The manifest SHA/page
+must agree; they are not added to or substituted for the signed citation. Newest
+received-items attribution/date, preserved original hash, current extraction and
+contiguous actual page units, signed applied redaction and UTF-8 privacy-clean
+current derivative must independently pass. Tracker/public/missing-original and
+unsupported finding references stay review-only; no downgrade bypasses these gates.
+Neither imported verification labels nor copy approval fill absent originals.
+
+Summary `correction` is null. A correction additionally requires exactly
+`packet_id`, `packet_revision`, `text_sha256`, `prior_statement`, `prior_version`,
+`linkage`. The last three must equal signed evidence byte-for-byte. The only
+supported canonical linkage is `prior_version: packet:<16hex>@<revision>` and
+`linkage: correction-of:<16hex>`, decimal revision without leading zeros. They must
+resolve one journalled-written predecessor, exact text hash and verbatim statement,
+same agency/request and provenance target. Legacy packets without target proof,
+free-form importable strings, missing/ambiguous revisions or mismatches refuse
+`correction_linkage_unavailable`. Written is not deployed; no predecessor is mutated.
+
+Apply calls only ordinary packet proposal with an opt-in atomic create-only
+precondition under the packet's existing lock: absent creates revision zero; exact,
+unexpired, still-proposed revision zero is recoverable without another event.
+Different/terminal/approved/written/expired/revision-conflicting packets refuse.
+Default packet callers, including their existing cancel/re-propose recovery, are
+unchanged. No force option exists here. Exact leading/trailing whitespace, Unicode,
+CRLF and final terminators survive; over 4,000 characters refuses, never truncates.
+The optional closed `draft_provenance` canonical section binds queue approval hash,
+target, typed citations, source attachment/section/run, correction and manifest
+hash into the **separate packet signature**. Legacy payload bytes remain unchanged.
+
+Private `draft-promotions.jsonl` and `draft-promotions.lock` are 0600, single-link,
+no-follow runtime files under the private project. Successful receipts contain only
+identities/revisions/digests/time, not body, raw signature, source text or public
+paths. A matching repeat rechecks current trust/sources before returning `existing`;
+changed input or receipt/packet conflicts refuse without journal mutation. Manifest
+formatting is immaterial. Receipt safety and cap are checked before proposal.
+A crash after proposal but before receipt returns `receipt_pending` (no rollback
+claim); a fresh verified rerun repairs only a missing receipt for the exact
+still-proposed candidate, with no extra packet event. Truncated/corrupt receipts
+fail closed, not empty; operator investigation is required. Busy exit 75 is a
+bounded retry, gate refusal exit 1 is not permission to force; CLI usage exits 2.
+Missing source/review evidence must be supplied through its existing custodian,
+not forged in the manifest. Copy changes require Edit → fresh copy approval → new
+manifest; a prior promotion conflict needs the separate operator recovery path.
+
+Machine gates establish structural eligibility only, not factual/legal acceptance.
+**Publication stays HOLD.** Promotion never signs, enables switches, calls
+`write_change`, creates site PRs, withdraws, sends, exports, acquires sources or
+deploys. Packet G signature, expiry, switch, independent factual/legal/privacy and
+site-PR review gates remain separate and unchanged.
+
 ## Roots, run and report are distinct
 
 - `PROJECT` holds `processing-v1/ledger.sqlite` (canonical ledger), `run-outputs/RUN_ID/` (the selected run's

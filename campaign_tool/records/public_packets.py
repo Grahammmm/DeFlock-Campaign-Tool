@@ -201,7 +201,52 @@ def clean(packet):
            "documents": sorted(docs, key=lambda d: d["sha256"]), "citations": cites}
     if kind == "finding":
         out["finding_state"] = PUBLIC_STATE
+    if "draft_provenance" in packet:
+        out["draft_provenance"] = _draft_provenance(packet["draft_provenance"], out)
     return out
+
+
+def _draft_provenance(value, packet):
+    """Closed optional signature material; admission here does not certify source eligibility."""
+    from . import draft_import
+    fields = {"schema", "source_project_id", "queue_id", "queue_revision", "body_sha256", "evidence_sha256",
+              "approval_signature_sha256", "target", "citations", "source_attachment_sha256", "source_section",
+              "source_run_id", "correction", "reviewed_sources_sha256"}
+    code = "draft_provenance_invalid"
+    _need(isinstance(value, dict) and set(value) == fields, code)
+    _need(value["schema"] == "records-draft-promotion-provenance-v1"
+          and packet["kind"] in ("summary", "site_update"), code)
+    for key in ("queue_id", "body_sha256", "evidence_sha256", "approval_signature_sha256",
+                "source_attachment_sha256", "reviewed_sources_sha256"):
+        _need(isinstance(value[key], str) and SHA.fullmatch(value[key]), code)
+    _need(isinstance(value["source_project_id"], str) and PACKET_ID.fullmatch(value["source_project_id"])
+          and type(value["queue_revision"]) is int and value["queue_revision"] >= 0, code)
+    _need(value["body_sha256"] == hashlib.sha256(packet["text"].encode("utf-8")).hexdigest(), code)
+    _need(packet["source"] == "queue-" + value["queue_id"], code)
+    for key in ("source_section", "source_run_id"):
+        _need(isinstance(value[key], str) and draft_import.ID.fullmatch(value[key]), code)
+    _need(isinstance(value["citations"], list) and 1 <= len(value["citations"]) <= 64, code)
+    copy = {"kind": "draft-agency-summary" if packet["kind"] == "summary" else "draft-correction-notice",
+            "target": value["target"], "citations": value["citations"]}
+    correction = value["correction"]
+    if packet["kind"] == "summary":
+        _need(correction is None, code)
+    else:
+        _need(isinstance(correction, dict) and set(correction) == {
+            "packet_id", "packet_revision", "text_sha256", "prior_statement", "prior_version", "linkage"}, code)
+        _need(isinstance(correction["packet_id"], str) and PACKET_ID.fullmatch(correction["packet_id"])
+              and type(correction["packet_revision"]) is int and correction["packet_revision"] >= 0
+              and isinstance(correction["text_sha256"], str) and SHA.fullmatch(correction["text_sha256"]), code)
+        copy["correction"] = {k: correction[k] for k in ("prior_statement", "prior_version", "linkage")}
+    try:
+        draft_import.validate_copy(copy)
+        encoded = _canon(value).encode("utf-8")
+        _need(len(encoded) <= 128 * 1024, code)
+        # Reject surrogate text and detach caller-owned nested structures.
+        aq_text = json.dumps(value, ensure_ascii=False).encode("utf-8")
+    except (ValueError, TypeError, UnicodeError, RecursionError, draft_import.aq.ApprovalQueueError):
+        raise PacketError(code) from None
+    return json.loads(aq_text)
 
 
 def packet_id(packet):
@@ -242,9 +287,10 @@ def _view(row, now):
 
 def review_text(project, row):
     p = row["packet"]
-    return "\n".join([f"project: {project_id(project)}", f"id: {row['id']}", f"kind: {p['kind']}", f"agency: {p['agency_key']}",
+    text = "\n".join([f"project: {project_id(project)}", f"id: {row['id']}", f"kind: {p['kind']}", f"agency: {p['agency_key']}",
                       f"request: {p['request_id']}", f"title: {p['title']}", "text:", p["text"],
                       "documents:", _canon(p["documents"]), "citations:", _canon(p["citations"])])
+    return text + ("\ndraft_provenance:\n" + _canon(p["draft_provenance"]) if "draft_provenance" in p else "")
 
 
 def _payload(project, row):
@@ -335,15 +381,20 @@ def turn_off(project, actor, now=None):
 
 # ---- packet life cycle -------------------------------------------------------------------------
 
-def propose(project, packet, now=None, *, only_new=False):
+def propose(project, packet, now=None, *, only_new=False, create_only=False):
     """Add a packet. Identical content is a duplicate (no event); changed content is a new revision that voids any approval.
-    only_new (propose-document): an existing packet under this id that is not rejected or cancelled is left alone (exists)."""
+    only_new (propose-document): an existing packet under this id that is not rejected or cancelled is left alone (exists).
+    create_only (draft-promote): only absent or exact unexpired proposed revision zero; never reopen or supersede."""
     now = time.time() if now is None else now
     packet = clean(packet)
     ident = packet_id(packet)
     digest = hashlib.sha256(_canon(packet).encode()).hexdigest()
     with _Locked(project, create=True) as lock:
         row = fold(lock.events()).get(ident)
+        if create_only and row is not None:
+            _need(row["revision"] == 0 and row["status"] == "proposed" and not _expired(row, now)
+                  and row["digest"] == digest and row["packet"] == packet, "packet_conflict")
+            return {"id": ident, "revision": 0, "result": "duplicate"}
         if row is not None and only_new and row["status"] not in ("rejected", "cancelled"):
             return {"id": ident, "revision": row["revision"], "result": "exists"}
         reopen = row is not None and (row["status"] == "cancelled" or (only_new and row["status"] == "rejected"))
