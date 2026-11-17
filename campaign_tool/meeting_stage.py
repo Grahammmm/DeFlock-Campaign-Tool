@@ -41,7 +41,7 @@ def _unique_members(pairs):
     """RF1810-2: refuse a repeated object member name (never named in the message)."""
     result = dict(pairs)
     if len(result) != len(pairs):
-        raise ValueError("repeated member")
+        raise ValueError()  # content-free, never names the member
     return result
 
 
