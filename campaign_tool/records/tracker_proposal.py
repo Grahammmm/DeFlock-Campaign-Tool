@@ -83,6 +83,9 @@ def check_proposal(path, mail_index=None):
         rows = list(reader)
     problems, seen = [], set()
     for number, row in enumerate(rows, 2):
+        if None in row or any(row[c] is None for c in names):
+            problems.append("row%d:row_width_mismatch" % number)
+            continue
         rid = (row["request_id"] or "").strip()
         tag = rid or "row%d" % number
 
