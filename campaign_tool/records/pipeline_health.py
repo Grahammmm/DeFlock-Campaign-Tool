@@ -18,6 +18,7 @@ import os
 import re
 import stat
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -385,14 +386,25 @@ def _safe_file(path):
 
 
 def _put(directory, name, data):
-    tmp = directory / ("." + name + ".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    payload = (json.dumps(data, sort_keys=True) + "\n").encode("ascii")
+    # A fresh exclusive private file per call: an old predictable staging name is never opened or reused.
+    fd, tmp = tempfile.mkstemp(prefix="." + name + ".", suffix=".tmp", dir=directory)
     try:
-        os.write(fd, (json.dumps(data, sort_keys=True) + "\n").encode("ascii"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(tmp, directory / name)
+        try:
+            os.fchmod(fd, 0o600)
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, directory / name)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def write_alerts(report, alerts_dir):
@@ -469,7 +481,10 @@ def main(argv=None):
                                     mail_poll_warn_hours=args.mail_poll_warn_hours,
                                     mail_poll_stop_hours=args.mail_poll_stop_hours))
         if args.record_alerts:
-            report["alerts_written"] = write_alerts(report, _target_dir(args.runtime_dir, args.target) / "alerts")
+            try:
+                report["alerts_written"] = write_alerts(report, _target_dir(args.runtime_dir, args.target) / "alerts")
+            except OSError:
+                raise HealthError("alerts_unsafe") from None
     except (HealthError, ValueError) as error:
         print("records pipeline-health: refused " + (error.code if isinstance(error, HealthError) else "now_invalid"),
               file=sys.stderr)
