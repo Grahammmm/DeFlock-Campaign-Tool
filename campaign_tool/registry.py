@@ -109,6 +109,10 @@ def _load(path):
     # RF1900-3: two rows with one decoded (case-sensitive) name are ambiguous; refuse the whole register, never echoed
     if len({e["name"] for e in entries}) != len(entries):
         raise ValueError("the register contains a repeated campaign name")
+    # RF1210-12: a saved name reaches list/status/today text and selectors verbatim, so a control, escape, line-break or
+    # bidi/format character would forge output; refuse the whole register (value never echoed, nothing repaired).
+    if not all(c.isprintable() for e in entries for c in e["name"]):
+        raise ValueError("the register contains a non-printable campaign name")
     _check_records(entries)
     return entries
 
