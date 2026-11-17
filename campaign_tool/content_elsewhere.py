@@ -28,7 +28,9 @@ def _line(value):
     if not isinstance(value, str) or not plain_text(value):
         return None
     value = value.strip()
-    if not 1 <= len(value) <= MAX_TEXT or any(unicodedata.category(char) in ("Cc", "Cf", "Zl", "Zp") for char in value):
+    # RF1511-6: Cs (a lone surrogate, even from a JSON \ud800 escape) cannot be encoded as UTF-8, so it is refused here,
+    # not later by the HTML gate; valid supplementary scalars decode to one non-Cs character and are kept.
+    if not 1 <= len(value) <= MAX_TEXT or any(unicodedata.category(char) in ("Cc", "Cf", "Cs", "Zl", "Zp") for char in value):
         return None
     return value
 
