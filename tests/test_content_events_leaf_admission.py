@@ -12,7 +12,7 @@ from campaign_tool.site import build_site
 
 from tests.test_site_events import TODAY, EventsCase
 
-REAL_OS_OPEN, REAL_FDOPEN, REAL_CLOSE = os.open, os.fdopen, os.close
+REAL_OS_OPEN, REAL_OPEN, REAL_CLOSE = os.open, open, os.close
 REFUSAL = r"^events\.json: must be a regular file, not a symlink or folder$"
 
 
@@ -63,7 +63,7 @@ class LeafAdmissionTests(EventsCase):
     def test_fifo_and_directory_swaps_refuse_before_read(self):
         for make in (os.mkfifo, os.mkdir):
             self.put(b"[]")
-            with self.swap_at_open(make), mock.patch.object(content_events.os, "fdopen", side_effect=AssertionError("opened")):
+            with self.swap_at_open(make), mock.patch.object(content_events, "open", side_effect=AssertionError("opened"), create=True):
                 with self.assertRaisesRegex(ContentError, REFUSAL):
                     self.run_bounded(lambda: read_events(self.root))
             self.path.rmdir() if self.path.is_dir() else self.path.unlink()
@@ -87,7 +87,7 @@ class LeafAdmissionTests(EventsCase):
             with mock.patch.object(content_events.os, "fstat", side_effect=OSError("boom")):
                 with self.assertRaisesRegex(ContentError, r"^events\.json: could not be read$"):
                     read_events(self.root)
-            with mock.patch.object(content_events.os, "fdopen", side_effect=MemoryError):
+            with mock.patch.object(content_events, "open", side_effect=MemoryError, create=True):
                 with self.assertRaises(MemoryError):
                     read_events(self.root)
             self.assertEqual(read_events(self.root), [])
@@ -107,11 +107,11 @@ class LeafAdmissionTests(EventsCase):
         self.put(b"[]")
 
         def stream_open(fd, mode="r"):
-            stream = REAL_FDOPEN(fd, mode)
+            stream = REAL_OPEN(fd, mode)
             self.path.rename(replacement)
             self.outside_link(self.path)
             return stream
-        with mock.patch.object(content_events.os, "fdopen", stream_open):
+        with mock.patch.object(content_events, "open", stream_open, create=True):
             self.assertEqual(read_events(self.root), [])  # the already opened inode is read, not the new link
 
     def test_leaf_refusal_preserves_consumers_and_recovers(self):

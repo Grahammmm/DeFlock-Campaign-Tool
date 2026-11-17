@@ -194,7 +194,7 @@ def _read_bounded_json(path):
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ContentError(refusal)
-        stream = os.fdopen(fd, "rb")
+        stream = open(fd, "rb")  # takes ownership of fd on success
     except BaseException:
         os.close(fd)  # still owned here: fstat, type refusal or stream construction failed
         raise
