@@ -32,8 +32,8 @@ class ManualMeetingError(ValueError):
 
 
 def _text(value, name, limit):
-    """Plain text of 1..limit characters after collapsing spaces; no angle brackets, control or format characters."""
-    if not isinstance(value, str) or any(unicodedata.category(c) in ("Cc", "Cf") for c in value) or "<" in value or ">" in value:
+    """Plain UTF-8 scalar text of 1..limit characters after collapsing spaces; no angle brackets, control, format or surrogate characters."""
+    if not isinstance(value, str) or any(unicodedata.category(c) in ("Cc", "Cf", "Cs") for c in value) or "<" in value or ">" in value:
         raise ManualMeetingError(f"{name}: must be plain text without angle brackets or control characters")
     collapsed = " ".join(value.split())
     if not 1 <= len(collapsed) <= limit:
