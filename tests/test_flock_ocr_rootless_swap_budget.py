@@ -46,12 +46,12 @@ class SpaceRuleSelectionTests(unittest.TestCase):
         self.bind_b.mkdir()
 
     def before(self, image=rs.OLD_IMAGE, extra=()):
-        mounts = [{"Type": "volume", "Name": "home", "Source": "/var/lib/docker/volumes/home/_data",
-                   "Destination": "/home/coder", "RW": True},
+        mounts = [{"Type": "volume", "Name": "synthetic-data", "Source": "/synthetic/volumes/data/_data",
+                   "Destination": "/data", "RW": True},
                   {"Type": "bind", "Source": str(self.bind_a), "Destination": "/workspace/archive", "RW": True},
                   {"Type": "bind", "Source": str(self.bind_b), "Destination": "/workspace/work", "RW": True},
                   *extra]
-        return rs._container("a" * 64, "synthetic", image, True, mounts, ["home:/home/coder"], [], {})
+        return rs._container("a" * 64, "synthetic", image, True, mounts, ["synthetic-data:/data"], [], {})
 
     def rule(self, before, trust="add", reuse_image=rs.OLD_IMAGE, mounts=None):
         derived, excluded = bare_driver({}).derive_mounts(before)
