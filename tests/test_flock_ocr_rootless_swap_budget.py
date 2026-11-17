@@ -362,5 +362,94 @@ class SameImageTrustAddRunTests(rs.RunMixin, unittest.TestCase):
         self.assert_live_unchanged()
 
 
+class AcceptedA2ResumeTableTests(unittest.TestCase):
+    """Real preservation helpers over synthetic mounts; every runtime call is fake."""
+
+    def test_resume_requires_verified_accepted_state(self):
+        rows = [
+            ("no space for evidence", "space", swap.EXIT_REFUSED, "private dir has 0 bytes free"),
+            ("missing fresh restore evidence", "restore", swap.EXIT_REFUSED, "synthetic restore unavailable"),
+            ("malformed accepted SQLite", "sqlite", swap.EXIT_REFUSED, "sqlite-evidence exit"),
+            ("verified accepted state", "ok", swap.EXIT_OK, "fresh restore verified"),
+        ]
+        for name, fault, expected, message in rows:
+            with self.subTest(case=name):
+                fixture = SameImageTrustAddRunTests(methodName="runTest")
+                fixture.setUp()
+                try:
+                    fixture.replacement_writes()
+                    if fault == "sqlite":
+                        original = fixture.fake.hooks["start:" + "9" * 64]
+
+                        def write_malformed():
+                            original()
+                            rs.malformed_sqlite(fixture.fake.volume / "state" / "changed.sqlite")
+
+                        fixture.fake.hooks["start:" + "9" * 64] = write_malformed
+                    fixture.fake.free = fixture.same_need()
+                    code, out = fixture.go(fixture.swap_argv())
+                    self.assertEqual(code, swap.EXIT_HELD, out)
+                    run = fixture.new_run()
+                    reviewed = {p.name: p.read_bytes() for p in (run / "a2").glob("*.json")}
+                    live = {p: evidence.manifest(p) for p in
+                            (fixture.fake.volume, fixture.fake.bind, fixture.work)}
+                    before = list(rs.lifecycle(fixture.fake))
+                    fixture.fake.hooks.clear()
+                    # No existing evidence: success must produce and check it now.
+                    self.assertEqual(list((run / "a2").glob("accepted-*")), [])
+                    fixture.fake.free = 0 if fault == "space" else 1 << 40
+                    if fault == "restore":
+                        fixture.fake.faults["manifest /private/a2/accepted-"] = (
+                            1, "", "synthetic restore unavailable")
+
+                    def verified_before_start():
+                        state = json.loads((run / "state.json").read_text())
+                        prefix = run / state["a2_accepted_evidence"]
+                        for label in ("m00", "m01", "m02"):
+                            self.assertTrue((prefix / f"{label}.tar").is_file())
+                            report = json.loads((prefix / f"{label}.sqlite-evidence.json").read_text())
+                            self.assertTrue(report["ok"])
+                            baseline = json.loads((run / "a2" / f"{label}.baseline.json").read_text())
+                            restored = json.loads((prefix / f"{label}.restored.json").read_text())
+                            self.assertEqual(evidence.compare(baseline, restored), [])
+                        self.assertTrue((prefix / "sqlite/m00/state/flock.db.backup").is_file())
+
+                    fixture.fake.hooks["docker start"] = verified_before_start
+                    digest = swap.sha256_file(run / "a2/diff.json")
+                    code, out = fixture.go(["--resume", str(run), "--accept-a2", digest])
+                    self.assertEqual(code, expected, out)
+                    self.assertIn(message, out)
+                    self.assertEqual(reviewed, {p.name: p.read_bytes() for p in (run / "a2").glob("*.json")})
+                    state = json.loads((run / "state.json").read_text())
+                    for path, baseline in live.items():
+                        self.assertEqual(evidence.compare(baseline, evidence.manifest(path)), [])
+                    if expected == swap.EXIT_OK:
+                        self.assertEqual(state["phase"], "complete")
+                        self.assertEqual(rs.lifecycle(fixture.fake)[len(before):], [
+                            "start new", "start sidecar", "systemctl start synthetic-mail.timer"])
+                    else:
+                        self.assertEqual(state["phase"], "held_a2")
+                        self.assertNotIn("a2_accepted_evidence", state)
+                        self.assertNotIn("a2_accepted", state)
+                        self.assertNotIn("A2", state["done"])
+                        self.assertEqual(rs.lifecycle(fixture.fake), before)
+                        self.assertFalse(any(fixture.fake.find(n)["State"]["Running"]
+                                             for n in (rs.TARGET, rs.SIDECAR)))
+                        self.assertEqual(fixture.fake.units[f"{rs.UNIT}.timer"], "inactive")
+                    if fault == "restore":
+                        # An interrupted attempt must neither be overwritten nor
+                        # treated as verified on retry.
+                        attempts = list((run / "a2").glob("accepted-*"))
+                        self.assertEqual(len(attempts), 1)
+                        old_archive = swap.sha256_file(attempts[0] / "m00.tar")
+                        fixture.fake.faults.clear()
+                        code, out = fixture.go(["--resume", str(run), "--accept-a2", digest])
+                        self.assertEqual(code, swap.EXIT_OK, out)
+                        self.assertEqual(len(list((run / "a2").glob("accepted-*"))), 2)
+                        self.assertEqual(swap.sha256_file(attempts[0] / "m00.tar"), old_archive)
+                finally:
+                    fixture.doCleanups()
+
+
 if __name__ == "__main__":
     unittest.main()

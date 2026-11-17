@@ -612,6 +612,18 @@ Under the smaller rule the run keeps one verified backup:
   test. When they are equal, the S1 archive, checked by S2 integrity and the
   S3 fresh restore, is a verified backup of exactly that state. Any
   difference holds for owner review (exit 3), as in every run.
+- Resuming that hold requires more than accepting the diff hash: while all
+  users remain stopped, `--resume` captures a fresh archive set under a new
+  exclusive `a2/accepted-*` directory, checks SQLite integrity and backups,
+  and verifies a fresh restore against the reviewed A2 baselines. It uses
+  the existing A2 space backstop for these additional allocations, without
+  deleting S1 or overwriting reviewed baselines or earlier attempts. The
+  smaller R1 budget does not promise enough space for this changed state.
+  Missing space, malformed unpinned SQLite, failed evidence or changed data
+  refuses resume (exit 2), keeps the evidence and leaves the run held with
+  every user stopped. Only a fully verified set permits restart; its path
+  is recorded as `a2_accepted_evidence` in `state.json`. Each retry captures
+  and verifies a new set, never trusting a stale success marker.
 - An [RB-C] restore was not budgeted up front. Before it preserves a mount's
   current state it checks free space for that archive plus its verify
   extract plus 512 MiB. If that is short, it stops (exit 4) before anything

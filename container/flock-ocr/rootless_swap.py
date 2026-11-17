@@ -1973,6 +1973,33 @@ class Swap:
         except Exception as error:
             self.log(f"FAIL at [A2] resume: {error}")
             return self.rollback("RB-C")
+        if st.get("space_rule") == SPACE_RULE_SAME_IMAGE_TRUST_ADD:
+            # A manifest-only A2 hold has no verified backup of the changed
+            # state. Owner acceptance is not preservation evidence. Capture a
+            # fresh, exclusive set without overwriting the reviewed baselines
+            # or any interrupted attempt; snapshot_mounts re-gates the extra
+            # space using the existing A2 budget before writing archives.
+            try:
+                prefix = "a2/accepted-" + secrets.token_hex(16)
+                (self.run_dir / prefix).mkdir(mode=0o700)
+                baselines = self.snapshot_mounts(prefix)
+                for mount in st["mounts"]:
+                    label = mount["label"]
+                    self.require_equal(self.read_json(f"a2/{label}.baseline.json"), baselines[label],
+                                       f"{label} accepted snapshot vs reviewed a2 baseline")
+                self.sqlite_evidence(prefix, prefix, baselines)
+                self.restore_test(prefix, prefix, baselines)
+                self.confirm_quiescent()
+                for mount in st["mounts"]:
+                    label = mount["label"]
+                    self.require_equal(baselines[label], self.live_manifest(label),
+                                       f"{label} live vs verified accepted snapshot")
+            except Exception as error:
+                self.log(f"refused: [A2] accepted-state preservation failed: {error}; "
+                         "everything stays stopped; evidence kept, run remains held_a2")
+                return EXIT_REFUSED
+            st["a2_accepted_evidence"] = prefix
+            self.log(f"    accepted A2 state archived, SQLite integrity checked and fresh restore verified: $RUN/{prefix}")
         st["a2_accepted"] = accepted
         st["phase"] = "running"
         st["done"].append("A2")
