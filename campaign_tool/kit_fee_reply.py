@@ -20,6 +20,7 @@ NOTE = "Draft only. Nothing was sent."
 FEE_CITATION = "Gov. Code § 7922.530"  # the one bounded selector: an exact citation, never a keyword match
 NARROW_MAX = 300
 NO_ESTIMATE = "No recorded fee estimate for this request."
+READ_FAILED = "kit fee-reply: unable to read campaign inputs"
 NO_RULE = "No unambiguous fee rule in the law package; nothing written."
 CAVEAT = "Not independently reviewed; verify applicability before sending."
 ASK_ITEMIZED = "Please provide an itemized basis for the estimate, including the quantities and rates used."
@@ -208,15 +209,8 @@ def _write(folder, name, text, replace):
         os.close(dir_fd)
 
 
-def fee_reply(root, agency_id, *, request="main", narrow=None, replace=False, law_base=None, today=None):
-    """Write the private fee-estimate reply draft; return its relative path and the recorded facts.
-
-    ``root`` should be the campaign folder as given (not resolved), so a symlink on the path is still visible."""
+def _inputs(root, agency_id, request, today, law_base):
     from .cli import read_config  # local import: cli imports this module lazily
-    root = Path(root)
-    if not isinstance(agency_id, str) or not kit.AGENCY_ID.fullmatch(agency_id):
-        raise ValueError("--agency must look like ca-example-police")
-    request, narrow = kit_track._request(request), _narrow(narrow)
     for part, label in ((root, "the campaign folder"), (root / "kit", "kit"), (root / "kit" / "followups", "kit/followups")):
         if part == root / "kit" / "followups" and not os.path.lexists(part):
             continue
@@ -226,13 +220,28 @@ def fee_reply(root, agency_id, *, request="main", narrow=None, replace=False, la
     agency = next((a for a in kit._load_existing(root / "kit" / "agencies.json") if a["agency_id"] == agency_id), None)
     if agency is None or agency.get("selected") is not True:
         raise ValueError(f"agency_id {agency_id!r} is not a selected agency in kit/agencies.json")
-    entry, step = _fee_step(root, agency_id, request, today or date.today())
-    estimate_on, cents = step["on"], step["amount_cents"]
+    entry, step = _fee_step(root, agency_id, request, today)
     try:
         package = law.load_package(kit._jurisdiction(read_config(root)), law_base)
     except ValueError:
         raise ValueError(NO_RULE) from None
-    rule, basis = fee_rule(package, estimate_on)
+    rule, basis = fee_rule(package, step["on"])
+    return agency, entry, step, package, rule, basis
+
+
+def fee_reply(root, agency_id, *, request="main", narrow=None, replace=False, law_base=None, today=None):
+    """Write the private fee-estimate reply draft; return its relative path and the recorded facts.
+
+    ``root`` should be the campaign folder as given (not resolved), so a symlink on the path is still visible."""
+    root = Path(root)
+    if not isinstance(agency_id, str) or not kit.AGENCY_ID.fullmatch(agency_id):
+        raise ValueError("--agency must look like ca-example-police")
+    request, narrow = kit_track._request(request), _narrow(narrow)
+    try:  # an OSError while admitting/loading inputs never reaches output (it names private paths)
+        agency, entry, step, package, rule, basis = _inputs(root, agency_id, request, today or date.today(), law_base)
+    except OSError:
+        raise ValueError(READ_FAILED) from None
+    estimate_on, cents = step["on"], step["amount_cents"]
     name = _plain_line(agency.get("name"))
     if name is None:
         raise ValueError("the agency name must be one line of plain text")
