@@ -57,9 +57,13 @@ def inside(root, rel):
     """Return the real path of rel if it is a non-symlink inside root, else None."""
     if not rel or os.path.isabs(rel):
         return None
-    joined = os.path.join(root, rel)
+    joined = root
+    for component in rel.split(os.sep):
+        joined = os.path.join(joined, component)
+        if os.path.islink(joined):
+            return None
     real = os.path.realpath(joined)
-    if os.path.commonpath([root, real]) != root or os.path.islink(joined):
+    if os.path.commonpath([root, real]) != root:
         return None
     return real
 

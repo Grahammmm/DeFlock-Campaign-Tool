@@ -132,6 +132,22 @@ class EvidenceIndexTests(Base):
         self.assertIn("symlinks skipped: 1", md)
         self.assertIn("refused paths: 1", md)
 
+    def test_mail_paths_with_symlinked_parent_are_refused(self):
+        os.symlink(self.root / "mail-history/eml", self.root / "link")
+        write_csv(self.root / "mail-history/MESSAGE-INDEX.csv", MSG, [
+            ["INBOX", "1", "9", "", "<z>", "", "pismo test pd", "", "", "s", "link/a.eml", "x", "0", ""]])
+        write_csv(self.root / "mail-history/ATTACHMENT-INDEX.csv", ATT, [
+            ["INBOX", "9", "reply", "x", "9", "link/a.eml"]])
+        self.assertEqual(self.run_tool()[0], 0)
+        self.assertNotIn("link/a.eml", self.tsv())
+        self.assertIn("refused paths: 2", (self.out / "EVIDENCE-INDEX.md").read_text())
+
+    def test_symlinked_mail_history_index_is_not_read(self):
+        (self.root / "mail-history").rename(self.root / "stored-mail")
+        os.symlink(self.root / "stored-mail", self.root / "mail-history")
+        self.assertEqual(self.run_tool()[0], 0)
+        self.assertNotIn("\tmail\t", self.tsv())
+
     def test_read_only_and_guards(self):
         def snap():
             return {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob("*") if p.is_file()}
