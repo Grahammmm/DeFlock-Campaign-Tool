@@ -34,7 +34,10 @@ def read_index(path):
 
 def ocr_pages(path, doc, pages, failures):
     """Return {page: text} from a campaign OCR text file, or {} when none exists."""
-    if not os.path.isfile(path) or os.path.islink(path) or os.path.getsize(path) > MAX_OCR:
+    if not os.path.lexists(path):
+        return {}
+    if os.path.islink(path) or not os.path.isfile(path) or os.path.getsize(path) > MAX_OCR:
+        failures.append("ocr_invalid:" + doc)
         return {}
     try:
         with open(path, encoding="utf-8", newline="") as handle:
@@ -93,9 +96,12 @@ def process(row, doc, root, ocr_dir, failures):
         try:
             text = page.extract_text() or ""
         except Exception:
-            text = ""
+            failures.append("page_extract_failed:%s:p.%d" % (doc, i))
+            continue
         if len("".join(text.split())) >= MIN_NATIVE:
             native[i] = text
+    if len(failures) > before:
+        return None
     ocr = {}
     if ocr_dir:
         ocr = ocr_pages(os.path.join(ocr_dir, digest + ".txt"), doc, count, failures)

@@ -108,6 +108,28 @@ class AgencyPagesTests(Base):
             self.assertIn(expect, err)
         self.assertFalse(self.out.exists())
 
+    def test_invalid_present_ocr_file_refuses(self):
+        target = self.ocr / (sha(self.a) + ".txt")
+        target.write_text("Page 2\nx\n")
+        with mock.patch.object(pages, "MAX_OCR", 3):
+            code, _, err = self.run_tool()
+        self.assertEqual(code, 1)
+        self.assertIn("ocr_invalid:D1", err)
+        target.unlink()
+        (self.tmp / "real.txt").write_text("Page 2\nx\n")
+        target.symlink_to(self.tmp / "real.txt")
+        code, _, err = self.run_tool()
+        self.assertEqual((code, "ocr_invalid:D1" in err), (1, True))
+        self.assertFalse(self.out.exists())
+
+    def test_page_extraction_error_refuses(self):
+        from pypdf import PageObject
+        with mock.patch.object(PageObject, "extract_text", side_effect=ValueError("boom")):
+            code, _, err = self.run_tool()
+        self.assertEqual(code, 1)
+        self.assertIn("page_extract_failed:D1:p.1", err)
+        self.assertFalse(self.out.exists())
+
     def test_never_runs_ocr_or_subprocess(self):
         boom = mock.Mock(side_effect=AssertionError("forbidden"))
         with mock.patch.object(subprocess, "run", boom), mock.patch.object(subprocess, "Popen", boom), \
