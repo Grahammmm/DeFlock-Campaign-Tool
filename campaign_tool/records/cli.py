@@ -61,6 +61,7 @@ COMMANDS = {
     "agency-pages": ("agency_run.pages", "main"),
     "agency-cross-logs": ("agency_run.cross_logs", "main"),
     "agency-lint-asks": ("agency_run.lint_asks", "main"),
+    "agency-lint-quotes": ("agency_run.lint_quotes", "main"),
     "agency-response-sheet": ("agency_response_sheet", "main"),
     "agency-next": ("agency_next", "main"),
     "first-request": ("first_request", "main"),
