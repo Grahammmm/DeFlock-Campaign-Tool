@@ -78,6 +78,16 @@ def _kind(root, rel):
     return "dir" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else "other"
 
 
+def _unique_members(pairs):
+    """Object hook: a decoded member name that repeats is ambiguous input (name not echoed)."""
+    found = {}
+    for key, value in pairs:
+        if key in found:
+            raise ValueError("repeated member")
+        found[key] = value
+    return found
+
+
 def _read(path, limit):
     """Parsed JSON of a regular, non-symlink file of at most ``limit`` bytes; None when absent."""
     try:
@@ -99,7 +109,7 @@ def _read(path, limit):
             data = handle.read(limit + 1)
         if len(data) > limit:
             raise _Bad
-        return json.loads(data.decode("utf-8"))
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_unique_members)
     except (OSError, ValueError, RecursionError):
         raise _Bad from None
     finally:
