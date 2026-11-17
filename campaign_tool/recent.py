@@ -104,6 +104,14 @@ class _Sink:
 ABSENT = object()  # no file; a present file holding JSON ``null`` parses to None and is validated like any document
 
 
+def _unique_members(pairs):
+    """Object hook: a repeated (decoded) member name is ambiguous, so it is unreadable like malformed JSON."""
+    names = [name for name, _ in pairs]
+    if len(set(names)) != len(names):
+        raise ValueError("repeated member")
+    return dict(pairs)
+
+
 def _store(root, relative, limit=MAX_JSON_BYTES):
     """The parsed JSON of an optional campaign file (``null`` included), or ``ABSENT`` when there is no file.
 
@@ -135,7 +143,7 @@ def _store(root, relative, limit=MAX_JSON_BYTES):
     os.close(fd)
     if len(data) > limit:
         raise ValueError(relative)
-    return json.loads(data.decode("utf-8"))
+    return json.loads(data.decode("utf-8"), object_pairs_hook=_unique_members)
 
 
 def _names(root, sink):
