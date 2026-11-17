@@ -54,6 +54,7 @@ COMMANDS = {
     "law-package": ("law_package_check", "main"),
     "agency-policies": ("agency_policies", "main"),
     "agency-retention": ("agency_retention", "main"),
+    "agency-next": ("agency_next", "main"),
     "first-request": ("first_request", "main"),
     "model-advice": ("model_advice", "main"),
     "site-prs": ("site_prs", "main"),
