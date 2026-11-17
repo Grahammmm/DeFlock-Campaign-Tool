@@ -1,5 +1,6 @@
 """RF2311-1: content/events.json is read through a MAX_JSON_BYTES + 1 byte ceiling before decoding. Synthetic data only."""
 import json
+import os
 import unittest
 from unittest import mock
 
@@ -11,7 +12,7 @@ from campaign_tool.site import build_site
 
 from tests.test_site_events import TODAY, EventsCase, event
 
-REAL_OPEN = open
+REAL_OPEN, REAL_FDOPEN = open, os.fdopen
 
 
 class Spy:
@@ -42,7 +43,7 @@ def padded(size, head=b"[]"):
 class BoundedReadTests(EventsCase):
     def spied(self):
         log = {"requests": [], "returned": 0, "closed": 0}
-        patch = mock.patch.object(content_events, "open", lambda p, mode="r": Spy(REAL_OPEN(p, mode), log), create=True)
+        patch = mock.patch.object(content_events.os, "fdopen", lambda fd, mode="r": Spy(REAL_FDOPEN(fd, mode), log))
         patch.start()
         self.addCleanup(patch.stop)
         return log

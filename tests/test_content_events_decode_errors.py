@@ -2,6 +2,7 @@
 
 Real guarded decoding runs in child interpreters started with ``-X int_max_str_digits=640``; the parent setting is untouched."""
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -20,7 +21,7 @@ from tests.test_site_events import TODAY, EventsCase, event
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GUARD = "640"
 FIXED = "events.json: not valid UTF-8 JSON (value could not be decoded)"
-REAL_OPEN = open
+REAL_OPEN, REAL_FDOPEN = open, os.fdopen
 
 
 def digits(count):
@@ -193,7 +194,7 @@ class DecoderPrecedenceTests(EventsCase):
                 closed.append(1)
                 return False
         self.put(b"[1]")
-        with mock.patch.object(content_events, "open", lambda p, mode="r": Spy(REAL_OPEN(p, mode)), create=True), \
+        with mock.patch.object(content_events.os, "fdopen", lambda fd, mode="r": Spy(REAL_FDOPEN(fd, mode))), \
                 mock.patch.object(content_events.json, "loads", side_effect=ValueError("x")):
             for _ in range(3):
                 self.assertIsNone(read_events(self.root, []))
