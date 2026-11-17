@@ -203,7 +203,9 @@ class ScreenC(unittest.TestCase):
                 fn(doc)
                 put(path, doc)
                 m = cd.load(project, RUN, pages=False)
-                self.assertEqual(cd.sources(m)[source]["code"], "shape_invalid")
+                # response-tier shapes are refused early by item_tiers (RF1450-8)
+                expected = "response_items_invalid" if source == "tiers" else "shape_invalid"
+                self.assertEqual(cd.sources(m)[source]["code"], expected)
                 page = cd.render(m, NOW)
                 self.assertIn(console_layout.plain([source])[0] + ": unavailable", page)
                 self.assertIn("alpha-pd", page)
