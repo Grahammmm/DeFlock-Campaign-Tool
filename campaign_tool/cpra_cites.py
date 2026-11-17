@@ -16,6 +16,19 @@ _CITES = re.compile(
     r"(?:(?:§{1,2}|sections?\b)\s*)?|(?:§{1,2}\s*|sections?\s+))"
     r"(?P<number>[0-9]+(?:\.[0-9]+)?)(?![\w]|\.[0-9.]|,[0-9])"
     r"(?:\([a-z0-9]+\))*", re.IGNORECASE)
+_CODE_SUFFIX = re.compile(r"\bCode", re.IGNORECASE)
+
+
+def _after_other_code(text, start):
+    """True if only whitespace separates a word-bounded "Code" from ``start``.
+
+    Walks back over the whitespace run only; runs before distinct nonoverlapping
+    candidates are disjoint, so no growing prefix is copied or searched.
+    """
+    end = start
+    while end > 0 and text[end - 1].isspace():
+        end -= 1
+    return end >= 4 and _CODE_SUFFIX.fullmatch(text, end - 4, end) is not None
 
 
 def find_former_cpra_cites(text) -> list[tuple[int, int]]:
@@ -28,7 +41,7 @@ def find_former_cpra_cites(text) -> list[tuple[int, int]]:
         return []
     spans = []
     for match in _CITES.finditer(text):
-        if not match.group("government") and re.search(r"\bCode\s*$", text[:match.start()], re.IGNORECASE):
+        if not match.group("government") and _after_other_code(text, match.start()):
             continue
         if Decimal("6250") <= Decimal(match.group("number")) <= Decimal("6276.48"):
             spans.append(match.span())
