@@ -16,6 +16,19 @@ TOKEN = re.compile(r"\{\{([A-Z_]+)\}\}")
 NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
 
 
+class _DuplicateMember(Exception):
+    pass
+
+
+def unique_members(pairs):  # a repeated decoded name would silently replace reviewed text
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateMember
+        result[key] = value
+    return result
+
+
 def keyset(value, keys, prefix=""):  # an odd key name is shown by its length only
     named = lambda key: prefix + key if isinstance(key, str) and NAME.fullmatch(key) else f"{prefix}{len(str(key))} chars"
     return ["missing field: " + prefix + key for key in keys - set(value)] + [
@@ -86,9 +99,11 @@ def main():
         if len(raw) > MAX_INPUT:
             raise ValueError("Shell input too large")
         try:
-            decoded = json.loads(raw)
+            decoded = json.loads(raw, object_pairs_hook=unique_members)
         except RecursionError:
             raise ValueError("JSON nesting is too deep") from None
+        except _DuplicateMember:
+            raise ValueError("duplicate JSON object member names") from None
         result = render(decoded)
         sys.stdout.write(json.dumps(result, ensure_ascii=True))
     except (ValueError, TypeError, OSError) as exc:

@@ -54,6 +54,7 @@ COMMANDS = {
     "public-packets": ("public_packets", "main"),
     "law-package": ("law_package_check", "main"),
     "agency-policies": ("agency_policies", "main"),
+    "agency-events": ("agency_run.events_ingest", "main"),
     "agency-policy-matrix": ("agency_policy_matrix", "main"),
     "agency-retention": ("agency_retention", "main"),
     "agency-evidence": ("agency_run.evidence_index", "main"),
