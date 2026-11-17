@@ -258,6 +258,29 @@ class PromotionTests(unittest.TestCase):
         manifest["correction"] = dict(correction, packet_id="0" * 16, packet_revision=0, text_sha256="a" * 64)
         self.refused("correction_linkage_unavailable", ident=ident, manifest=manifest)
 
+    def test_written_predecessor_hash_statement_target_attribution_and_legacy_negatives(self):
+        pp.enable(self.project, self.signer.sign(pp.switch_payload(self.project)))
+        for n, failure in enumerate(("hash", "statement", "target", "agency", "request", "legacy", "revision")):
+            predecessor = self.queue(draft_key="predecessor-" + str(n))
+            old = dp.prepare(self.project, predecessor, self.binding(predecessor))
+            if failure == "target":
+                old["draft_provenance"]["target"]["section"] = "earlier-section"
+            elif failure in ("agency", "request"):
+                old["agency_key" if failure == "agency" else "request_id"] = "elsewhere"
+            elif failure == "legacy":
+                old.pop("draft_provenance")
+            got = pp.propose(self.project, old)
+            pp.approve(self.project, got["id"], self.signer.sign(pp.payload(self.project, got["id"])))
+            pp.write_change(self.project, got["id"])
+            revision = got["revision"] + (failure == "revision")
+            correction = {"prior_statement": "Absent statement" if failure == "statement" else "Reviewed wording.",
+                          "prior_version": f"packet:{got['id']}@{revision}", "linkage": f"correction-of:{got['id']}"}
+            ident = self.queue("draft-correction-notice", draft_key="written-negative-" + str(n), correction=correction)
+            manifest = self.binding(ident)
+            manifest["correction"] = dict(correction, packet_id=got["id"], packet_revision=revision,
+                                          text_sha256="0" * 64 if failure == "hash" else dp._sha(BODY.encode()))
+            self.refused("correction_linkage_unavailable", ident=ident, manifest=manifest)
+
     def test_identical_repeat_revalidates_then_noops(self):
         self.promote()
         before = self.stores()
