@@ -75,7 +75,9 @@ def main(argv=None):
         if package_dir.name == "package.json":
             package_dir = package_dir.parent
         try:
-            package, _ = law_package_check.check(package_dir)
+            package, errors = law_package_check.check(package_dir)
+            if errors:
+                return _refuse("policy_matrix_package")
             book = playbook.load()
         except (OSError, ValueError, KeyError, TypeError, playbook.PlaybookError):
             return _refuse("policy_matrix_package")

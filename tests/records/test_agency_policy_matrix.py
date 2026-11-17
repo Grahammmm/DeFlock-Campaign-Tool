@@ -138,6 +138,37 @@ class MatrixTests(unittest.TestCase):
         rc, _, se, out = self.run_cli(agency="a/b")
         self.assertEqual((rc, "refused policy_matrix_agency" in se, out.exists()), (2, True, False))
 
+    def test_review_errors_refuse_without_writing(self):
+        package_path = self.pkg / "package.json"
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+        package.update(status="reviewed", reviewed_by=[], reviewed_at=None)
+        package_path.write_text(json.dumps(package), encoding="utf-8")
+        _, errors = law_package_check.check(self.pkg)
+        self.assertIn("REVIEWER_MISSING", errors)
+        self.assertIn("REVIEW_DATE_INVALID", errors)
+        self.assertTrue(any(error.startswith("RULE_UNVERIFIED ") for error in errors))
+        before = (sha(self.pol), sha(package_path))
+        rc, so, se, out = self.run_cli()
+        self.assertEqual(rc, 2)
+        self.assertEqual(so, "")
+        self.assertIn("refused policy_matrix_package", se)
+        self.assertFalse(out.exists())
+        self.assertEqual((sha(self.pol), sha(package_path)), before)
+
+    def test_valid_reviewed_package_is_accepted(self):
+        package_path = self.pkg / "package.json"
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+        package.update(status="reviewed", reviewed_by=["Example Reviewer"], reviewed_at="2024-01-01")
+        for rule in package["rules"]:
+            rule["review"] = "verified"
+        package_path.write_text(json.dumps(package), encoding="utf-8")
+        _, errors = law_package_check.check(self.pkg)
+        self.assertEqual(errors, [])
+        rc, so, se, out = self.run_cli()
+        self.assertEqual((rc, se), (0, ""))
+        self.assertIn("package status reviewed", so)
+        self.assertEqual(len(self.lines(out)), 6)
+
     def test_out_exists_refused_and_inputs_unchanged(self):
         before = (sha(self.pol), sha(self.pkg / "package.json"))
         rc, _, _, out = self.run_cli()
