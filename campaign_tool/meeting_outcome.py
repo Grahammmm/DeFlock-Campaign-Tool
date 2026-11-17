@@ -31,7 +31,17 @@ def read_votes(path):
     except OSError as exc:
         raise MeetingOutcomeError(f"votes: cannot read {path} as a regular file ({exc.strerror})") from None
     try:
-        data = os.read(fd, 65537) if stat.S_ISREG(os.fstat(fd).st_mode) else None
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            data = None
+        else:
+            chunks, size = [], 0
+            while size <= 65536:
+                chunk = os.read(fd, 65537 - size)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            data = b''.join(chunks)
     finally:
         os.close(fd)
     if data is None or len(data) > 65536:
