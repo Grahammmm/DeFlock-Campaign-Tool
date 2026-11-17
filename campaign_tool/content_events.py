@@ -14,9 +14,11 @@ Classification is deterministic and start-based: with a UTC ``cutoff`` (the buil
 when ``starts_at >= cutoff`` and past otherwise (one already underway at the cutoff counts as past). ``partition`` sorts copies:
 upcoming by UTC start then id, past newest start first then id. Later newsletter or calendar units reuse these helpers.
 """
+import errno
 import json
 import os
 import re
+import stat
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -182,7 +184,21 @@ def _no_repeated_keys(pairs):
 
 def _read_bounded_json(path):
     """Parse ``path`` after consuming at most ``MAX_JSON_BYTES + 1`` bytes; the returned length is checked before decoding."""
-    with open(path, "rb") as stream:
+    refusal = "events.json: must be a regular file, not a symlink or folder"
+    try:  # one no-follow, non-blocking open: the opened object, not the pathname, is admitted
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise ContentError(refusal) from None
+        raise
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ContentError(refusal)
+        stream = open(fd, "rb")  # takes ownership of fd on success
+    except BaseException:
+        os.close(fd)  # still owned here: fstat, type refusal or stream construction failed
+        raise
+    with stream:
         data = stream.read(MAX_JSON_BYTES + 1)
     if len(data) > MAX_JSON_BYTES:
         raise ContentError(f"{path.name}: file too large")
