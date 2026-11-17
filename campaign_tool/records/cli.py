@@ -6,6 +6,7 @@ import sys
 
 COMMANDS = {
     "draft-import": ("draft_import", "main"),
+    "agency-draft-export": ("agency_draft_export", "main"),
     "draft-promote": ("draft_promote", "main"),
     "console-export": ("console_export", "export_main"),
     "decisions-apply": ("console_apply", "main"),
