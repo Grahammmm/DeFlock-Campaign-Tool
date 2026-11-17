@@ -65,13 +65,21 @@ def _read_package_bytes(path):
         os.close(fd)
 
 
+def _unique_members(pairs):
+    """Object hook: a repeated member name is ambiguous input; the message never names the member."""
+    members = dict(pairs)
+    if len(members) != len(pairs):
+        raise ValueError("repeated JSON member name")
+    return members
+
+
 def load_file(path):
     """A package file read with the loader's schema and semantic checks; any failure names the file."""
     path = Path(path)
     try:
         data = _read_package_bytes(path)
         try:
-            package = json.loads(data.decode("utf-8"))
+            package = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_members)
         except json.JSONDecodeError as exc:
             raise ValueError(f"invalid JSON: {exc}") from None
         except RecursionError:  # the decoder's own failure on excessive nesting; schema/report recursion is not translated
