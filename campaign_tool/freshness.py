@@ -109,6 +109,16 @@ SCHEDULES_FILE, SCHEDULE_REFRESH = "content/body-schedules.json", "re-check the 
 SOURCES_FILE, COPY_REFRESH = "content/sources.json", "re-download the public copy and run sources verify-copy"
 
 
+def _unique_members(pairs):
+    """object_pairs_hook: a repeated decoded member name is ambiguous, so refuse the whole document."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate member name")  # content-free: never echo the name
+        result[key] = value
+    return result
+
+
 def _public_document(root, name):
     """The parsed public content/<name>: _MISSING when absent (a JSON null file is a document), _BAD when unreadable."""
     import json
@@ -123,7 +133,7 @@ def _public_document(root, name):
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                 return _BAD
             data = handle.read(MAX_JSON_BYTES + 1)
-        return json.loads(data.decode("utf-8")) if len(data) <= MAX_JSON_BYTES else _BAD
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_unique_members) if len(data) <= MAX_JSON_BYTES else _BAD
     except FileNotFoundError:
         return _MISSING
     except (OSError, ValueError, RecursionError):

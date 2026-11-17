@@ -59,6 +59,7 @@ COMMANDS = {
     "agency-retention": ("agency_retention", "main"),
     "agency-evidence": ("agency_run.evidence_index", "main"),
     "agency-pages": ("agency_run.pages", "main"),
+    "agency-cross-logs": ("agency_run.cross_logs", "main"),
     "agency-lint-asks": ("agency_run.lint_asks", "main"),
     "agency-response-sheet": ("agency_response_sheet", "main"),
     "agency-next": ("agency_next", "main"),
