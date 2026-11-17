@@ -54,7 +54,7 @@ def _read(path, cap, code):
 
 def letter(markdown, section):
     """(subject, body) from the first quote block under the exact heading text."""
-    lines = markdown.split("\n")
+    lines = markdown.replace("\r\n", "\n").split("\n")
     heads = [i for i, line in enumerate(lines) if HEADING.fullmatch(line.rstrip("\r"))]
     starts = [i for i in heads if HEADING.fullmatch(lines[i].rstrip("\r")).group(1) == section]
     if not starts:
@@ -162,6 +162,8 @@ def export(md_path, mapping_path, project, out):
             if keys.count(key) > 1:
                 raise Refuse("draft_key_duplicate")
             doc = build(entry, ident, markdown, digest)
+            if "/" in key:
+                raise Refuse("draft_key_filename_invalid")
             path = os.path.join(out, key + ".json")
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
