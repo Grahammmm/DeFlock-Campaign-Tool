@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 
 from . import run_report, schedule
 
@@ -90,14 +91,24 @@ def main(argv=None):
                 raise ValueError("size")
             data = validate(json.loads(raw), datetime.now(timezone.utc))
             path = Path(args.out)
-            tmp = path.with_name(path.name + ".tmp")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-            with os.fdopen(fd, "w") as handle:
-                json.dump(data, handle, sort_keys=True)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, path)
+            fd = None
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(prefix=".schedule-snapshot-", dir=path.parent)
+                handle = os.fdopen(fd, "w")
+                fd = None  # The handle now owns the descriptor.
+                with handle:
+                    json.dump(data, handle, sort_keys=True)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp, path)
+                tmp = None  # The inode is published; never unlink the destination.
+            finally:
+                if fd is not None:
+                    os.close(fd)
+                if tmp is not None:
+                    os.unlink(tmp)
     except Exception:
         print("schedule snapshot: refused schedule_unreadable", file=sys.stderr)
         return 2
