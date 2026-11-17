@@ -161,6 +161,16 @@ class EvidenceIndexTests(Base):
         self.aliases.write_text("# only\n\n")
         self.assertEqual(self.run_tool(out=self.tmp / "o3"), (2, "alias_file_empty"))
 
+    def test_same_path_in_file_walk_and_attachment_index_is_one_row(self):
+        rel = "received/website/pismo-test-flock-contract.pdf"
+        write_csv(self.root / "mail-history/ATTACHMENT-INDEX.csv", ATT, [
+            ["INBOX", "1", "reply.pdf", "x", "9", rel]])
+        self.assertEqual(self.run_tool()[0], 0)
+        rows = [r for r in self.tsv().splitlines() if r.startswith(rel + "\t")]
+        self.assertEqual(len(rows), 1)
+        self.assertIn("\tportal-file\t", rows[0])
+        self.assertIn("\toriginal", rows[0])
+
     def test_date_conversion(self):
         self.assertEqual(ei.pacific_date("02-Nov-2026 00:20:00 +0000"), "2026-11-01")
         self.assertEqual(ei.pacific_date("02-Nov-2026 18:59:00 +0000"), "2026-11-02")

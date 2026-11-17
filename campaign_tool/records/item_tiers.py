@@ -81,10 +81,47 @@ def logs_audits(asks):
     return out
 
 
+def _bad_shape():
+    return _pb.PlaybookError("response_items_invalid", "shape")
+
+
+def _optional(value, kind):
+    """absent/null is allowed; a present value must be exactly of the given kind."""
+    if value is not None and not isinstance(value, kind):
+        raise _bad_shape()
+
+
+def _optional_list(value, item_kind):
+    _optional(value, list)
+    if value is not None and not all(isinstance(entry, item_kind) for entry in value):
+        raise _bad_shape()
+
+
+def _check_shapes(report):
+    """Refuse wrongly typed nested items before any tier is computed; fixed detail, no echo."""
+    _optional(report.get("run_id"), str)
+    for req in report["requests"]:
+        if not isinstance(req, dict):
+            raise _bad_shape()
+        for key in ("agency_key", "request_id"):
+            _optional(req.get(key), str)
+        _optional_list(req.get("flags"), str)
+        asks = req.get("asks")
+        _optional(asks, list)
+        for ask in asks or []:
+            if not isinstance(ask, dict):
+                raise _bad_shape()
+            for key in ("ask_id", "text", "rating"):
+                _optional(ask.get(key), str)
+            _optional_list(ask.get("flags"), str)
+            _optional_list(ask.get("evidence"), dict)
+
+
 def tier_report(report, book):
     """report: parsed response-items.json (or the same shape); book: a validated playbook."""
     if not isinstance(report, dict) or report.get("schema") != SCHEMA_IN or not isinstance(report.get("requests"), list):
         raise _pb.PlaybookError("response_items_invalid", "schema")
+    _check_shapes(report)
     names = {t["id"]: t["name"] for t in book["tiers"]}
     requests = []
     for req in report["requests"]:
