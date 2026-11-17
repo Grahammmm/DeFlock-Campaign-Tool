@@ -82,7 +82,11 @@ def _load(root):
         data = _read_regular(kit / SENT_NAME, MAX_SENT_BYTES, "the file")
         if data is None:
             return []
-        document = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_pairs)
+        text = data.decode("utf-8")
+        try:
+            document = json.loads(text, object_pairs_hook=_unique_pairs)
+        except RecursionError:
+            raise ValueError("JSON nested too deeply") from None
         if not isinstance(document, dict) or document.get("schema_version") != 1:
             raise ValueError("schema_version must be 1")
         issues = document.get("issues")
@@ -98,8 +102,6 @@ def _load(root):
             if previous and day < previous:
                 raise ValueError(f"issues[{index}] is out of date order")
             previous = day
-    except RecursionError:
-        raise ValueError(f"kit/{SENT_NAME} unreadable: JSON nested too deeply") from None
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         raise ValueError(f"kit/{SENT_NAME} unreadable: {exc}") from None
     return issues

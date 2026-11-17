@@ -86,6 +86,16 @@ class DeepJsonTests(unittest.TestCase):
         self.assertEqual(record["sent_on"], "2026-03-05")
         self.assertEqual(last_sent(self.root), "2026-03-05")
 
+    def test_history_non_decoder_recursion_propagates(self):
+        self.sent.write_text(EMPTY_HIST)
+        with mock.patch("campaign_tool.newsletter.sent._read_regular", side_effect=RecursionError("read failure")):
+            with self.assertRaisesRegex(RecursionError, "read failure"):
+                last_sent(self.root)
+        self.sent.write_text('{"schema_version": 1, "issues": [{"sent_on": "2026-03-05"}]}')
+        with mock.patch("campaign_tool.newsletter.sent._valid_day", side_effect=RecursionError("validation failure")):
+            with self.assertRaisesRegex(RecursionError, "validation failure"):
+                last_sent(self.root)
+
     def test_shallow_extensions_and_other_exceptions_keep_contract(self):
         self.sent.write_text('{"schema_version": 1, "issues": [], "x": {"a": [[1]]}}')
         self.assertIsNone(last_sent(self.root))
