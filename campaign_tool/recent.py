@@ -188,7 +188,7 @@ def _records(root, sink, directory):
         else:
             by_day.setdefault(day, set()).add(entry["sha256"])
     for day, hashes in by_day.items():
-        prefixes = sorted({h[:PREFIX_CHARS] for h in hashes})
+        prefixes = [h[:PREFIX_CHARS] for h in sorted(hashes)]  # count full identities, then truncate
         shown = ", ".join(prefixes[:PREFIXES_SHOWN]) + (f" (+{len(prefixes) - PREFIXES_SHOWN} more)"
                                                        if len(prefixes) > PREFIXES_SHOWN else "")
         sink.add("Records", day, f"{len(prefixes)} record{'' if len(prefixes) == 1 else 's'} added to the library: "
