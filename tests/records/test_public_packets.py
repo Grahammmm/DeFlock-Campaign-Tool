@@ -225,5 +225,108 @@ class ReadOnlyTests(Base):
         self.assertEqual(self.code(pp.status, self.project, T0, read_only=True), "journal_invalid")
 
 
+class CreateOnlyTests(Base):
+    def journal(self):
+        from pathlib import Path
+        path = Path(self.project) / pp.JOURNAL
+        return path.read_bytes() if path.exists() else b""
+
+    def test_create_only_absent_and_exact_recovery(self):
+        first = pp.propose(self.project, doc(), now=T0, create_only=True)
+        before = self.journal()
+        self.assertEqual(pp.propose(self.project, doc(), now=T0 + 1, create_only=True),
+                         dict(first, result="duplicate"))
+        self.assertEqual(self.journal(), before)
+
+    def test_create_only_cancel_after_preflight_changes_no_journal(self):
+        ident = pp.propose(self.project, doc(), now=T0)["id"]
+        self.assertEqual(pp.status(self.project, now=T0)["packets"][0]["status"], "proposed")
+        pp.decide(self.project, ident, "cancelled", "tester", now=T0 + 1)
+        before = self.journal()
+        self.assertEqual(self.code(pp.propose, self.project, doc(), now=T0 + 2, create_only=True), "packet_conflict")
+        self.assertEqual(self.journal(), before)
+        self.assertEqual(pp.propose(self.project, doc(), now=T0 + 3, only_new=True)["revision"], 1)
+
+    def test_create_only_refuses_changed_and_conflicting_revision(self):
+        pp.propose(self.project, doc(), now=T0)
+        before = self.journal()
+        self.assertEqual(self.code(pp.propose, self.project, doc(text="Other wording."), now=T0, create_only=True), "packet_conflict")
+        self.assertEqual(self.journal(), before)
+        pp.propose(self.project, doc(text="Other wording."), now=T0)
+        before = self.journal()
+        self.assertEqual(self.code(pp.propose, self.project, doc(text="Other wording."), now=T0, create_only=True), "packet_conflict")
+        self.assertEqual(self.journal(), before)
+
+    def test_create_only_refuses_all_terminal_and_expired_states(self):
+        for status in ("rejected", "approved", "written", "expired"):
+            with self.subTest(status=status):
+                packet = doc(source="case-" + status)
+                ident = pp.propose(self.project, packet, now=T0)["id"]
+                if status == "rejected":
+                    pp.decide(self.project, ident, status, "tester", now=T0)
+                elif status in ("approved", "written"):
+                    pp.approve(self.project, ident, self.sign(pp.payload(self.project, ident)), now=T0)
+                    if status == "written":
+                        self.turn_on()
+                        pp.write_change(self.project, ident, now=T0)
+                before = self.journal()
+                now = T0 + pp.EXPIRY_SECONDS + 1 if status == "expired" else T0
+                self.assertEqual(self.code(pp.propose, self.project, packet, now=now, create_only=True), "packet_conflict")
+                self.assertEqual(self.journal(), before)
+
+
+class ProvenanceTests(Base):
+    def packet(self):
+        import hashlib
+        queue = "b" * 64
+        packet = doc(kind="summary", source="queue-" + queue)
+        packet["draft_provenance"] = {
+            "schema": "records-draft-promotion-provenance-v1", "source_project_id": "a" * 16,
+            "queue_id": queue, "queue_revision": 2,
+            "body_sha256": hashlib.sha256(packet["text"].encode()).hexdigest(), "evidence_sha256": "c" * 64,
+            "approval_signature_sha256": "d" * 64, "reviewed_sources_sha256": "e" * 64,
+            "source_attachment_sha256": "f" * 64, "source_section": "section", "source_run_id": "run-1",
+            "target": {"website": "example.invalid", "page": "agency", "section": "records"},
+            "citations": [{"source_type": "original", "source_id": SHA, "locator": "page 1",
+                           "as_of": "2026-11-03", "verification": "verified"}], "correction": None}
+        return packet
+
+    def test_legacy_payload_bytes_unchanged_without_draft_provenance(self):
+        packet = pp.clean(doc())
+        row = {"id": pp.packet_id(packet), "revision": 0, "packet": packet}
+        expected = "\n".join([f"project: {pp.project_id(self.project)}", f"id: {row['id']}", "kind: document",
+                              "agency: ex-pd", "request: r1", "title: Policy released", "text:", doc()["text"],
+                              "documents:", pp._canon(packet["documents"]), "citations:", "[]"])
+        self.assertEqual(pp.review_text(self.project, row).encode(), expected.encode())
+        self.assertEqual(pp._payload(self.project, row), approval.payload(pp.SCOPE, row["id"], expected, round_=0))
+        self.assertNotIn("draft_provenance", packet)
+
+    def test_provenance_retained_and_bound_to_packet_signature(self):
+        packet = self.packet()
+        clean = pp.clean(packet)
+        self.assertEqual(clean["draft_provenance"], packet["draft_provenance"])
+        ident = pp.propose(self.project, packet, now=T0)["id"]
+        signature = self.sign(pp.payload(self.project, ident))
+        packet["draft_provenance"]["target"]["section"] = "changed"
+        self.assertEqual(self.code(pp.propose, self.project, packet, now=T0, create_only=True), "packet_conflict")
+        pp.propose(self.project, packet, now=T0)
+        self.assertEqual(self.code(pp.approve, self.project, ident, signature, now=T0), "approval_required")
+
+    def test_closed_provenance_digest_kind_size_and_types(self):
+        import copy
+        for key, value in (("extra", True), ("body_sha256", "0" * 64), ("queue_revision", True),
+                           ("source_project_id", "bad"), ("correction", {}), ("target", {"website": "only"}),
+                           ("citations", []), ("source_section", "x" * 129)):
+            packet = self.packet()
+            packet["draft_provenance"][key] = value
+            self.assertEqual(self.code(pp.clean, packet), "draft_provenance_invalid")
+        packet = self.packet()
+        packet["kind"] = "document"
+        self.assertEqual(self.code(pp.clean, packet), "draft_provenance_invalid")
+        packet = self.packet()
+        packet["draft_provenance"]["target"]["section"] = "x" * (128 * 1024)
+        self.assertEqual(self.code(pp.clean, packet), "draft_provenance_invalid")
+
+
 if __name__ == "__main__":
     unittest.main()
