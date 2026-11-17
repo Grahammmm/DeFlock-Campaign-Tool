@@ -63,6 +63,22 @@ class LintCitesTest(unittest.TestCase):
                 "Civ. Code § 1798.90.5(a) VERIFIED-IN-PACKAGE.\n")
         self.assertEqual(self.codes(text)[1], [(1, "C2_label_mismatch"), (2, "C2_label_mismatch")])
 
+    def test_wrapped_citation_labels_and_boundaries(self):
+        c1, c2 = "C1_label_missing", "C2_label_mismatch"
+        cases = [
+            ("Gov. Code § 7922.535\nVERIFIED-IN-PACKAGE.", []),
+            ("Gov. Code § 7922.535\nUNVERIFIED.", [(1, c2)]),
+            ("Gov. Code § 7922.600\nVERIFIED-IN-PACKAGE.", [(1, c2)]),
+            ("Gov. Code § 7922.535 is cited.\nVERIFIED-IN-PACKAGE.", [(1, c1)]),
+            ("- Gov. Code § 7922.535\n- VERIFIED-IN-PACKAGE.", [(1, c1)]),
+            ("Gov. Code § 7922.535\n\nVERIFIED-IN-PACKAGE.", [(1, c1)]),
+            ("Gov. Code § 7922.535\nGov. Code § 7922.600 UNVERIFIED.", [(1, c1)]),
+            ("Gov. Code § 7922.535\n" + "x" * 79 + " VERIFIED-IN-PACKAGE", [(1, c1)]),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual([hit for hit in self.codes(text)[1] if hit[1].startswith(('C1_', 'C2_'))], expected)
+
     def test_et_seq_and_ff_variants(self):
         text = "et seq\net seq.\nsee 5 ff.\nthe staff. Ff here\n```\net seq. ff.\n```\n"
         self.assertEqual([h for h in self.codes(text)[1] if h[1] == "C3_et_seq"],

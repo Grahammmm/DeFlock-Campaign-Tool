@@ -87,15 +87,6 @@ def lint(text, sections):
             continue
         current.append((number, raw))
         hits += [(number, "C3_et_seq") for _ in ET_SEQ.finditer(raw)]
-        found = list(CITATION.finditer(raw))
-        for index, match in enumerate(found):
-            end = found[index + 1].start() if index + 1 < len(found) else len(raw)
-            label = LABEL.search(raw[match.end():min(match.end() + 80, end)])
-            section = match.group(1) or match.group(2)
-            if not label:
-                hits.append((number, "C1_label_missing"))
-            elif (label.group() == "UNVERIFIED") != (section not in sections):
-                hits.append((number, "C2_label_mismatch"))
     _flush(paragraphs, current)
     for paragraph in paragraphs:
         # List items delimit C4 sentence spans even without terminal punctuation.
@@ -104,8 +95,7 @@ def lint(text, sections):
             if re.match(r"^\s*(?:[-+*]|\d+[.)])\s+", raw) and span:
                 spans.append(span)
                 span = []
-            blanked = CITATION.sub(lambda m: " " * len(m.group()), raw)
-            span.append((number, ET_SEQ.sub(lambda m: " " * len(m.group()), blanked)))
+            span.append((number, raw))
         if span:
             spans.append(span)
         for span in spans:
@@ -113,6 +103,25 @@ def lint(text, sections):
             offsets = [0]
             for _, row in span[:-1]:
                 offsets.append(offsets[-1] + len(row) + 1)
+            found = list(CITATION.finditer(joined))
+            for index, match in enumerate(found):
+                end = min(match.end() + 80, found[index + 1].start() if index + 1 < len(found) else len(joined))
+                rest = joined[match.end():end]
+                newline = rest.find("\n")
+                boundary = SENTENCE_SPLIT.search(rest)
+                if newline >= 0 and boundary:
+                    # Same-line labels remain admissible; continuation must be in
+                    # the citation's sentence, not a later sentence.
+                    end = match.end() + max(newline, boundary.start())
+                label = LABEL.search(joined, match.end(), end)
+                section = match.group(1) or match.group(2)
+                number = span[bisect_right(offsets, match.start()) - 1][0]
+                if not label:
+                    hits.append((number, "C1_label_missing"))
+                elif (label.group() == "UNVERIFIED") != (section not in sections):
+                    hits.append((number, "C2_label_mismatch"))
+            blanked = CITATION.sub(lambda m: " " * len(m.group()), joined)
+            joined = ET_SEQ.sub(lambda m: " " * len(m.group()), blanked)
             start = 0
             for boundary in list(SENTENCE_SPLIT.finditer(joined)) + [None]:
                 end = boundary.start() if boundary else len(joined)
