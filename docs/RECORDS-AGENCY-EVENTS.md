@@ -34,4 +34,15 @@ Optional `MESSAGE-INDEX.csv` supplies a missing `internaldate`.
   listed as `bad_receipt`, with `receipts/` plus the JSON-quoted filename in the folder column and
   blank uid/date (the filename is escaped to preserve TSV structure). Nothing is dropped.
 
-Machine output for review; not a legal finding. The validate mode is a later unit.
+Machine output for review; not a legal finding.
+
+## Validate
+
+`records agency-events --validate EVENTS_TSV [--json]` checks an existing events.tsv, reads one file (regular,
+not a symlink, <= 2 MiB, UTF-8) and writes nothing. It prints `events.tsv line N: code (column)` (at most 200
+lines; never cell text) and exits 1 on any problem. Codes: `file_invalid`, `header_invalid` (stops the check),
+`row_columns`, `event_id_missing`, `event_id_duplicate`, `event_type_unknown` (schema types plus
+`request_received`, `reconsideration_sent`), `date_invalid`, `time_invalid` (`HH:MM PDT|PST` or empty),
+`basis_invalid` (`DATED` or `INFERRED`), `request_ref_missing`, `angle_bracket`, `date_is_utc_date` (row date equals
+the UTC date of a `...Z` stamp in source or clock_note whose Pacific date is earlier), `overdue_wording`
+(overdue/late/past due needs "on our records" and "not a legal finding" in clock_note).

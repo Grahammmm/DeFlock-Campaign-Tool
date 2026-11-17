@@ -200,9 +200,16 @@ def run(receipts_dir, aliases_file, out_dir):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="records agency-events", description=__doc__)
-    for name in ("receipts", "agency-aliases", "out"):
-        parser.add_argument("--" + name, required=True)
+    for name in ("receipts", "agency-aliases", "out", "validate"):
+        parser.add_argument("--" + name)
+    parser.add_argument("--json", action="store_true", help="with --validate: print one JSON object")
     args = parser.parse_args(argv)
+    if args.validate:
+        from .events_validate import main_validate
+        return main_validate(args.validate, args.json)
+    if not (args.receipts and args.agency_aliases and args.out):
+        print("agency-events: arguments_missing", file=sys.stderr)
+        return 1
     try:
         report = run(args.receipts, args.agency_aliases, args.out)
     except Refusal as err:
