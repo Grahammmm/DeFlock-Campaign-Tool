@@ -580,6 +580,55 @@ it (it was never started and holds no data), then run `--dry-run` with
 
 Alternatively, choose a new `--new-tag` and let the run build again.
 
+## Space rule for a same-image trust-mount add (SPACE-RULE-1)
+
+The [R1] preflight's 7x rule (see "[R1] preflight") budgets a real swap: S1
+and A2 archive sets, both backup sets, scratch extraction and an [RB-C]
+preservation. One case changes neither the image nor any data mount, and
+[R1] gives it a smaller rule. All of these must hold, checked by
+`space_rule()` after the mounts are derived:
+
+- `--trust-mount add` and `--reuse-image` are both given;
+- the reused image is the image the target already runs (same image ID);
+- the derived mounts are exactly the running container's mounts minus the
+  read-only `/etc/deflock` bind (same type, source, destination and RW), and
+  nothing else is excluded (no tmpfs, no socket bind).
+
+[R1] logs `space rule: same-image-trust-add` or `space rule: standard (7x)`
+and records it in `state.json` (`space_rule`) and `preflight.json`. Any other
+run keeps the 7x rule unchanged, including `--trust-mount drop`: the Plan A
+R.1 drop rollback is a full swap and re-gates on the 7x rule. When it does
+not fit, it refuses at [R1] with nothing changed, and the manual R.2 is the
+rollback.
+
+Under the smaller rule the run keeps one verified backup:
+
+- [R1] and the [S1] backstop require `T + D + L + 512 MiB` free: the S1
+  archives `T`, the S2 SQLite backups `D` and the largest S2/S3 extract `L`
+  (extracts run one mount at a time and are deleted). The format-aware
+  sizes are upper bounds; the copy-estimate multiple does not apply.
+- [A2] writes each live manifest as `a2/mNN.baseline.json` and compares it
+  with the S1 baseline. It writes no a2 archive, SQLite backup or restore
+  test. When they are equal, the S1 archive, checked by S2 integrity and the
+  S3 fresh restore, is a verified backup of exactly that state. Any
+  difference holds for owner review (exit 3), as in every run.
+- Resuming that hold requires more than accepting the diff hash: while all
+  users remain stopped, `--resume` captures a fresh archive set under a new
+  exclusive `a2/accepted-*` directory, checks SQLite integrity and backups,
+  and verifies a fresh restore against the reviewed A2 baselines. It uses
+  the existing A2 space backstop for these additional allocations, without
+  deleting S1 or overwriting reviewed baselines or earlier attempts. The
+  smaller R1 budget does not promise enough space for this changed state.
+  Missing space, malformed unpinned SQLite, failed evidence or changed data
+  refuses resume (exit 2), keeps the evidence and leaves the run held with
+  every user stopped. Only a fully verified set permits restart; its path
+  is recorded as `a2_accepted_evidence` in `state.json`. Each retry captures
+  and verifies a new set, never trusting a stale success marker.
+- An [RB-C] restore was not budgeted up front. Before it preserves a mount's
+  current state it checks free space for that archive plus its verify
+  extract plus 512 MiB. If that is short, it stops (exit 4) before anything
+  is written or cleared, and live data is left as it was.
+
 ## Known limits
 
 - File binds are refused, not snapshotted. Socket binds and tmpfs are not data
