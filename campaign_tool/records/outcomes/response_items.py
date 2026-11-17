@@ -263,13 +263,16 @@ def analyse(register, received, page_text, *, run_id):
 
 # ---------------------------------------------------------------- IO
 
-def _read_json(path):
+def _read_json(path, *, dir_fd=None):
     """Regular, single-link, bounded, duplicate-key-free JSON or ValueError/FileNotFoundError."""
-    info = path.lstat()
+    info = path.lstat() if dir_fd is None else os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
     _need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= MAX_INPUT_BYTES,
           "response_items_input_file")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
     with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        _need(stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and info.st_size <= MAX_INPUT_BYTES,
+              "response_items_input_file")
         raw = stream.read(MAX_INPUT_BYTES + 1)
     _need(len(raw) <= MAX_INPUT_BYTES, "response_items_input_file")
 

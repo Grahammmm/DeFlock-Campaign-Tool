@@ -474,7 +474,7 @@ def _events(raw, base_url, since, now):
         if not _clean(event.get("title"), label + ".title", 120):
             raise DraftError(f"{label}.title: required")
         online = event.get("online")
-        if online not in (None, True, False):
+        if "online" in event and type(online) is not bool:
             raise DraftError(f"{label}.online: true or false required")
         if online is True and event.get("venue") is not None:
             raise DraftError(f"{label}.venue: must be left out when online is true")

@@ -126,6 +126,9 @@ def read_index(root, rel):
         return list(csv.DictReader(handle))
 
 
+KIND_RANK = {"portal-file": 0, "third-party": 1, "prior-analysis": 2, "mail": 3}
+
+
 def build(aliases, root):
     root = os.path.realpath(root)
     counts = {"symlinks": 0, "refused": 0}
@@ -145,8 +148,15 @@ def build(aliases, root):
             digest = sha256(real, size)
             pages, text_layer = pdf_facts(real, size)
         ref = next((a for a in refs if key(a) in key(text)), "")
-        entry = rows.setdefault((rel, kind), {"matched": set()})
+        ident = rel if rel else ("", kind, digest or "")
+        entry = rows.setdefault(ident, {"matched": set()})
         entry["matched"].update(matched)
+        if "row" in entry and KIND_RANK.get(entry["row"][2], 9) <= KIND_RANK.get(kind, 9):
+            if not entry["row"][3] and date:
+                entry["row"][3] = date
+            if not entry["row"][4] and ref:
+                entry["row"][4] = ref
+            return
         entry["row"] = [rel, location, kind, date, ref, digest or "", pages, text_layer, role]
 
     for rel in walk(root, counts):

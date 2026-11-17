@@ -38,9 +38,13 @@ def _need(ok):
 
 def _rows(raw, columns, delimiter):
     _need(isinstance(raw, bytes) and len(raw) <= tl.MAX_INPUT_BYTES)
-    reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig"), newline=""), delimiter=delimiter)
-    _need(reader.fieldnames == list(columns))
-    rows = list(reader)
+    reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig"), newline=""),
+                            delimiter=delimiter, strict=True)
+    try:
+        _need(reader.fieldnames == list(columns))
+        rows = list(reader)
+    except csv.Error:
+        raise ValueError("events_import_invalid_input") from None
     _need(len(rows) <= tl.MAX_MANUAL and all(None not in r and None not in r.values() for r in rows))
     return rows
 
