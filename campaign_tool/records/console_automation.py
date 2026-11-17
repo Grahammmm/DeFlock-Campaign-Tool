@@ -34,7 +34,10 @@ def _read(path):
         raw = handle.read(pipeline_health.MAX_JSON_BYTES + 1)
     if len(raw) > pipeline_health.MAX_JSON_BYTES:
         raise ValueError("too_large")
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except RecursionError as exc:  # nesting inside the byte cap can still exhaust the parser
+        raise ValueError("metadata_json_depth") from exc
     if not isinstance(data, dict):
         raise ValueError("not_object")
     return data
