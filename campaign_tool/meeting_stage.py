@@ -37,6 +37,14 @@ def _read_kit(root):
         raise MeetingStageError(str(exc)) from None
 
 
+def _unique_members(pairs):
+    """RF1810-2: refuse a repeated object member name (never named in the message)."""
+    result = dict(pairs)
+    if len(result) != len(pairs):
+        raise ValueError("repeated member")
+    return result
+
+
 def _read_participation(path):
     """RF1025-3: the decoded --participation JSON from one admitted regular-file descriptor of at most 64 KB.
 
@@ -78,7 +86,7 @@ def _read_participation(path):
         data = b"".join(chunks)
         if len(data) > PARTICIPATION_LIMIT:
             raise refusal
-        return json.loads(data.decode("utf-8"))
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_unique_members)
     except (OSError, ValueError, RecursionError):  # JSONDecodeError/UnicodeDecodeError are ValueErrors; deep nesting exhausts the decoder
         raise refusal from None
     finally:
