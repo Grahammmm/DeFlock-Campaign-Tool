@@ -1,5 +1,4 @@
 import io
-import json
 import subprocess
 import sys
 import unittest
@@ -30,8 +29,9 @@ def run_child(raw, module):
     return subprocess.run(cmd, input=raw, capture_output=True, cwd=ROOT, timeout=60)
 
 
-def expected(text):
-    return json.dumps(shell.render(json.loads(text)), ensure_ascii=True)
+# Captured from the unmodified origin/main shell at 2f1d1d608cfcdba20f11ee26a4211b13004adfc2.
+# These complete stdout bytes are independent of the candidate's render and serializer.
+FIXTURES = ROOT / "tests" / "fixtures" / "shell_duplicate_members"
 
 
 class ShellDuplicateMemberTests(unittest.TestCase):
@@ -88,16 +88,24 @@ class ShellDuplicateMemberTests(unittest.TestCase):
             bad = run_child(dup, module)
             self.assertEqual((bad.returncode, bad.stdout, bad.stderr.decode()), (1, b"", FIXED))
             good = run_child(HEALTHY.encode(), module)
-            self.assertEqual((good.returncode, good.stdout.decode()), (0, expected(HEALTHY)))
+            self.assertEqual((good.returncode, good.stdout, good.stderr),
+                             (0, (FIXTURES / "healthy.stdout").read_bytes(), b""))
 
     def test_unique_member_payloads_keep_exact_bytes(self):
         text = HEALTHY.replace('"main": "M"', '"main": "q\\" \\ud83d\\ude00 é {{MAIN}}"')
-        code, out, _ = run_main(text.encode())
-        self.assertEqual((code, out), (0, expected(text)))
-        self.assertTrue(out.isascii() and not out.endswith("\n"))
-        for enc in ("utf-8-sig", "utf-16"):
-            code, out, _ = run_main(HEALTHY.encode(enc))
-            self.assertEqual((code, out), (0, expected(HEALTHY)))
+        for raw, fixture in ((HEALTHY.encode(), "healthy.stdout"),
+                             (text.encode(), "unique-edge.stdout"),
+                             (HEALTHY.encode("utf-8-sig"), "healthy.stdout"),
+                             (HEALTHY.encode("utf-16"), "healthy.stdout")):
+            with self.subTest(fixture=fixture, prefix=raw[:8]):
+                expected = (FIXTURES / fixture).read_bytes()
+                code, out, err = run_main(raw)
+                self.assertEqual((code, out.encode(), err), (0, expected, ""))
+                self.assertTrue(out.isascii() and not out.endswith("\n"))
+                for module in (True, False):
+                    child = run_child(raw, module)
+                    self.assertEqual((child.returncode, child.stdout, child.stderr),
+                                     (0, expected, b""))
         bad = HEALTHY.replace('"main": "M"', '"main": "\\ud800"')
         code, out, err = run_main(bad.encode())
         self.assertEqual((code, out), (1, ""))
