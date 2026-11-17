@@ -167,6 +167,19 @@ def load_events(document, problems=None):
     return finish(accepted)
 
 
+class _RepeatedKey(ValueError):
+    """A decoded JSON object repeated a key (module-private; never carries the key or values)."""
+
+
+def _no_repeated_keys(pairs):
+    found = {}
+    for key, value in pairs:
+        if key in found:
+            raise _RepeatedKey
+        found[key] = value
+    return found
+
+
 def _read_bounded_json(path):
     """Parse ``path`` after consuming at most ``MAX_JSON_BYTES + 1`` bytes; the returned length is checked before decoding."""
     with open(path, "rb") as stream:
@@ -174,7 +187,9 @@ def _read_bounded_json(path):
     if len(data) > MAX_JSON_BYTES:
         raise ContentError(f"{path.name}: file too large")
     try:
-        return json.loads(data.decode("utf-8"))
+        return json.loads(data.decode("utf-8"), object_pairs_hook=_no_repeated_keys)
+    except _RepeatedKey:
+        raise ContentError(f"{path.name}: a JSON object repeats a key") from None
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ContentError(f"{path.name}: not valid UTF-8 JSON ({exc})") from None
     except ValueError:
