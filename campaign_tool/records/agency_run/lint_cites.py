@@ -20,6 +20,7 @@ CODE = (r"(?:Gov\.?|Government|Civ\.?|Civil|Penal|Veh\.?|Vehicle|Sts\.? & Hy\.?|
         r"Streets and Highways) Code")
 CITATION = re.compile(rf"{CODE}\s+(?:§§?\s*|[Ss]ections?\s+)?({NUM})(?:\([a-z0-9]+\))*|§§?\s*({NUM})(?:\([a-z0-9]+\))*")
 LABEL = re.compile(r"(?<![\w-])(?:VERIFIED-IN-PACKAGE|UNVERIFIED)(?![\w-])")
+NEGATION = re.compile(r"(?i:\b(?:NOT|NON|NO)[\s-]+)$")
 ET_SEQ = re.compile(r"(?i:\bet\s+seq\b)|\bff\.")
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])(?<!\bpp\.)(?<!\bp\.)(?<!\bNo\.)(?<!\be\.g\.)(?<!\bi\.e\.)\s+")
 MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
@@ -116,7 +117,8 @@ def lint(text, sections):
                     # Same-line labels remain admissible; continuation must be in
                     # the citation's sentence, not a later sentence.
                     end = match.end() + max(newline, boundary.start())
-                label = LABEL.search(joined, match.end(), end)
+                label = next((candidate for candidate in LABEL.finditer(joined, match.end(), end)
+                              if not NEGATION.search(joined[match.end():candidate.start()])), None)
                 section = match.group(1) or match.group(2)
                 number = span[bisect_right(offsets, match.start()) - 1][0]
                 if not label:

@@ -76,6 +76,23 @@ class LintCitesTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(self.codes(text)[1], expected)
 
+    def test_negated_labels_are_missing(self):
+        cases = [
+            ("Gov. Code § 7922.535 NOT VERIFIED-IN-PACKAGE.", [(1, "C1_label_missing")]),
+            ("Gov. Code § 9999 NOT UNVERIFIED.", [(1, "C1_label_missing")]),
+            ("Gov. Code § 7922.535 not VERIFIED-IN-PACKAGE.", [(1, "C1_label_missing")]),
+            ("Gov. Code § 7922.535 NOT\nVERIFIED-IN-PACKAGE.", [(1, "C1_label_missing")]),
+            ("Gov. Code § 7922.535 NON VERIFIED-IN-PACKAGE.", [(1, "C1_label_missing")]),
+            ("Gov. Code § 9999 no UNVERIFIED.", [(1, "C1_label_missing")]),
+            ("Gov. Code § 9999 NON-UNVERIFIED.", [(1, "C1_label_missing")]),
+            ("Gov. Code § 7922.535 VERIFIED-IN-PACKAGE.", []),
+            ("Gov. Code § 9999 UNVERIFIED.", []),
+            ("Gov. Code § 7922.535 VERIFIED-IN-PACKAGE. Not all records were produced (D3).", []),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(lint_cites.lint(text, {"7922.535"}), expected)
+
     def test_wrapped_citation_labels_and_boundaries(self):
         c1, c2 = "C1_label_missing", "C2_label_mismatch"
         cases = [
