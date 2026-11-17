@@ -92,9 +92,19 @@ def _read(path, code):
         return stream.read(MAX_INPUT + 1)
 
 
+def _unique_members(pairs):
+    """Refuse a repeated decoded member name (escaped spellings included) rather than keep the last."""
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("duplicate member")
+        obj[key] = value
+    return obj
+
+
 def _json(raw, code):
     try:
-        return json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_members)
     except (ValueError, UnicodeError, RecursionError):
         raise NextStepsError(code) from None
 
