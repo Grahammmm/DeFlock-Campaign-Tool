@@ -6,6 +6,7 @@ never ask text, response text, evidence or exemption wording. A machine reading,
 review required; not a legal finding. Nothing is sent, published or approved.
 """
 import argparse
+import contextlib
 import os
 import re
 import sys
@@ -68,8 +69,14 @@ def build_sheet(report, agency, book, run_id):
 
 def _pick_run(project, run_id):
     base = project / "run-outputs"
+    if base.is_symlink():
+        raise ValueError("unsafe run directory")
     if run_id:
-        return run_id if NAME.fullmatch(run_id) and (base / run_id / "outcomes" / "response-items.json").is_file() else None
+        if not NAME.fullmatch(run_id):
+            return None
+        if (base / run_id).is_symlink() or (base / run_id / "outcomes").is_symlink():
+            raise ValueError("unsafe run directory")
+        return run_id if (base / run_id / "outcomes" / "response-items.json").is_file() else None
     found = []
     if base.is_dir() and not base.is_symlink():
         for entry in base.iterdir():
@@ -96,12 +103,23 @@ def main(argv=None):
         return _refuse("response_sheet_out_in_project")
     if out.exists() or out.is_symlink():
         return _refuse("response_sheet_out_exists")
-    run_id = _pick_run(project, args.run_id)
     report = None
     try:
+        run_id = _pick_run(project, args.run_id)
         if run_id:
-            report = response_items._read_json(project / "run-outputs" / run_id / "outcomes" / "response-items.json")
+            with contextlib.ExitStack() as stack:
+                directory = os.open(project, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                stack.callback(os.close, directory)
+                for part in ("run-outputs", run_id, "outcomes"):
+                    directory = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    stack.callback(os.close, directory)
+                report = response_items._read_json("response-items.json", dir_fd=directory)
             if not isinstance(report, dict) or report.get("schema") != item_tiers.SCHEMA_IN:
+                return _refuse("response_sheet_input")
+            requests = report.get("requests")
+            if not isinstance(requests, list) or any(
+                not isinstance(r, dict) or not isinstance(r.get("asks"), list) for r in requests
+            ):
                 return _refuse("response_sheet_input")
         sheet = build_sheet(report, args.agency, playbook.load(), run_id)
     except (OSError, ValueError, playbook.PlaybookError):

@@ -8,6 +8,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from campaign_tool.records import agency_response_sheet as sheet, cli
 
@@ -139,6 +140,47 @@ class SheetTests(unittest.TestCase):
                 self.assertIn("refused response_sheet_input", err)
                 self.assertNotIn(str(self.root), err)
                 self.assertFalse(self.out.exists())
+
+    def test_malformed_containers_refused(self):
+        for requests in (1, [{"agency_key": "A1", "asks": 1}]):
+            with self.subTest(requests=requests):
+                self.write(requests)
+                code, err = self.run_cli("--run-id", "run1")
+                self.assertEqual((code, err), (2, "records agency-response-sheet: refused response_sheet_input\n"))
+                self.assertFalse(self.out.exists())
+
+    def test_symlinked_input_directories_refused(self):
+        for component in ("run-outputs", "run1", "outcomes"):
+            with self.subTest(component=component):
+                self.write([{"agency_key": "A1", "request_id": "outside", "asks": []}])
+                path = {"run-outputs": self.project / "run-outputs",
+                        "run1": self.project / "run-outputs" / "run1",
+                        "outcomes": self.project / "run-outputs" / "run1" / "outcomes"}[component]
+                moved = self.root / (component + "-outside")
+                path.rename(moved)
+                path.symlink_to(moved, target_is_directory=True)
+                code, err = self.run_cli("--run-id", "run1")
+                self.assertEqual((code, err), (2, "records agency-response-sheet: refused response_sheet_input\n"))
+                self.assertFalse(self.out.exists())
+                path.unlink()
+                moved.rename(path)
+
+    def test_run_replaced_by_symlink_after_selection_refused(self):
+        self.write([{"agency_key": "A1", "request_id": "outside", "asks": []}])
+        pick = sheet._pick_run
+
+        def swap(project, run_id):
+            chosen = pick(project, run_id)
+            run = project / "run-outputs" / "run1"
+            outside = self.root / "outside"
+            run.rename(outside)
+            run.symlink_to(outside, target_is_directory=True)
+            return chosen
+
+        with mock.patch.object(sheet, "_pick_run", side_effect=swap):
+            code, err = self.run_cli("--run-id", "run1")
+        self.assertEqual((code, err), (2, "records agency-response-sheet: refused response_sheet_input\n"))
+        self.assertFalse(self.out.exists())
 
     def test_cli_registered(self):
         self.assertEqual(cli.COMMANDS["agency-response-sheet"], ("agency_response_sheet", "main"))
