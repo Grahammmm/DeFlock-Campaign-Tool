@@ -26,8 +26,12 @@ class Refusal(Exception):
     pass
 
 
+_OVERDUE = re.compile(r"overdue", re.I)
+
+
 def _clean(text):
-    return " ".join(_SCRUB.sub(" ", text or "").split())
+    # Free text must never carry unqualified overdue wording; only OVERDUE_WHY may.
+    return " ".join(_OVERDUE.sub("late", _SCRUB.sub(" ", text or "")).split())
 
 
 def _cut(text, limit):

@@ -75,6 +75,22 @@ class AgencyNextTests(Base):
             else:
                 self.assertNotIn("overdue", ln)
 
+    def test_free_text_overdue_wording_is_neutralised(self):
+        rows = [row("Odd PD", stage="Overdue", nxt="OVERDUE follow-up", owner="overdue G"),
+                row("Flag PD", overdue="YES", nxt="overdue ask")]
+        path = self.write(rows)
+        for extra in ((), ("--json",)):
+            _, out, _ = self.run_cli("--agencies", path, *extra)
+            for chunk in out.replace('"overdue":', "").replace("}", "\n").splitlines():
+                if "overdue" in chunk.lower():
+                    self.assertIn(OVERDUE_TXT, chunk)
+        _, out, _ = self.run_cli("--agencies", path)
+        odd = [ln for ln in out.splitlines() if ln.startswith("Odd PD")][0]
+        self.assertNotIn("overdue", odd.lower())
+        self.assertLess(len(odd), 100)
+        _, js, _ = self.run_cli("--agencies", path, "--json")
+        self.assertNotIn("OVERDUE", js)
+
     def test_none_next_action_kept_when_overdue(self):
         _, out, _ = self.run_cli("--agencies", self.write(six()))
         delta = [ln for ln in out.splitlines() if ln.startswith("Delta PD")][0]
