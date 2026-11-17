@@ -67,9 +67,11 @@ def system_runner(args):
 def _show(runner, unit, props):
     """Parsed property dict, or None when systemctl is unavailable or its output is not usable."""
     try:
-        _, out = runner(["show", unit, "--no-pager", "--property=" + ",".join(props)])
+        code, out = runner(["show", unit, "--no-pager", "--property=" + ",".join(props)])
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
+    if isinstance(code, bool) or not isinstance(code, int) or code != 0:
+        return None  # a failed query's stdout is never trusted
     if not isinstance(out, str):
         return None
     found = {}
