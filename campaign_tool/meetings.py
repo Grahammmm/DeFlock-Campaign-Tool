@@ -215,14 +215,21 @@ class CivicClerkClient(LegistarClient):
 
 def read_feed_file(path):
     """Bytes of a saved Granicus feed: a regular file (not a symlink) of at most 2 MiB."""
+    nofollow, nonblock = getattr(os, "O_NOFOLLOW", None), getattr(os, "O_NONBLOCK", None)
+    if nofollow is None or nonblock is None:  # fail closed: never a blocking or link-following open
+        raise MeetingsError(f"{path}: not a readable regular file (no-follow nonblocking open unavailable)")
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | nofollow | nonblock)
     except OSError:
         raise MeetingsError(f"{path}: not a readable regular file (symlinks are refused)") from None
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise MeetingsError(f"{path}: not a regular file")
+        handle = os.fdopen(fd, "rb")
+    except BaseException:
         os.close(fd)
-        raise MeetingsError(f"{path}: not a regular file")
-    with os.fdopen(fd, "rb") as handle:
+        raise
+    with handle:
         data = handle.read(MAX_FEED_BYTES + 1)
     if len(data) > MAX_FEED_BYTES:
         raise MeetingsError(f"{path}: larger than 2 MiB")
