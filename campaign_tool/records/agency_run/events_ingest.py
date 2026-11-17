@@ -100,18 +100,18 @@ def read_store(root):
                 index[(row.get("folder"), row.get("uid"))] = row.get("internaldate")
     except (OSError, UnicodeError, csv.Error):
         pass
-    receipts, bad = [], 0
+    receipts, bad = [], []
     for path in sorted((root / "receipts").glob("*.json")):
         try:
             info = path.lstat()
             if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_RECEIPT:
                 raise ValueError("unsafe")
             data = json.loads(path.read_bytes())
-            if not isinstance(data, dict):
+            if not isinstance(data, dict) or not isinstance(data.get("headers", {}), dict):
                 raise ValueError("shape")
             receipts.append(data)
         except (OSError, ValueError):
-            bad += 1
+            bad.append(("receipts/" + json.dumps(path.name, ensure_ascii=True), "", "", "bad_receipt"))
     return receipts, index, bad
 
 
@@ -189,10 +189,11 @@ def run(receipts_dir, aliases_file, out_dir):
         raise Refusal("out_not_empty")
     receipts, index, bad = read_store(root)
     rows, unclassified, unmapped = build(receipts, index, data, keys)
+    unclassified = sorted(unclassified + bad)
     out.mkdir(parents=True, exist_ok=True)
     manual = write_outputs(out, rows, unclassified, data)
     return {"ok": True, "events": len(rows), "manual_events": manual, "unclassified": len(unclassified),
-            "bad_receipts": bad, "unmapped_refs": unmapped}
+            "bad_receipts": len(bad), "unmapped_refs": unmapped}
 
 
 def main(argv=None):

@@ -30,6 +30,8 @@ Optional `MESSAGE-INDEX.csv` supplies a missing `internaldate`.
   17:00 local or later; weekends and holidays are not rolled and no extension is applied.
 - `manual-events.jsonl` has one `sent` / `our follow-up sent` line per sent row (read by the timeline).
 - `unclassified.tsv` lists every other message (`no_agency_match`, `no_request_ref`, `request_unmapped`,
-  `no_time`, `inbound_needs_review`); inbound mail is classified by the operator. Nothing is dropped.
+  `no_time`, `inbound_needs_review`); inbound mail is classified by the operator. Bad receipts are
+  listed as `bad_receipt`, with `receipts/` plus the JSON-quoted filename in the folder column and
+  blank uid/date (the filename is escaped to preserve TSV structure). Nothing is dropped.
 
 Machine output for review; not a legal finding. The validate mode is a later unit.
