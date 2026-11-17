@@ -3,6 +3,7 @@
 No network. The seed is contributor knowledge with verified: false throughout;
 these tests check structure and resolution, not that any contact is correct.
 """
+import io
 import json
 import re
 import sys
@@ -139,22 +140,19 @@ class LocateTests(unittest.TestCase):
             "Incorporated Places": [{"GEOID": "0648945", "NAME": "Morro Bay city", "BASENAME": "Morro Bay"}],
         }}]}}
 
-        class Response:
+        class Response(io.BytesIO):
             def __enter__(self):
                 return self
 
             def __exit__(self, *exc):
                 return False
 
-            def read(self):
-                return json.dumps(payload).encode()
-
         seen = {}
 
         def opener(url, timeout):
             seen["url"] = url
             seen["timeout"] = timeout
-            return Response()
+            return Response(json.dumps(payload).encode())
 
         loc = discovery.locate_online("Morro Bay", "CA", opener=opener)
         self.assertEqual((loc.county_fips, loc.place_fips, loc.place_name, loc.match_kind),

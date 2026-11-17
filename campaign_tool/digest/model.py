@@ -222,18 +222,45 @@ def _strict_local_post(config, payload, headers):
         connection.close()
 
 
+class _DuplicateMember(Exception):
+    """Private sentinel: a decoded JSON object repeated a member name."""
+
+
+def _unique_pairs(pairs):
+    result = {}
+    for name, value in pairs:
+        if name in result:
+            raise _DuplicateMember
+        result[name] = value
+    return result
+
+
+def _loads_unique(text):
+    return json.JSONDecoder(object_pairs_hook=_unique_pairs).decode(text)
+
+
+_DUPLICATE_MESSAGE = "model response contains duplicate JSON members"
+
+
 def _extract_json(text):
+    try:
+        return _extract_json_checked(text)
+    except _DuplicateMember:
+        raise ModelError(_DUPLICATE_MESSAGE) from None
+
+
+def _extract_json_checked(text):
     text = text.strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S)
     try:
-        return json.loads(text)
+        return _loads_unique(text)
     except json.JSONDecodeError:
         start, end = text.find("{"), text.rfind("}")
         if start < 0 or end <= start:
-            raise ModelError("model response is not JSON")
+            raise ModelError("model response is not JSON") from None
         try:
-            return json.loads(text[start:end + 1])
+            return _loads_unique(text[start:end + 1])
         except json.JSONDecodeError as exc:
             raise ModelError("model response is not JSON: " + str(exc)) from None
 
@@ -262,8 +289,10 @@ def chat_json(config, messages, opener=None):
         except (urllib.error.URLError, OSError, TimeoutError):
             raise ModelError("model endpoint unreachable") from None
     try:
-        envelope = json.loads(body.decode("utf-8"))
+        envelope = _loads_unique(body.decode("utf-8"))
         content = envelope["choices"][0]["message"]["content"]
+    except _DuplicateMember:
+        raise ModelError(_DUPLICATE_MESSAGE) from None
     except (ValueError, KeyError, IndexError, TypeError):
         raise ModelError("model reply is not a chat completion") from None
     if not isinstance(content, str):
