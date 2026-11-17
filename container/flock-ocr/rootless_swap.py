@@ -401,6 +401,56 @@ def space_budget(tar_bytes, largest_extract, sqlite_bytes):
     return parts, sum(parts.values())
 
 
+# SPACE-RULE-1: the space rule a run is gated on, fixed at [R1] in state.json.
+SPACE_RULE_STANDARD = "standard"
+SPACE_RULE_SAME_IMAGE_TRUST_ADD = "same-image-trust-add"
+
+
+def _trust_anchor_mount(item):
+    return (item.get("Type"), item.get("Source"), item.get("Destination"), item.get("RW")) == (
+        "bind", "/etc/deflock", "/etc/deflock", False)
+
+
+def space_rule(trust_mount, reuse, before, mounts, excluded):
+    """SPACE-RULE-1: which space budget gates this run.
+
+    The smaller rule applies only to a same-image `--trust-mount add` recreate:
+    `--reuse-image` names the image the target already runs, and the derived
+    mounts are exactly the running container's mounts minus the read-only
+    /etc/deflock trust bind (nothing excluded, so every mount is snapshotted).
+    Such a recreate changes no image and no data mount, so [A2] can show the
+    data unchanged against the S1 manifests without a second archive set.
+    Every other run, a `--trust-mount drop` (the R.1 rollback) included, keeps
+    the standard 7x rule.
+    """
+    if trust_mount != "add" or not reuse:
+        return SPACE_RULE_STANDARD
+    if not before.get("Image") or reuse.get("new_image_id") != before.get("Image"):
+        return SPACE_RULE_STANDARD
+    if any(item.get("destination") != "/etc/deflock" for item in excluded):
+        return SPACE_RULE_STANDARD
+    running = sorted((m.get("Type"), os.path.normpath(m.get("Source") or ""), m.get("Destination"), m.get("RW"))
+                     for m in before.get("Mounts") or [] if not _trust_anchor_mount(m))
+    derived = sorted((m["type"], m["source"], m["destination"], m["rw"]) for m in mounts)
+    if not derived or derived != running:
+        return SPACE_RULE_STANDARD
+    return SPACE_RULE_SAME_IMAGE_TRUST_ADD
+
+
+def same_image_space_budget(tar_bytes, largest_extract, sqlite_bytes):
+    """Peak private-dir bytes for a same-image trust-mount add (SPACE-RULE-1).
+
+    The run keeps one verified backup: the S1 archives (verified by the S2
+    integrity check and the S3 fresh restore) and the S2 SQLite backups. The
+    S2/S3 extracts run one mount at a time and are deleted, so only the
+    largest counts, once. [A2] writes manifests only; an [RB-C] preservation
+    is gated again when it is needed (Swap.preserve_current).
+    """
+    parts = {"s1_archives": tar_bytes, "s2_sqlite_backups": sqlite_bytes,
+             "largest_extract": largest_extract, "margin": MARGIN}
+    return parts, sum(parts.values())
+
+
 # ---- side effects (replaced by a fake in tests) ----
 
 class _UnixConnection(http.client.HTTPConnection):
@@ -777,30 +827,41 @@ class Swap:
                 total += snapshot_evidence.copy_estimate(baseline["entries"])
             baselines[label] = baseline
         if not self.dry:
-            # S1 and A2 each retain an archive plus SQLite backups (2 copies).
-            # One evidence/restore-test extract can remain after a failure;
-            # rollback then needs a current-state archive and its verify extract.
-            # At A2, S1 is already on disk, so only budget remaining allocations.
-            copies = {"s1_evidence": 2 if prefix == "s1" else 0,
-                      "a2_evidence": 2, "scratch_extract": 1, "rollback_preservation": 2}
-            need = sum(copies.values()) * total + (512 << 20)
-            # Keep main's format-aware tar/extract floor as well: small mounts
-            # still need tar record padding even when the copy estimate is tiny.
             estimates = [snapshot_evidence.space_estimate(b["entries"]) for b in baselines.values()]
             tar = sum(e["tar_bytes"] for e in estimates)
-            if prefix == "s1":
+            same_image = self.state.get("space_rule") == SPACE_RULE_SAME_IMAGE_TRUST_ADD
+            if same_image and prefix == "s1":
+                # SPACE-RULE-1: the same rule as the preflight, on the fresh baselines.
+                # [A2] of such a run writes no archives (a2_accept_data).
                 sqlite = int((self.state.get("preflight") or {}).get("sqlite_bytes", 0))
-                _, format_need = space_budget(tar, max(e["extract_bytes"] for e in estimates), sqlite)
+                copies, (_, need) = {"s1_evidence": 1, "scratch_extract": 1}, same_image_space_budget(
+                    tar, max(e["extract_bytes"] for e in estimates), sqlite)
+                format_need = need
             else:
-                format_need = tar + MARGIN
-            need = max(need, format_need)
+                # S1 and A2 each retain an archive plus SQLite backups (2 copies).
+                # One evidence/restore-test extract can remain after a failure;
+                # rollback then needs a current-state archive and its verify extract.
+                # At A2, S1 is already on disk, so only budget remaining allocations.
+                copies = {"s1_evidence": 2 if prefix == "s1" else 0,
+                          "a2_evidence": 2, "scratch_extract": 1, "rollback_preservation": 2}
+                need = sum(copies.values()) * total + (512 << 20)
+                # Keep main's format-aware tar/extract floor as well: small mounts
+                # still need tar record padding even when the copy estimate is tiny.
+                if prefix == "s1":
+                    sqlite = int((self.state.get("preflight") or {}).get("sqlite_bytes", 0))
+                    _, format_need = space_budget(tar, max(e["extract_bytes"] for e in estimates), sqlite)
+                else:
+                    format_need = tar + MARGIN
+                need = max(need, format_need)
             free = self.system.disk_free(self.run_dir)
             self.write_json(f"{prefix}/space-budget.json", {
-                "format_budget_bytes": format_need,
+                "format_budget_bytes": format_need, "space_rule": self.state.get("space_rule", SPACE_RULE_STANDARD),
                 "estimated_copy_bytes": total, "copies": copies, "reserve_bytes": 512 << 20,
                 "required_free_bytes": need, "available_bytes": free})
-            self.log(f"    {prefix} space budget: {copies}, {total} bytes/copy + 512 MiB reserve; "
-                     f"needs {need}, available {free}")
+            self.log(f"    {prefix} space budget: " + (
+                f"space rule {SPACE_RULE_SAME_IMAGE_TRUST_ADD}: S1 archives {tar} + S2 backups + largest extract "
+                "+ 512 MiB reserve" if same_image and prefix == "s1" else
+                f"{copies}, {total} bytes/copy + 512 MiB reserve") + f"; needs {need}, available {free}")
             if free < need:
                 self.fail(f"private dir has {free} bytes free, needs {need}")
         else:
@@ -1132,6 +1193,10 @@ class Swap:
                       "that built and verified it")
         st["mounts"], st["excluded"] = self.derive_mounts(before)
         self.check_engine_mount(st["mounts"], st["excluded"])
+        st["space_rule"] = space_rule(st.get("trust_mount"), st.get("reuse"), before, st["mounts"], st["excluded"])
+        self.log(f"    space rule: {st['space_rule']}" + (
+            " (same image, only the read-only /etc/deflock bind added; one verified backup kept)"
+            if st["space_rule"] == SPACE_RULE_SAME_IMAGE_TRUST_ADD else " (7x)"))
         st["timers_active"] = {}
         for base in st["pause_units"]:
             for unit in (f"{base}.timer", f"{base}.service"):
@@ -1324,24 +1389,38 @@ class Swap:
         self.log("    preflight: C2 probe settings equal apart from image, ID, creation, state and mounts")
 
     def preflight_budget(self, surveys):
-        """Space for S1 + S2/S3 extraction + A2 + an RB-C restore, up front (attempt 6 failed at A2)."""
+        """Space for S1 + S2/S3 extraction + A2 + an RB-C restore, up front (attempt 6 failed at A2).
+
+        A same-image trust-mount add (SPACE-RULE-1, space_rule) needs only its one
+        verified backup: the S1 archives and S2 backups plus the largest extract.
+        """
+        rule = self.state.get("space_rule", SPACE_RULE_STANDARD)
         if self.dry:
-            self.log("    would require free space for S1 archives + S2/S3 extract + A2 + restore + 512 MiB")
+            if rule == SPACE_RULE_SAME_IMAGE_TRUST_ADD:
+                self.log(f"    would require free space for S1 archives + S2 backups + the largest S2/S3 extract "
+                         f"+ 512 MiB (space rule {rule}: one verified backup kept)")
+            else:
+                self.log("    would require free space for S1 archives + S2/S3 extract + A2 + restore + 512 MiB")
             return
         tar = sum(r["tar_bytes"] for r in surveys.values())
         extract = max(r["extract_bytes"] for r in surveys.values())
         sqlite = sum(r["sqlite_bytes"] for r in surveys.values())
-        parts, format_need = space_budget(tar, extract, sqlite)
         total = sum(r["estimated_copy_bytes"] for r in surveys.values())
-        need = max(7 * total + MARGIN, format_need)
+        if rule == SPACE_RULE_SAME_IMAGE_TRUST_ADD:
+            parts, format_need = same_image_space_budget(tar, extract, sqlite)
+            need = format_need
+        else:
+            parts, format_need = space_budget(tar, extract, sqlite)
+            need = max(7 * total + MARGIN, format_need)
         free = self.system.disk_free(self.run_dir)
         self.state["preflight"].update({"budget": parts, "need": need, "free": free, "sqlite_bytes": sqlite,
-                                       "estimated_copy_bytes": total, "format_budget_bytes": format_need})
+                                       "estimated_copy_bytes": total, "format_budget_bytes": format_need,
+                                       "space_rule": rule})
         shown = ", ".join(f"{k} {v}" for k, v in parts.items())
         if free < need:
             self.fail(f"preflight: private dir has {free} bytes free, the run needs {need} ({shown}); free "
                       f"{need - free} bytes first (superseded run dirs under --private are the operator's)")
-        self.log(f"    preflight: space {free} bytes free >= {need} needed ({shown})")
+        self.log(f"    preflight: space {free} bytes free >= {need} needed ({shown}; space rule {rule})")
 
     def q1_pause(self):
         self.stop_pause_units()
@@ -1518,9 +1597,12 @@ class Swap:
         self.confirm_quiescent()
 
     def a2_accept_data(self):
-        baselines = self.snapshot_mounts("a2")
-        self.sqlite_evidence("a2", "a2", baselines)
-        self.restore_test("a2", "a2", baselines)
+        if self.state.get("space_rule") == SPACE_RULE_SAME_IMAGE_TRUST_ADD:
+            baselines = self.a2_manifests_only()
+        else:
+            baselines = self.snapshot_mounts("a2")
+            self.sqlite_evidence("a2", "a2", baselines)
+            self.restore_test("a2", "a2", baselines)
         if self.dry:
             self.log("    would compare each a2 baseline with the s1 baseline; any difference holds for review")
             return
@@ -1541,6 +1623,28 @@ class Swap:
             raise Held(f"{sum(map(len, diff.values()))} path(s) differ from the S1 snapshot in "
                        f"{len(diff)} mount(s); review {self.run_dir / 'a2' / 'diff.json'} (sha256 {digest})")
         self.log("    current state equals the S1 snapshot")
+        if self.state.get("space_rule") == SPACE_RULE_SAME_IMAGE_TRUST_ADD:
+            self.log("    the S1 archive (S2 integrity, S3 fresh restore) stays the one verified backup of this state")
+
+    def a2_manifests_only(self):
+        """[A2] under SPACE-RULE-1: live manifests only, no second archive set.
+
+        The replacement runs the target's own image with only the read-only
+        /etc/deflock bind added. [A2] writes each live manifest as the a2
+        baseline (--resume reads it) and compares it with S1. When they are
+        equal, the S1 archive is a verified backup of exactly this state; any
+        difference holds for owner review, as in every run.
+        """
+        if self.dry:
+            self.log(f"    would write each a2 live manifest only (space rule {SPACE_RULE_SAME_IMAGE_TRUST_ADD}): "
+                     "no a2 archive, SQLite backup or restore test; the S1 archive stays the one verified backup")
+            return {m["label"]: None for m in self.state["mounts"]}
+        baselines = {}
+        for mount in self.state["mounts"]:
+            label = mount["label"]
+            baselines[label] = self.live_manifest(label)
+            self.write_json(f"a2/{label}.baseline.json", baselines[label])
+        return baselines
 
     def a3_restart(self):
         self.sh(["docker", "start", self.state["container"]], effect=True)
@@ -1709,6 +1813,16 @@ class Swap:
 
     def preserve_current(self, label, current):
         """Capture live <label> into a new, exclusive attempt directory and verify it."""
+        if self.state.get("space_rule") == SPACE_RULE_SAME_IMAGE_TRUST_ADD:
+            # SPACE-RULE-1 did not budget a preservation up front: gate it now,
+            # before anything is written, and leave live data untouched if short.
+            estimate = snapshot_evidence.space_estimate(current["entries"])
+            need = estimate["tar_bytes"] + estimate["extract_bytes"] + MARGIN
+            free = self.system.disk_free(self.run_dir)
+            if free < need:
+                raise StepFailed(f"{label}: preserving the current state needs {need} bytes free, the private dir "
+                                 f"has {free} (space rule {SPACE_RULE_SAME_IMAGE_TRUST_ADD}); live data left "
+                                 "untouched")
         dirs = self._attempt_dirs(label)
         number = 1 + max((int(ATTEMPT_RE.fullmatch(p.name).group(1)) for p in dirs), default=0)
         name = f"attempt-{number:03d}"
