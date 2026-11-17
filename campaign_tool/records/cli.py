@@ -6,6 +6,7 @@ import sys
 
 COMMANDS = {
     "draft-import": ("draft_import", "main"),
+    "agency-draft-export": ("agency_draft_export", "main"),
     "draft-promote": ("draft_promote", "main"),
     "console-export": ("console_export", "export_main"),
     "decisions-apply": ("console_apply", "main"),
@@ -53,6 +54,7 @@ COMMANDS = {
     "public-packets": ("public_packets", "main"),
     "law-package": ("law_package_check", "main"),
     "agency-policies": ("agency_policies", "main"),
+    "agency-policy-matrix": ("agency_policy_matrix", "main"),
     "agency-retention": ("agency_retention", "main"),
     "agency-evidence": ("agency_run.evidence_index", "main"),
     "first-request": ("first_request", "main"),
