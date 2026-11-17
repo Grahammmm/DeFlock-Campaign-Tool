@@ -12,7 +12,7 @@ import stat
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 
-from .content import load_sources
+from .content import SHA256, load_sources
 from .evidence import PREFIX
 from .sources_cmd import _read_existing
 
@@ -201,7 +201,7 @@ def list_receipts(root, source_id=None, since=None, not_in_sources=False):
     # SQLite lets BLOB/NULL/REAL values into these non-STRICT columns; the projected fields are emitted
     # without conversion, so refuse the whole listing (every SQL-selected row, before registration/cap).
     for sha, size, source, _name, received in rows:
-        if (not isinstance(sha, str) or type(size) is not int or size < 0
+        if (not isinstance(sha, str) or not SHA256.fullmatch(sha) or type(size) is not int or size < 0
                 or not isinstance(source, str) or not isinstance(received, str)):
             raise ValueError("private/ledger.sqlite is not a readable ledger")
     receipts = [{"sha256_prefix": sha[:PREFIX], "bytes": size, "source_id": source,
