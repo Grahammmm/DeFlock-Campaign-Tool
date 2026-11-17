@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 
 from .cli import read_config
-from .content import _read_json, load_finding, load_site, utc_moment
+from .content import ContentError, _read_json, load_finding, load_site, utc_moment
 from .kit import _kit_folder, _write_text
 from .meeting_pack import _unlinked
 from .qr import CSS as QR_CSS, svg  # QR_CSS is emitted only when a base URL puts QR codes on the page
@@ -18,6 +18,8 @@ def _published(content, limit):
     found = []
     for path in sorted((content / 'findings').glob('*.json')):
         document = _read_json(path)
+        if not isinstance(document, dict):
+            raise ContentError(f"{path.name}: expected an object")
         if document.get('state') != 'published':
             continue
         title = document.get('title')
