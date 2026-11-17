@@ -353,7 +353,7 @@ def write_config(root, slug, *, created_date=None, check_only=False):
     try:  # the run date is stable: kept from the existing config, new only when none exists
         kept = json.loads(old)["review"]["run_date"]
         run_date = kept if tool.facts_tool.valid_date(kept) else run_date
-    except (TypeError, ValueError, KeyError):
+    except (TypeError, ValueError, KeyError, RecursionError):  # RecursionError: deeply nested junk on Python 3.11
         pass
     data = (json.dumps(build_config(root, profile, created_date=run_date), indent=2, sort_keys=True) + "\n").encode()
     with tempfile.TemporaryDirectory(prefix="analysis-config-") as tmp:
