@@ -63,6 +63,19 @@ class LintCitesTest(unittest.TestCase):
                 "Civ. Code § 1798.90.5(a) VERIFIED-IN-PACKAGE.\n")
         self.assertEqual(self.codes(text)[1], [(1, "C2_label_mismatch"), (2, "C2_label_mismatch")])
 
+    def test_labels_must_be_standalone_and_not_negated(self):
+        cases = [
+            ("Gov. Code § 7922.535 NOT-VERIFIED-IN-PACKAGE.", [(1, "C1_label_missing")]),
+            ("Gov. Code § 9999 UNVERIFIEDNESS.", [(1, "C1_label_missing")]),
+            ("Gov. Code § 7922.535 VERIFIED-IN-PACKAGE.", []),
+            ("Gov. Code § 9999 UNVERIFIED.", []),
+            ("Gov. Code § 9999 VERIFIED-IN-PACKAGE.", [(1, "C2_label_mismatch")]),
+            ("Gov. Code § 7922.535 UNVERIFIED.", [(1, "C2_label_mismatch")]),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.codes(text)[1], expected)
+
     def test_wrapped_citation_labels_and_boundaries(self):
         c1, c2 = "C1_label_missing", "C2_label_mismatch"
         cases = [
@@ -83,6 +96,12 @@ class LintCitesTest(unittest.TestCase):
         text = "et seq\net seq.\nsee 5 ff.\nthe staff. Ff here\n```\net seq. ff.\n```\n"
         self.assertEqual([h for h in self.codes(text)[1] if h[1] == "C3_et_seq"],
                          [(1, "C3_et_seq"), (2, "C3_et_seq"), (3, "C3_et_seq")])
+
+    def test_matched_tilde_fences_skip_citations(self):
+        text = "~~~markdown\nGov. Code § 7922.535 et seq.\n```\n~~~\nGov. Code § 9999 UNVERIFIED.\n"
+        self.assertEqual(self.codes(text), (0, []))
+        text = "````\n~~~\nGov. Code § 7922.535 et seq.\n```\n````\n"
+        self.assertEqual(self.codes(text), (0, []))
 
     def test_fact_sentence_boundaries(self):
         self.assertEqual(self.codes("Sent 2026-03-04 INFERRED.")[0], 0)

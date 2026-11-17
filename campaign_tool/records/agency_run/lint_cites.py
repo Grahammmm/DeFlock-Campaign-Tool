@@ -19,7 +19,7 @@ NUM = r"[0-9]+(?:\.[0-9]+)*"
 CODE = (r"(?:Gov\.?|Government|Civ\.?|Civil|Penal|Veh\.?|Vehicle|Sts\.? & Hy\.?|"
         r"Streets and Highways) Code")
 CITATION = re.compile(rf"{CODE}\s+(?:§§?\s*|[Ss]ections?\s+)?({NUM})(?:\([a-z0-9]+\))*|§§?\s*({NUM})(?:\([a-z0-9]+\))*")
-LABEL = re.compile(r"(?<![A-Z])VERIFIED-IN-PACKAGE|UNVERIFIED")
+LABEL = re.compile(r"(?<![\w-])(?:VERIFIED-IN-PACKAGE|UNVERIFIED)(?![\w-])")
 ET_SEQ = re.compile(r"(?i:\bet\s+seq\b)|\bff\.")
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])(?<!\bpp\.)(?<!\bp\.)(?<!\bNo\.)(?<!\be\.g\.)(?<!\bi\.e\.)\s+")
 MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
@@ -74,13 +74,16 @@ def package_sections(path):
 
 def lint(text, sections):
     hits = []
-    lines, fenced, paragraphs, current = text.splitlines(), False, [], []
+    lines, fenced, paragraphs, current = text.splitlines(), None, [], []
     for number, raw in enumerate(lines, 1):
-        if raw.lstrip().startswith("```"):
-            fenced = not fenced
-            current = _flush(paragraphs, current)
-            continue
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", raw)
         if fenced:
+            if fence and fence.group(1)[0] == fenced[0] and len(fence.group(1)) >= len(fenced) and not fence.group(2).strip():
+                fenced = None
+            continue
+        if fence and (fence.group(1)[0] != "`" or "`" not in fence.group(2)):
+            fenced = fence.group(1)
+            current = _flush(paragraphs, current)
             continue
         if not raw.strip():
             current = _flush(paragraphs, current)
