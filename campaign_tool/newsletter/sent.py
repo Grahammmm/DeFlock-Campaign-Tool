@@ -30,6 +30,19 @@ EARLIEST = date(2000, 1, 1)
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
+class _DuplicateKeys(ValueError):
+    """A JSON object repeated a member name (never carries the name or value)."""
+
+
+def _unique_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateKeys("duplicate JSON keys")
+        result[key] = value
+    return result
+
+
 def _read_regular(path, limit, label):
     """Bytes of a regular, non-link file of at most ``limit`` bytes; ``None`` when it does not exist."""
     try:
@@ -69,7 +82,7 @@ def _load(root):
         data = _read_regular(kit / SENT_NAME, MAX_SENT_BYTES, "the file")
         if data is None:
             return []
-        document = json.loads(data.decode("utf-8"))
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_pairs)
         if not isinstance(document, dict) or document.get("schema_version") != 1:
             raise ValueError("schema_version must be 1")
         issues = document.get("issues")
@@ -149,7 +162,9 @@ def record_sent(root, sent_on, today=None):
     if data is None:
         raise ValueError(f"no draft to record: kit/{DRAFT_NAME} is missing")
     try:
-        subject = json.loads(data.decode("utf-8")).get("subject")
+        subject = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_pairs).get("subject")
+    except _DuplicateKeys:
+        raise ValueError(f"kit/{DRAFT_NAME} unreadable: duplicate JSON keys") from None
     except (UnicodeDecodeError, ValueError, AttributeError):
         subject = None
     if not isinstance(subject, str):
