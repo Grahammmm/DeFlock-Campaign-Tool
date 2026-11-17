@@ -175,8 +175,31 @@ def locate(query, state, seed):
     return Location(county["county_fips"], county["name"], state, fips, place, kind, query)
 
 
+MAX_GEOCODER_BYTES = 1 << 20
+_GEOCODER_READ_CHUNK = 64 * 1024
+
+
+def _read_bounded(response):
+    """Read one geocoder body in positive sized reads; refuse past MAX_GEOCODER_BYTES.
+
+    Only b"" is EOF (short reads are normal). Headers are never trusted.
+    """
+    chunks = []
+    total = 0
+    while True:
+        chunk = response.read(min(_GEOCODER_READ_CHUNK, MAX_GEOCODER_BYTES + 1 - total))
+        if not chunk:
+            return b"".join(chunks)
+        total += len(chunk)
+        if total > MAX_GEOCODER_BYTES:
+            raise ValueError("response exceeds 1 MiB")
+        chunks.append(chunk)
+
+
 def locate_online(query, state="CA", timeout=10, opener=None):
     """Census geocoder lookup (network). Returns a Location or raises ValueError.
+
+    The response body is read in bounded chunks and refused above 1 MiB.
 
     Uses the onelineaddress endpoint with returntype=geographies. The result
     carries county and incorporated-place FIPS only; agency suggestions still
@@ -189,7 +212,7 @@ def locate_online(query, state="CA", timeout=10, opener=None):
     opener = opener or urllib.request.urlopen
     try:
         with opener(url, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            payload = json.loads(_read_bounded(response).decode("utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"Census geocoder lookup failed: {exc}") from None
     selected = _select_geocoder_entries(payload, query)
