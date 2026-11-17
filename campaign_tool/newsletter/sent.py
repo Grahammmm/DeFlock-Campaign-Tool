@@ -82,7 +82,11 @@ def _load(root):
         data = _read_regular(kit / SENT_NAME, MAX_SENT_BYTES, "the file")
         if data is None:
             return []
-        document = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_pairs)
+        text = data.decode("utf-8")
+        try:
+            document = json.loads(text, object_pairs_hook=_unique_pairs)
+        except RecursionError:
+            raise ValueError("JSON nested too deeply") from None
         if not isinstance(document, dict) or document.get("schema_version") != 1:
             raise ValueError("schema_version must be 1")
         issues = document.get("issues")
@@ -165,6 +169,8 @@ def record_sent(root, sent_on, today=None):
         subject = json.loads(data.decode("utf-8"), object_pairs_hook=_unique_pairs).get("subject")
     except _DuplicateKeys:
         raise ValueError(f"kit/{DRAFT_NAME} unreadable: duplicate JSON keys") from None
+    except RecursionError:
+        raise ValueError(f"kit/{DRAFT_NAME} unreadable: JSON nested too deeply") from None
     except (UnicodeDecodeError, ValueError, AttributeError):
         subject = None
     if not isinstance(subject, str):
