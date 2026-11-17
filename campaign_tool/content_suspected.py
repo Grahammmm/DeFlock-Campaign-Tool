@@ -40,7 +40,16 @@ def _document(path):
     if not stat.S_ISREG(before.st_mode):
         raise ValueError('not regular')
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(fd, 'rb') as stream:
+    # Raw ownership stays here until fdopen returns; on success the stream owns (and closes) the descriptor.
+    try:
+        handle = os.fdopen(fd, 'rb')
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass  # constructor may already have closed it; never mask the original exception
+        raise
+    with handle as stream:
         opened = os.fstat(stream.fileno())
         if (not stat.S_ISREG(opened.st_mode) or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
                 or opened.st_size > MAX_BYTES):

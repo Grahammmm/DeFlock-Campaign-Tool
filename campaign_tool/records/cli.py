@@ -57,6 +57,8 @@ COMMANDS = {
     "agency-policy-matrix": ("agency_policy_matrix", "main"),
     "agency-retention": ("agency_retention", "main"),
     "agency-evidence": ("agency_run.evidence_index", "main"),
+    "agency-lint-asks": ("agency_run.lint_asks", "main"),
+    "agency-response-sheet": ("agency_response_sheet", "main"),
     "agency-next": ("agency_next", "main"),
     "first-request": ("first_request", "main"),
     "model-advice": ("model_advice", "main"),

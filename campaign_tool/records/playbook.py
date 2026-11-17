@@ -118,6 +118,16 @@ def validate(playbook):
     return playbook
 
 
+def _unique_members(pairs):
+    """Build one object, refusing a repeated member name instead of keeping the last."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise PlaybookError("duplicate_json_member")
+        result[key] = value
+    return result
+
+
 def load(path=None):
     """Read and validate a playbook file; the default is the shipped ALPR playbook."""
     target = Path(path) if path else DEFAULT_PATH
@@ -128,7 +138,7 @@ def load(path=None):
         raise PlaybookError("unreadable", target.name) from None
     _need(len(raw) <= MAX_BYTES, "too_large")
     try:
-        playbook = json.loads(raw.decode("utf-8"))
+        playbook = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_members)
     except (UnicodeDecodeError, ValueError):
         raise PlaybookError("not_json", target.name) from None
     return validate(playbook)
