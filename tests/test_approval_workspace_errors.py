@@ -107,13 +107,16 @@ class WorkspaceFailures(Base):
 
             class TD(RealTD):
                 def cleanup(self):
-                    retained.append(self.name)
+                    retained.append(self)
                     raise PermissionError(errno.EACCES, CANARY)
             with mock.patch.object(approval.tempfile, "TemporaryDirectory", TD):
                 self.assertUnavailable()
             self.assertEqual(sentinel.read_text(), "keep")
-            for name in retained:
-                shutil.rmtree(name, ignore_errors=True)
+            for workspace in retained:
+                shutil.rmtree(workspace.name, ignore_errors=True)
+                # Disarm the finalizer: otherwise garbage collection later emits an "Implicitly cleaning up"
+                # ResourceWarning into whichever unrelated test is running, failing its empty-stderr assertion.
+                workspace._finalizer.detach()
 
 
 class PrimarySurvives(Base):
