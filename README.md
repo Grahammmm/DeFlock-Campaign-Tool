@@ -134,6 +134,22 @@ messages; a UIDVALIDITY change re-enumerates the folder and byte identity keeps 
 free of duplicate originals. Folders the account exposes but the config omits, and configured
 folders the server lacks, raise keyed alerts visible in `records status`.
 
+### Seed request candidates from a reviewed tracker
+
+With the records runner stopped, preview the rows to add to an existing private project:
+
+```sh
+python3 -m campaign_tool.records requests-import --project PROJECT --tracker MASTER-REQUEST-TRACKER.csv
+```
+
+Add `--apply` to insert missing agencies and requests. The CSV must have an `agency`
+and `request_id` for each row, with unique request IDs; `submitted` (or `submitted_at`)
+and `status` are optional. The request ID becomes the reference used to suggest matches
+from mail subjects. Conflicting identities refuse the whole import. Existing rows are
+never updated; rerunning with the same tracker adds zero rows. The import does not link
+mail, refresh pending decisions, or write approvals. The next outputs run can suggest
+candidates; each link still needs review.
+
 ## Planned, not yet implemented
 
 The current list of planned work, and of what is live, offline-only or frozen,

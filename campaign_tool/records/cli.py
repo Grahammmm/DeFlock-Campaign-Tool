@@ -19,6 +19,7 @@ COMMANDS = {
     "coverage-propose": ("coverage_propose", "main"),
     "followup-state": ("followup_state", "main"),
     "events-import": ("events_import", "main"),
+    "requests-import": ("requests_import", "main"),
     "doctor": ("runtime", "main"),
     "validate-findings": "gates.validate_findings",
     "reconcile-coverage": "gates.reconcile_coverage",
