@@ -12,9 +12,7 @@ concurrency:
 permissions:
   contents: read
 env:
-  # PR path scope (git glob pathspecs). "workers" is listed in
-  # .github/required-checks.json, so it always starts and reports; on a PR that
-  # touches none of these paths its check steps are skipped (job succeeds).
+  # Retain the PR coverage inventory and log matches; it does not skip testing.
   PR_SCOPE: |
     workers/**
     runner/__init__.py
@@ -43,7 +41,7 @@ env:
     .github/workflows/workers.yml
 jobs:
   workers:
-    runs-on: ${{ (vars.CI_SELF_HOSTED_READY == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)) && vars.CI_RUNNER || 'ubuntu-24.04' }}
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,8 +58,9 @@ jobs:
           if ! changed="$(git diff --name-only HEAD^1 HEAD -- "${specs[@]}")"; then
             echo "::warning::PR diff unavailable; running every step"; echo run=true >> "$GITHUB_OUTPUT"; exit 0
           fi
-          printf 'In-scope changes:\n%s\n' "${changed:-none, so the check steps are skipped}"
-          if [[ -n "$changed" ]]; then echo run=true; else echo run=false; fi >> "$GITHUB_OUTPUT"
+          printf 'In-scope changes:\n%s\n' "${changed:-none}"
+          # Even an empty diff must execute the worker suite.
+          echo run=true >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.scope.outputs.run == 'true'
         with:

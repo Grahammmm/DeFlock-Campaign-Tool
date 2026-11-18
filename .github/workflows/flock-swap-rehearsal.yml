@@ -7,10 +7,11 @@ name: flock-swap-rehearsal
 # nothing leaves the runner.
 
 on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: '17 7 * * *'
-  # Container rehearsal is full-tier only; Python driver regressions are owned
-  # by the affected source tests on PRs. No PR image builds or daemon setup.
   push:
     branches: [main]
     paths:
@@ -27,7 +28,7 @@ permissions:
 
 jobs:
   rehearse:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       # The OCR host has no buildx plugin, so its B2 `docker build` runs the

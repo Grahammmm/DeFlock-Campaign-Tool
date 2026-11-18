@@ -1,5 +1,8 @@
 name: Records extraction integration
 on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: '17 7 * * *'
   push:
@@ -12,12 +15,12 @@ permissions:
   contents: read
 jobs:
   integration:
-    runs-on: ubuntu-24.04
+    name: records-extraction (${{ matrix.python }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # PRs: one interpreter (the merge clock). Main push: full matrix.
-        python: ${{ github.event_name == 'pull_request' && fromJSON('["3.12"]') || fromJSON('["3.11","3.12","3.13"]') }}
+        python: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

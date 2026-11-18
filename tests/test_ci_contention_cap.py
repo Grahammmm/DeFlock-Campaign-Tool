@@ -231,11 +231,13 @@ class WorkflowContract(unittest.TestCase):
         text = (ci_affected.ROOT / '.github/workflows/records.yml').read_text()
         blocks = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', text, re.M | re.S))
         fast_event = "github.event_name == 'pull_request' || github.event_name == 'merge_group'"
-        full_event = "github.event_name != 'pull_request' && github.event_name != 'merge_group'"
         for name, event, tier, shards, timeout in (('affected', fast_event, 'pr', 5, 20),
-                                                 ('full', full_event, 'full', 2, 35)):
+                                                 ('full', None, 'full', 2, 35)):
             block = blocks[name]
-            self.assertIn('    if: ' + event, block)
+            if event:
+                self.assertIn('    if: ' + event, block)
+            else:
+                self.assertNotRegex(block, r'(?m)^    if:')
             self.assertIn(f'    timeout-minutes: {timeout}\n', block)
             self.assertIn(f'    strategy:\n      fail-fast: false\n      max-parallel: {shards if name == "affected" else 6}\n      matrix:', block)
             self.assertIn('        shard: ' + str(list(range(shards))), block)

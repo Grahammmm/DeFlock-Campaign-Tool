@@ -13,53 +13,21 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
-env:
-  # PR path scope (git glob pathspecs). "recovery-composition (3.12)" is listed
-  # in .github/required-checks.json, so it always starts and reports; on a PR
-  # that touches none of these paths its check steps are skipped (job succeeds).
-  PR_SCOPE: |
-    **
-    campaign_tool/**
-    tests/__init__.py
-    tests/records/**
-    tests/fixtures/**
-    tools/**
-    pyproject.toml
-    setup.py
-    requirements*.txt
-    constraints*.txt
-    *.lock
-    .github/workflows/records-recovery.yml
 jobs:
   recovery-composition:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        # PRs: one interpreter (the merge clock). Main push: full matrix.
-        python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && fromJSON('["3.12"]') || fromJSON('["3.11","3.12","3.13"]') }}
+        python: ['3.11', '3.12', '3.13']
     steps:
       - name: Check out WP9 candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           fetch-depth: 2
-      - name: PR path scope (other events always run every step)
-        id: scope
-        shell: bash
-        env:
-          EVENT: ${{ github.event_name }}
-        run: |
-          if [[ "$EVENT" != pull_request ]]; then echo run=true >> "$GITHUB_OUTPUT"; exit 0; fi
-          specs=(); while IFS= read -r p; do [[ -n "$p" ]] && specs+=(":(glob)$p"); done <<< "$PR_SCOPE"
-          if ! changed="$(git diff --name-only HEAD^1 HEAD -- "${specs[@]}")"; then
-            echo "::warning::PR diff unavailable; running every step"; echo run=true >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          printf 'In-scope changes:\n%s\n' "${changed:-none, so the check steps are skipped}"
-          if [[ -n "$changed" ]]; then echo run=true; else echo run=false; fi >> "$GITHUB_OUTPUT"
       - name: Check out immutable public WP8 dependency
-        if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: Grahammmm/DeFlock-Campaign-Tool
@@ -67,11 +35,9 @@ jobs:
           path: .ci-dependencies/wp8
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
-        if: steps.scope.outputs.run == 'true'
         with:
           python-version: '${{ matrix.python }}'
       - name: Select in-tree or pinned WP8
-        if: steps.scope.outputs.run == 'true'
         shell: bash
         run: |
           # Explicit file-based detection: in-tree WP8 is used from this checkout.
@@ -82,7 +48,6 @@ jobs:
             printf 'WP8_ROOT=%s\n' "$GITHUB_WORKSPACE/.ci-dependencies/wp8" >> "$GITHUB_ENV"
           fi
       - name: Require exactly 61 synthetic tests with actual WP8 and no skips
-        if: steps.scope.outputs.run == 'true'
         env:
           TMPDIR: '${{ runner.temp }}'
           REQUIRE_WP8_INTEGRATION: '1'

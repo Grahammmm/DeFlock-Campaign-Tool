@@ -1,5 +1,8 @@
 name: Records intake checks
 on:
+  pull_request:
+  merge_group:
+    types: [checks_requested]
   schedule:
     - cron: '17 7 * * *'
   push:
@@ -12,7 +15,7 @@ permissions:
   contents: read
 jobs:
   intake:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     # The full synthetic suite measured 631-1041 s on successful hosted runs
     # (2026-10-25) and was killed at the former 18-minute step cap on main and
     # PRs alike; keep the cap well above the measured maximum.
