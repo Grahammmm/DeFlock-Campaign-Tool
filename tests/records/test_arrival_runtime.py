@@ -157,6 +157,7 @@ class ArrivalRunTests(ArrivalRuntime):
 
     def test_burst_is_one_batch_and_cannot_extend_the_wait_indefinitely(self):
         stop = threading.Event()
+        ready = threading.Event()  # the burst is underway before the wrapper starts, so the batch never begins empty-handed
         written = []
 
         def burst():
@@ -164,13 +165,16 @@ class ArrivalRunTests(ArrivalRuntime):
             while not stop.is_set() and n < 40:
                 written.append(self.stamp("drop-folder", hashlib.sha256(bytes([n])).hexdigest()))
                 n += 1
+                if n >= 3:
+                    ready.set()
                 time.sleep(0.3)
 
         self.stamp()
         thread = threading.Thread(target=burst)
         thread.start()
-        started = time.monotonic()
         try:
+            self.assertTrue(ready.wait(30), "writer never produced its first three stamps")
+            started = time.monotonic()
             result = self.run_wrapper("--arrival", env={"ARRIVAL_QUIET_SECONDS": "1", "ARRIVAL_MAX_WAIT_SECONDS": "2"})
         finally:
             stop.set()
