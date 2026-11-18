@@ -11,7 +11,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from campaign_tool.records import analysis_packets as ap, public_packets as pp, run_stages
+from campaign_tool.records import analysis_packets as ap, cli, public_packets as pp, run_stages
 from campaign_tool.records.ledger import store
 from tests.records import test_analysis_bridge as tb, test_analysis_packet_outbox as to, test_outcome_received_items as tri
 
@@ -85,6 +85,9 @@ class AnalysisPacketImportTests(unittest.TestCase):
     def receipts(self):
         path = self.project / ap.RECEIPT
         return [json.loads(x) for x in path.read_text().splitlines()] if path.exists() else []
+
+    def test_command_is_registered(self):
+        self.assertEqual(cli.COMMANDS["analysis-packets-import"], ("analysis_packets", "main"))
 
     def test_real_outbox_file_through_the_cli_waits_as_one_pending_finding_and_a_resend_is_a_no_op(self):
         def cli_run():
