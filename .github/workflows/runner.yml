@@ -13,6 +13,29 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 permissions:
   contents: read
+env:
+  # Retain the PR coverage inventory; it does not skip testing.
+  PR_SCOPE: |
+    **
+    runner/**
+    tests/runner/**
+    tests/__init__.py
+    tests/test_outbox.py
+    tests/test_outbox_gateway.py
+    tests/test_redact.py
+    campaign_tool/**
+    jurisdictions/**
+    templates/**
+    schemas/**
+    tools/check_public_tree.py
+    scripts/scan-secrets.mjs
+    .dockerignore
+    pyproject.toml
+    setup.py
+    requirements*.txt
+    constraints*.txt
+    *.lock
+    .github/workflows/runner.yml
 jobs:
   runner:
     runs-on: ubuntu-latest
