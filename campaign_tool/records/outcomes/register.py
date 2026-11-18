@@ -30,7 +30,7 @@ COLUMNS = {
     "agency": ("agency", "agency name", "agency_id"),
     "request_id": ("request id", "request_id", "request #", "request number", "external_ref"),
     "asked": ("what was asked", "request scope", "scope", "records requested", "request description"),
-    "submitted_at": ("submitted_at", "date sent", "sent date", "request date", "date submitted"),
+    "submitted_at": ("submitted_at", "submitted", "date sent", "sent date", "request date", "date submitted"),
     "received_at": ("request received date", "agency received date"),
     "determination_at": ("determination_at", "determination date"),
     "determination_due_at": ("determination_due_at", "determination due", "response due", "deadline"),
@@ -74,7 +74,7 @@ def _day(value):
         return None
 
 
-def read_tracker(path):
+def read_tracker(path, *, skip_blank=True):
     """Missing is a coverage gap; unreadable/malformed is an error, never empty."""
     try:
         path = checked_path(path, existing=False)
@@ -105,7 +105,7 @@ def read_tracker(path):
             raise ValueError("tracker_row_limit")
         if None in row or any(v is None for v in row.values()):
             raise ValueError("tracker_row_invalid")
-        if not any(_text(v) for v in row.values()):
+        if skip_blank and not any(_text(v) for v in row.values()):
             continue
         output.append({**{field: _text(row[column]) for field, column in mapping.items()},
                        "source": {"file": Path(path).name, "row": number}})
