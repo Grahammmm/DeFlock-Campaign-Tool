@@ -39,13 +39,12 @@ env:
     .github/workflows/records-wp5.yml
 jobs:
   wp5:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        # PRs: one interpreter (the merge clock). Main push: full matrix.
-        python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && fromJSON('["3.12"]') || fromJSON('["3.11","3.12","3.13"]') }}
+        python: ['3.11', '3.12', '3.13']
     steps:
       - name: Checkout WP5 candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pragma: allowlist secret
@@ -53,22 +52,7 @@ jobs:
           path: engine
           persist-credentials: false
           fetch-depth: 2
-      - name: PR path scope (other events always run every step)
-        id: scope
-        shell: bash
-        working-directory: engine
-        env:
-          EVENT: ${{ github.event_name }}
-        run: |
-          if [[ "$EVENT" != pull_request ]]; then echo run=true >> "$GITHUB_OUTPUT"; exit 0; fi
-          specs=(); while IFS= read -r p; do [[ -n "$p" ]] && specs+=(":(glob)$p"); done <<< "$PR_SCOPE"
-          if ! changed="$(git diff --name-only HEAD^1 HEAD -- "${specs[@]}")"; then
-            echo "::warning::PR diff unavailable; running every step"; echo run=true >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          printf 'In-scope changes:\n%s\n' "${changed:-none, so the check steps are skipped}"
-          if [[ -n "$changed" ]]; then echo run=true; else echo run=false; fi >> "$GITHUB_OUTPUT"
       - name: Require the reviewed WP4 public commit
-        if: steps.scope.outputs.run == 'true'
         shell: bash
         run: |
           if [[ ! "$WP4_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
@@ -76,7 +60,6 @@ jobs:
             exit 1
           fi
       - name: Checkout pinned WP1
-        if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pragma: allowlist secret
         with:
           repository: Grahammmm/DeFlock-Campaign-Tool
@@ -84,7 +67,6 @@ jobs:
           path: dependencies/wp1
           persist-credentials: false
       - name: Checkout pinned WP2
-        if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pragma: allowlist secret
         with:
           repository: Grahammmm/DeFlock-Campaign-Tool
@@ -92,7 +74,6 @@ jobs:
           path: dependencies/wp2
           persist-credentials: false
       - name: Checkout pinned PR19
-        if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pragma: allowlist secret
         with:
           repository: Grahammmm/DeFlock-Campaign-Tool
@@ -100,7 +81,6 @@ jobs:
           path: dependencies/pr19
           persist-credentials: false
       - name: Checkout pinned WP4
-        if: steps.scope.outputs.run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pragma: allowlist secret
         with:
           repository: Grahammmm/DeFlock-Campaign-Tool
@@ -114,11 +94,9 @@ jobs:
         working-directory: engine
         run: python -m pip install -r requirements-records-test.txt
       - name: File launcher guards
-        if: steps.scope.outputs.run == 'true'
         working-directory: engine
         run: python -B tools/run_wp5_ci.py --self-test
       - name: Select in-tree or pinned dependency roots
-        if: steps.scope.outputs.run == 'true'
         working-directory: engine
         shell: bash
         run: |
@@ -138,7 +116,6 @@ jobs:
           select_root wp4 campaign_tool/records/extraction_ledger.py
           select_root pr19 campaign_tool/records/catalog_links.py
       - name: Exact 67 catalog and 4 composition tests; no skips
-        if: steps.scope.outputs.run == 'true'
         working-directory: engine
         run: |
           python -B tools/run_wp5_ci.py \

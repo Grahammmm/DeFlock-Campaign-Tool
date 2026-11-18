@@ -15,7 +15,7 @@ permissions:
   contents: read
 jobs:
   wheel:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
@@ -26,15 +26,12 @@ jobs:
       - name: Resource and CLI regressions
         run: python3 -B -m unittest tests.test_campaign_install_resources tests.test_campaign_wheel_harness tests.test_cli tests.test_discovery tests.test_kit tests.test_law -v
       - name: Build clean-source candidate wheel
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
         run: python3 -m pip wheel --no-deps . --wheel-dir "$RUNNER_TEMP/campaign-wheels"
       - name: Install in a separate environment
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
         run: |
           python3 -m venv "$RUNNER_TEMP/campaign-venv"
           "$RUNNER_TEMP/campaign-venv/bin/python" -m pip install --no-deps "$RUNNER_TEMP"/campaign-wheels/*.whl
       - name: Exercise installed commands away from checkout
-        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
         run: python3 -B tools/test_campaign_wheel.py --python "$RUNNER_TEMP/campaign-venv/bin/python" --expected-commit "$(git rev-parse HEAD)"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
