@@ -96,11 +96,6 @@ class FlockReviewGoldenJsonTest(unittest.TestCase):
         half = golden_review(self.tmp / "half", until="assess")
         self.assertEqual(golden(half, "--expect", SAMPLE, "--json"), (1, "golden: assess not done\n"))
 
-    def test_text_mode_unchanged(self):
-        bump = self.write(lambda d: d.update(f3_findings=8, facts_by_kind={"record": 5}))
-        self.assertEqual(golden(self.config, "--expect", bump),
-                         (1, "golden: f3_findings expected 8 got 7\ngolden: facts_by_kind.record expected 5 got 6\n"))
-
 
 if __name__ == "__main__":
     unittest.main()

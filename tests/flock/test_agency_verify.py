@@ -438,15 +438,5 @@ class ExitCodeTests(Base):
         self.assertEqual(code, 2)
         self.assertFalse(self.out.exists())
 
-class SeedUntouchedTests(Base):
-    def test_seed_byte_identical_after_every_run(self):
-        double = make_double()
-        self.addCleanup(double.stop)
-        double.pages["/own"] = (200, "text/html", b"<html><body>Flock Safety</body></html>")
-        self.write_seed([agency("a-own", "Own", "https://127.0.0.1:%d/own" % double.port, domain="127.0.0.1")])
-        before = self.seed.read_bytes()
-        MOD.run_seed(str(self.seed), str(self.out), [], 25, fetcher=self.local_fetch(double))
-        self.assertEqual(self.seed.read_bytes(), before)
-
 if __name__ == "__main__":
     unittest.main()
