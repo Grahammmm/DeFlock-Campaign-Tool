@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -24,6 +25,32 @@ assert SPEC is not None and SPEC.loader is not None
 render = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(render)
 RUN_ID = "run_20261113T180000Z_0123abcd"
+# Only these systemd-analyze messages positively identify "no usable user runtime"; anything
+# else (e.g. "Unit connection-missing.service not found.") is a real unit error and must fail.
+RUNTIME_UNAVAILABLE_RE = re.compile(
+    r"(?im)^(?:Failed to (?:connect to|create) (?:user (?:scope )?)?bus\b"
+    r"|Failed to (?:get|determine|acquire) .*\bXDG_RUNTIME_DIR\b"
+    r"|\$XDG_RUNTIME_DIR (?:is )?not set\b)")
+
+
+def user_runtime_unavailable(output):
+    return RUNTIME_UNAVAILABLE_RE.search(output) is not None
+
+
+def systemd_user_verify(analyze, *units, cwd):
+    env = dict(os.environ)
+    runtime_dir = env.get("XDG_RUNTIME_DIR")
+    temp_runtime_dir = None
+    if not runtime_dir or not os.path.isdir(runtime_dir):
+        temp_runtime_dir = tempfile.mkdtemp(prefix="sd-user-rt-")
+        env["XDG_RUNTIME_DIR"] = temp_runtime_dir
+    try:
+        result = subprocess.run([analyze, "--user", "verify", *map(str, units)],
+                                capture_output=True, text=True, timeout=30, cwd=cwd, env=env)
+    finally:
+        if temp_runtime_dir is not None:
+            shutil.rmtree(temp_runtime_dir)
+    return result, result.stdout + result.stderr
 
 
 class MailArrivalTests(unittest.TestCase):
@@ -65,6 +92,87 @@ class MailArrivalTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         return result
 
+    def arrival_graph(self, path_text=None):
+        """Return (PathChanged set, service ExecStart argv) parsed from the same render."""
+        text = path_text or (self.out / "records-arrival.path").read_text()
+        watched = {line.split("=", 1)[1] for line in text.splitlines() if line.startswith("PathChanged=")}
+        unit = next(line.split("=", 1)[1] for line in text.splitlines() if line.startswith("Unit="))
+        service = (self.out / unit).read_text()
+        argv = shlex.split(next(line.split("=", 1)[1] for line in service.splitlines()
+                                if line.startswith("ExecStart=")))
+        return watched, argv
+
+    def test_missing_engine_reports_one_fixed_nonfatal_diagnostic(self):
+        # Contract: a bad engine dir never leaks shell errors and never fails the mail poll.
+        self.status_fixture()
+        result = self.hook(self.render(ENGINE_DIR=str(self.base / "no-such-engine")))  # asserts exit 0, no stdout
+        self.assertEqual(result.stderr, "MAIL_ARRIVAL_FAILED\n")
+        self.assertFalse((self.runtime / "arrival").exists())
+        self.assertFalse(self.state.exists())
+
+    def test_rendered_arrival_unit_graph_passes_systemd_user_verify(self):
+        analyze = shutil.which("systemd-analyze")
+        if analyze is None:
+            self.skipTest("systemd-analyze not available")
+        self.render()
+        # Static syntax check only; never starts a manager or arms the path unit.
+        result, output = systemd_user_verify(analyze, self.out / "records-arrival.path",
+                                             self.out / "records-arrival.service", cwd=self.base)
+        if result.returncode and user_runtime_unavailable(output):
+            self.skipTest("systemd user runtime unavailable: " + output[:120])
+        self.assertEqual(result.returncode, 0, output)
+
+    def test_verify_skip_is_only_for_positively_identified_runtime_failures(self):
+        # Contract: a real unit error is never reported as "runtime unavailable" (skip).
+        # Bug caught: a broad connect/permission regex matched "Unit connection-missing.service
+        # not found." and turned a genuine verify failure into a skip.
+        for text in ("Failed to connect to bus: No medium found\n",
+                     "Failed to connect to user scope bus via local transport: No such file\n",
+                     "Failed to create bus connection: No such file or directory\n",
+                     "$XDG_RUNTIME_DIR is not set\n"):
+            with self.subTest(text=text):
+                self.assertTrue(user_runtime_unavailable(text))
+        for text in ("Unit connection-missing.service not found.\n",
+                     "x.service: Failed to parse permission setting\n",
+                     "x.service:3: Unknown key name 'Bogus' in section 'Service'\n", ""):
+            with self.subTest(text=text):
+                self.assertFalse(user_runtime_unavailable(text))
+
+    def broken_verify_unit(self):
+        bad = self.base / "bad.service"
+        bad.write_text("[Unit]\nRequires=connection-missing.service\n\n[Service]\nExecStart=/bin/true\n")
+        return bad
+
+    def test_real_unit_verify_error_is_not_skipped(self):
+        analyze = shutil.which("systemd-analyze")
+        if analyze is None:
+            self.skipTest("systemd-analyze not available")
+        result, output = systemd_user_verify(analyze, self.broken_verify_unit(), cwd=self.base)
+        if user_runtime_unavailable(output):
+            self.skipTest("systemd user runtime unavailable: " + output[:120])
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("connection-missing.service", output)
+        self.assertFalse(user_runtime_unavailable(output), output)
+
+    def test_verify_runs_without_session_runtime_dir(self):
+        # Contract: offline verify works without a login session (prebatch, CI).
+        # Bug: a missing runtime dir looked like a unit failure and left an approved PR stuck.
+        analyze = shutil.which("systemd-analyze")
+        if analyze is None:
+            self.skipTest("systemd-analyze not available")
+        self.render()
+        with mock.patch.dict(os.environ):
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+            with self.subTest(graph="rendered"):
+                result, output = systemd_user_verify(analyze, self.out / "records-arrival.path",
+                                                     self.out / "records-arrival.service", cwd=self.base)
+                self.assertEqual(result.returncode, 0, output)
+            with self.subTest(graph="missing dependency"):
+                result, output = systemd_user_verify(analyze, self.broken_verify_unit(), cwd=self.base)
+                self.assertNotEqual(result.returncode, 0, output)
+                self.assertIn("connection-missing.service", output)
+                self.assertFalse(user_runtime_unavailable(output), output)
+
     def test_render_private_substituted_and_absent_without_drop(self):
         script = self.render()
         self.assertEqual(script.stat().st_mode & 0o777, 0o700)
@@ -85,13 +193,25 @@ class MailArrivalTests(unittest.TestCase):
     def test_positive_count_consumed_and_report_validates(self):
         self.status_fixture()
         self.assertEqual(self.hook().stderr, "")
-        stamps = list((self.runtime / "arrival").glob("*-mail.json"))
+        stamps = [p for p in (self.runtime / "arrival").iterdir() if p.is_file()]  # excludes done/
         self.assertEqual(len(stamps), 1)
+        named = arrival.STAMP_NAME_RE.match(stamps[0].name)  # documented <utc-ts>-<source>.json
+        self.assertIsNotNone(named, stamps[0].name)
+        self.assertEqual(named and named.group(1), "mail")
         data = json.loads(stamps[0].read_text())
         self.assertEqual(set(data), {"source", "ref", "seen_at"})
         self.assertEqual(data["source"], "mail")
         self.assertEqual(data["ref"], hashlib.sha256(f"{RUN_ID}\0{2}".encode("ascii")).hexdigest())
         self.assertEqual(stamps[0].stat().st_mode & 0o777, 0o600)
+        # Composition contract: the rendered path unit watches the drop dir and the directory
+        # this hook really wrote into, and its service runs the rendered wrapper with
+        # --arrival. Catches hook and watcher rendered with different runtime values.
+        watched, argv = self.arrival_graph()
+        self.assertEqual(watched, {str(self.base / "drop"), str(stamps[0].parent)})
+        self.assertEqual(argv, ["/bin/sh", str(self.runtime / "run-records.sh"), "--arrival"])
+        miswired = (self.out / "records-arrival.path").read_text().replace(
+            f"PathChanged={self.runtime}/arrival", f"PathChanged={self.base}/elsewhere")
+        self.assertNotEqual(self.arrival_graph(path_text=miswired)[0], watched)  # negative control
         self.assertEqual(arrival.pending(self.runtime), [data])
         self.assertTrue(arrival.has_work(self.runtime))
         self.assertEqual(arrival.claim(self.runtime, RUN_ID), [data])
