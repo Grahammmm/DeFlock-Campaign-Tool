@@ -24,8 +24,11 @@ class SnapshotTests(Base):
         with patch.object(schedule, "_runs", side_effect=PermissionError):
             current = self.assess(records_root=self.root / "inaccessible", schedule_snapshot_path=path)
         self.assertEqual(self.check(current, "schedule")["state"], "ok")
-        self.assertEqual([c for c in current["checks"] if c["check"] != "schedule"],
-                         [c for c in self.assess()["checks"] if c["check"] != "schedule"])
+        self.assertEqual([c for c in current["checks"] if c["check"] not in ("schedule", "disk")],
+                         [c for c in self.assess()["checks"] if c["check"] not in ("schedule", "disk")])
+        # The inaccessible records root cannot be measured; that is unknown, never ok (and the roomy runtime volume does not hide it).
+        disk = self.check(current, "disk")
+        self.assertEqual((disk["state"], disk["reason_code"], disk["path_role"]), ("unknown", "disk_unreadable", "records_root"))
         out = io.StringIO()
         with redirect_stdout(out):
             code = ph.main(["--runtime-dir", str(self.runtime), "--target", "t", "--root", str(self.root / "inaccessible"),
