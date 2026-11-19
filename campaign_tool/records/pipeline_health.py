@@ -27,7 +27,11 @@ from . import arrival, run_report, schedule, schedule_snapshot
 SCHEMA = "records-health-v1"
 ALERT_SCHEMA = "records-health-alert-v1"
 LIMITS = {"arrival_max_minutes": 30, "mail_poll_warn_hours": 6, "mail_poll_stop_hours": 24, "run_max_hours": 26,
-          "failure_streak": 3, "report_window": 20, "analysis_max_minutes": 60, "export_grace_minutes": 15}
+          "failure_streak": 3, "report_window": 20, "analysis_max_minutes": 60, "export_grace_minutes": 15,
+          "disk_warn_gib": 100, "disk_stop_gib": 30}
+GIB = 1024 ** 3
+DISK_GIB_RANGE = (1, 10000)
+DISK_RANK = {"ok": 0, "unknown": 1, "warn": 2, "stop": 3}
 # An optional check whose root was not given reports unknown but never moves the overall state or the line.
 NOT_CONFIGURED = frozenset({"analysis_not_configured", "console_export_not_configured"})
 # analysis_bridge.FINAL: any other logged sync outcome (PROFILE_MISSING, TEXT_CONFLICT, CONFIG_INVALID) leaves the pair pending.
@@ -306,6 +310,32 @@ def _console_export(export_root, latest, now, limits):
     return _check("console_export", "ok", "console_export_pending", finished)
 
 
+def _disk(runtime_dir, records_root, limits):
+    """Free space (``f_bavail * f_frsize``, what a non-root writer can use) of the runtime and records volumes.
+
+    Each distinct device (``st_dev``) is read once, runtime first. The worst state wins (stop, warn, unknown, ok), then
+    the least free space; an unreadable volume never hides a known low one. Only a role and a size are reported."""
+    warn = limits.get("disk_warn_gib", LIMITS["disk_warn_gib"]) * GIB
+    stop = limits.get("disk_stop_gib", LIMITS["disk_stop_gib"]) * GIB
+    seen, found = set(), []
+    for role, path in (("runtime", runtime_dir), ("records_root", records_root)):
+        try:
+            device = os.stat(path).st_dev
+            if device in seen:
+                continue
+            seen.add(device)
+            info = os.statvfs(path)
+            free = info.f_bavail * info.f_frsize
+        except (OSError, OverflowError):
+            found.append(("unknown", None, role))
+            continue
+        state = "stop" if free < stop else "warn" if free < warn else "ok"
+        found.append((state, free, role))
+    state, free, role = min(found, key=lambda item: (-DISK_RANK[item[0]], float("inf") if item[1] is None else item[1]))
+    reason = {"stop": "disk_critical", "warn": "disk_low", "ok": "disk_ok", "unknown": "disk_unreadable"}[state]
+    return _check("disk", state, reason, free_gib=None if free is None else round(free / GIB, 1), path_role=role)
+
+
 # ----- assessment and line ----------------------------------------------------------------------
 
 def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limits=LIMITS,
@@ -321,7 +351,7 @@ def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limi
     last_run, latest = _last_run(target_dir, now, limits, spec)
     checks = [backlog, _mail_poll(mail_store, now, limits), last_run, _run_failures(target_dir, latest, limits, now),
               _notify(target_dir, limits, now), _schedule(records_root, now, spec, schedule_snapshot_path), _analysis(analysis_root, now, limits),
-              _console_export(console_export_root, latest, now, limits)]
+              _console_export(console_export_root, latest, now, limits), _disk(runtime_dir, records_root, limits)]
     states = {item["state"] for item in checks if item["reason_code"] not in NOT_CONFIGURED}
     overall = next(state for state in ("stop", "warn", "unknown", "ok") if state in states)
     report = {"schema": SCHEMA, "now": now.isoformat(), "state": overall, "exit_code": EXIT[overall],
@@ -346,6 +376,8 @@ def status_line(report):
             reason = item["reason_code"]
             if reason == "arrival_not_consumed":
                 reason += f" ({report['waiting']} waiting, oldest {report['oldest_waiting_minutes']} min)"
+            elif reason in ("disk_low", "disk_critical"):
+                reason += f" ({item['path_role']}, {item['free_gib']} GiB free)"
             reasons.append(reason)
         text = f"Run health: {WORD[state]} - " + "; ".join(reasons)
     return text[:LINE_MAX]
@@ -465,9 +497,16 @@ def main(argv=None):
     parser.add_argument("--analysis-root", help="analysis root of records-analysis (run-analysis.sh ANALYSIS_ROOT)")
     parser.add_argument("--analysis-max-minutes", type=int, default=LIMITS["analysis_max_minutes"])
     parser.add_argument("--console-export-root", help="console export directory (run-records.sh CONSOLE_EXPORT_DIR)")
+    parser.add_argument("--disk-warn-gib", type=int, default=LIMITS["disk_warn_gib"],
+                        help="warn when a volume has less free space than this (GiB)")
+    parser.add_argument("--disk-stop-gib", type=int, default=LIMITS["disk_stop_gib"],
+                        help="stop when a volume has less free space than this (GiB; below warn)")
     schedule._add_calendar_flags(parser)
     args = parser.parse_args(argv)
     spec = schedule._spec_from(parser, args)
+    low, high = DISK_GIB_RANGE
+    if not (low <= args.disk_stop_gib < args.disk_warn_gib <= high):
+        parser.error(f"--disk-warn-gib and --disk-stop-gib: expected {low} <= stop < warn <= {high}")
     if args.analysis_max_minutes < 1:
         parser.error("--analysis-max-minutes: expected a positive number of minutes")
     if not 0 < args.mail_poll_warn_hours < args.mail_poll_stop_hours:
@@ -479,7 +518,8 @@ def main(argv=None):
                         console_export_root=args.console_export_root, schedule_snapshot_path=args.schedule_snapshot,
                         limits=dict(LIMITS, analysis_max_minutes=args.analysis_max_minutes,
                                     mail_poll_warn_hours=args.mail_poll_warn_hours,
-                                    mail_poll_stop_hours=args.mail_poll_stop_hours))
+                                    mail_poll_stop_hours=args.mail_poll_stop_hours,
+                                    disk_warn_gib=args.disk_warn_gib, disk_stop_gib=args.disk_stop_gib))
         if args.record_alerts:
             try:
                 report["alerts_written"] = write_alerts(report, _target_dir(args.runtime_dir, args.target) / "alerts")
