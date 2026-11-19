@@ -13,7 +13,7 @@ from tests.records.test_admin_panel import Base
 UNITS = ["deflock-backup.timer", "deflock-deadlines.timer", "deflock-reconcile.timer",
          "deflock-run-report-review.timer", "deflock-site-build.timer", "deflock-stale-check.timer",
          "records-analysis.timer", "records-arrival.path", "records-backup-check.timer",
-         "records-health.timer", "records-run.timer"]
+         "records-console-check.timer", "records-health.timer", "records-run.timer"]
 
 
 def fake(units):
