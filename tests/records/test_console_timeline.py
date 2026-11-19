@@ -190,6 +190,17 @@ class TimelinePage(Base):
                 self.assertNotIn("<table", body)
         self.assertEqual(self.live()("/timeline?kind=bogus")[0], 400)  # still validated while unavailable
 
+    def test_promised_date_labels_tell_recorded_event_days_from_stated_deadlines(self):
+        # Fails if an operator-recorded event day is labelled INFERRED because the event type is "promised date".
+        write(self.project, [request(ALPHA, "R-1", [
+            event("promised date", "2026-11-01", "manual promise noted", new_dates=["2026-12-01"]),
+            event("promised date", "2026-12-01", "register promise", source="register", new_dates=["2026-12-01"]),
+            event("promised date", "2026-11-15", "stated in a letter", source="received_item", new_dates=["2026-11-15"])])])
+        rows, _ = self.rows(self.live(), "/timeline")
+        basis = {re.search(r"<td>([^<]*)</td></tr>$", r)[1] + "|" + re.search(r"<td>(manual promise noted|register promise|stated in a letter)</td>", r)[1]
+                 for r in rows}
+        self.assertEqual(basis, {"DATED|manual promise noted", "INFERRED|register promise", "INFERRED|stated in a letter"})
+
     def test_nav_timeline_link_points_at_the_page_and_home_keeps_its_section(self):
         self.assertIn(("Timeline", "/timeline"), layout.LINKS)
         write(self.project, mixed())

@@ -39,13 +39,15 @@ def _day(value):
 
 
 def _basis(event, day):
-    """DATED: the day the event is recorded on. INFERRED: a date somebody stated (promised), not an event day.
-    COMPUTED: the register's extension limit, date arithmetic. UNKNOWN: no date held."""
+    """DATED: the day the event is recorded on (an operator-entered promised-date event is dated by its recorded
+    day; the promised day stays in new_dates). INFERRED: a promised-date event whose own date is the stated
+    deadline (register or received item). COMPUTED: the register's extension limit. UNKNOWN: no date held."""
     if day is None:
         return "UNKNOWN"
-    if event["type"] == "extension notice" and (event.get("source") or {}).get("kind") == "register":
+    source = (event.get("source") or {}).get("kind")
+    if event["type"] == "extension notice" and source == "register":
         return "COMPUTED"
-    return "INFERRED" if event["type"] == "promised date" else "DATED"
+    return "INFERRED" if event["type"] == "promised date" and source != "manual" else "DATED"
 
 
 def rows(model):
