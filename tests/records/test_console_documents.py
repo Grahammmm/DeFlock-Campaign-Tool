@@ -1,16 +1,20 @@
 """Screen C: documents and findings, on synthetic run outputs (two invented agencies)."""
+import hashlib
 import http.client
 import json
 import os
+import shutil
+import sqlite3
 import tempfile
 import threading
 import unittest
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from campaign_tool.records import admin_panel as ap, console_layout
-from campaign_tool.records import console_documents as cd
+from campaign_tool.records import console_documents as cd, console_export, console_ocr, finding_review
 
 RUN = "run_1"
 NOW = datetime(2026, 11, 5, tzinfo=timezone.utc)
@@ -231,9 +235,8 @@ class ScreenC(unittest.TestCase):
         self.assertIn("alpha-pd", target.read_text())
         self.assertEqual(cd.main(["--project", str(self.project), "--run-id", RUN, "--html", str(target)]), 2)  # no overwrite
 
-    def test_panel_route(self):
-        build(self.project)
-        server = ap.build_server(self.project, RUN, actor="op", system=False)
+    def panel(self, *args, **kwargs):
+        server = ap.build_server(*args, actor="op", system=False, **kwargs)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(server.server_close)
@@ -248,13 +251,144 @@ class ScreenC(unittest.TestCase):
                 r = conn.getresponse()
                 return r.status, r.read().decode()
 
+        return get
+
+    def edit(self, relative, update):
+        path = self.project / "run-outputs" / RUN / relative
+        doc = json.loads(path.read_text())
+        update(doc)
+        put(path, doc)
+
+    def test_panel_route(self):
+        build(self.project)
+        self.edit("outcomes/received-items.json", lambda doc: doc["items"].append(
+            {"item_id": "i-unbound", "agency_id": "alpha-pd"}))
+        get = self.panel(self.project, RUN)
         status, body = get("/documents?agency=alpha-pd")
         self.assertEqual(status, 200)
         self.assertIn("alpha-pd", body)
         self.assertNotIn("beta-so", body)
+        self.assertIn("i-unbound", body)
+        self.assertEqual(body.count('href="/document?id='), 1)
+        self.assertIn(f'href="/document?id={H1[:12]}"', body)
+        self.assertNotIn(H1, body)
         self.assertEqual(get("/documents?agency=bad%20id")[0], 400)
         self.assertEqual(get("/documents", host="evil.test")[0], 403)
         self.assertEqual(get("/nope")[0], 404)
+
+    def test_document_detail_prefix_is_exact_and_unambiguous(self):
+        build(self.project)
+        received = "outcomes/received-items.json"
+        self.edit(received, lambda doc: doc["items"].append(dict(doc["items"][1], item_id="i-repeat")))
+        get = self.panel(self.project, RUN)
+        path = "/document?id=" + H1[:12]
+        self.assertEqual(get(path)[0], 200)
+        for bad in ("/document", "/document?id=abcdefABCDEF", "/document?id=" + H1, path + "&id=" + H1[:12],
+                    path + "&extra=", path + "&", "/document?id=../../elsewhere"):
+            with self.subTest(bad=bad):
+                status, body = get(bad)
+                self.assertEqual(status, 400)
+                self.assertNotRegex(body, r"[0-9a-f]{64}|\.\./elsewhere")
+        self.assertEqual(get("/document?id=" + "f" * 12)[0], 404)
+        self.edit(received, lambda doc: doc["items"].append(dict(doc["items"][1], original_sha256=H1[:12] + "a" * 52)))
+        status, body = get(path)
+        self.assertEqual(status, 409)
+        self.assertIn("more than one document", body)
+        self.assertNotRegex(body, r"[0-9a-f]{64}")
+        self.edit(received, lambda doc: doc.update(run_id="stale"))
+        self.assertEqual(get(path)[0], 503)
+
+    def test_document_detail_pin_parity_and_privacy(self):
+        build(self.project)
+        image, failed = "3" * 64, "4" * 64
+        self.edit("outcomes/received-items.json", lambda doc: doc["items"].extend([
+            {"original_sha256": image, "kind": "image-fixture.pdf", "agency_id": "alpha-pd/private"},
+            {"original_sha256": failed, "request_id": "attic/private/" + H1}]))
+        self.edit("text-state.json", lambda doc: doc["records"].extend([
+            {"sha256": H2, "state": "text_reviewed"}, {"sha256": image, "state": "awaiting_ocr"},
+            {"sha256": failed, "state": "could_not_be_read", "words": "raw document canary"}]))
+        self.edit("outcomes/response-items.json", lambda doc: doc["requests"][0]["asks"].extend([
+            {"ask_id": "a3", "rating": "withheld", "evidence": [{"item_id": "i-a"}]},
+            {"ask_id": "foreign-ask", "rating": "answered", "evidence": [{"item_id": "i-b"}]}]))
+        self.edit("outcomes/response-items.json", lambda doc: doc["requests"].append(
+            {"agency_key": "beta-so", "request_id": "R-2", "asks": [
+                {"ask_id": "beta-ask", "rating": "answered", "evidence": [{"item_id": "i-b"}]}]}))
+        # A shared link's merged date is specifically cited to beta, not every source it mentions.
+        self.edit("outcomes/release-links.json", lambda doc: doc["links"][0].update(
+            sources=[{"original_sha256": H1, "item_id": "i-a"}, {"original_sha256": H2, "item_id": "i-b"}],
+            expiry={"date": "2025-11-01", "original_sha256": H2}))
+        ledger = self.project / console_export.LEDGER
+        ledger.parent.mkdir()
+        with closing(sqlite3.connect(ledger)) as db, db:
+            db.execute("CREATE TABLE page_state(original_sha256, page_no, method, status, reason, needs_visual_review, "
+                       "confidence, derivative_sha256)")
+            db.executemany("INSERT INTO page_state VALUES (?, ?, ?, ?, NULL, 1, ?, ?)", [
+                (H2, 1, "legacy-intake:pdf", "ok", None, H2),
+                (H1, 1, "local-ocr-3", "partial", 47, H1), (H1, 2, "local-ocr-3", "partial", 93, H1)])
+
+        root = self.project / "hosting"
+        name = "20261105T000000Z-" + RUN
+        pinned = root / "exports" / name
+        root.mkdir(mode=0o700)
+        pinned.mkdir(parents=True, mode=0o700)
+        shutil.copytree(self.project / "run-outputs", pinned / "run-outputs")
+        (pinned / ledger.parent.name).mkdir()
+        shutil.copyfile(ledger, pinned / console_export.LEDGER)
+        # Real pinned snapshot reader and file verification; no export builder/trust access.
+        pid = "1" * 16
+        put(pinned / "console-model/ocr-pages.json", {
+            "schema": console_export.MODEL_SCHEMA, "source_project_id": pid, "state": "ok", "truncated": True,
+            "counts": {"pending": 2}, "rows": [
+                {"original_sha256": H1, "page_no": n, "confidence": conf, "state": "pending",
+                 "text": "raw document canary", "id": f"{H1}-{n}"} for n, conf in [(1, 47), (2, 93)]]})
+        files = {str(p.relative_to(pinned)): hashlib.sha256(p.read_bytes()).hexdigest()
+                 for p in pinned.rglob("*") if p.is_file()}
+        put(pinned / "EXPORT.json", {"schema": console_export.SCHEMA, "run_id": RUN, "source_project_id": pid,
+                                     "exported_at": "2026-11-05T00:00:00Z", "files": files})
+        (root / "current").symlink_to(Path("exports") / name)
+        analysis = self.project / "analysis"
+        analysis.mkdir()
+        live = self.panel(self.project, RUN)
+        # Analysis cannot overlap the live project; enable it only on the export console.
+        exported = self.panel(export_root=str(root), run_id="auto", analysis_root=str(analysis.resolve()))
+
+        def findings(_root, *, agency):
+            return [{"agency": agency, "topic": topic, "review_state": "unreviewed", "claim": "raw finding canary",
+                     "facts": [{"source_sha256": digest, "quote": "raw quote canary"}]}
+                    for topic, digest in [("Search oversight", H1), ("Wrong original", H1[:12] + "e" * 52)]]
+
+        with mock.patch.object(finding_review, "list_findings", side_effect=findings) as listed, \
+                mock.patch.object(console_ocr, "_page_text", side_effect=AssertionError("opened evidence text")):
+            for digest, expected in (
+                (H1, ("alpha-pd", "R-1", "2026-08-31 17:00 PDT", "<dd>records</dd>", "<dd>2</dd>",
+                      "<dd>OCR — awaiting visual review</dd>",
+                      "<td>1</td><td>Below 80", "<td>2</td><td>80 or above", "Awaiting review", 'href="/ocr-review"',
+                      "<td>a2</td><td>produced", "<td>a3</td><td>withheld")),
+                (H2, ("beta-so", "<dd>1</dd>", "<dd>Native</dd>", "2025-11-01", "Expired", "<td>beta-ask</td>")),
+                (image, ("<dd>Awaiting OCR</dd>", "<dd>Unknown</dd>")), (failed, ("<dd>Read error</dd>",))):
+                with self.subTest(digest=digest[:12]):
+                    path = "/document?id=" + digest[:12]
+                    status, local = live(path)
+                    self.assertEqual(status, 200)
+                    # Change a live run fact after the export. Export cannot borrow it or read another run.
+                    if digest == H1:
+                        self.edit("text-state.json", lambda doc: doc["records"][0].update(state="waiting"))
+                    status, pinned_page = exported(path)
+                    self.assertEqual(status, 200)
+                    for body in (local, pinned_page):
+                        for marker in expected:
+                            self.assertIn(marker, body)
+                        for private in ("raw document canary", "raw finding canary", "raw quote canary", "image-fixture.pdf",
+                                        "alpha-pd/private", "attic/private", "files.example.test", "foreign-ask", "Wrong original"):
+                            self.assertNotIn(private, body)
+                        self.assertNotRegex(body, r"[0-9a-fA-F]{64}")
+                        self.assertNotIn("<form", body)
+                    if digest == H1:
+                        self.assertNotIn("2025-11-01", pinned_page)
+                        self.assertIn("Only part of the OCR review queue is in this export.", pinned_page)
+                        self.assertIn("Search oversight", pinned_page)
+                        self.assertNotIn("Search oversight", local)
+        self.assertEqual({call.kwargs["agency"] for call in listed.call_args_list}, {"alpha-pd", "beta-so"})
 
 
 if __name__ == "__main__":
