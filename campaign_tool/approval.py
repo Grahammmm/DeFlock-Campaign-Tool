@@ -20,6 +20,7 @@ import tempfile
 from pathlib import Path
 
 NAMESPACE = "deflock-approval"
+PHONE_NAMESPACE = "deflock-phone-approval"  # a phone tap's envelope (campaign_tool.phone_approval), never an approval text itself
 TRUSTED_SIGNERS = Path("/etc/deflock/approvers.allowed_signers")
 SSH_KEYGEN = Path("/usr/bin/ssh-keygen")
 MAX_SIGNATURE = 8192
@@ -216,10 +217,13 @@ def anchor_state():
         return {"state": "unavailable", "reason": str(error)}
 
 
-def verify(data, signature):
-    """Return the verified principal for ``signature`` over ``data``, or raise ApprovalError."""
+def verify(data, signature, namespace=NAMESPACE):
+    """Return the verified principal for ``signature`` over ``data``, or raise ApprovalError.
+
+    ``namespace`` is one of the two fixed namespaces; the trust file's ``namespaces=`` option decides which key may sign
+    which (an enrolled phone key carries only ``PHONE_NAMESPACE``)."""
     if not isinstance(data, bytes) or not isinstance(signature, str) or len(signature) > MAX_SIGNATURE \
-            or "-----BEGIN SSH SIGNATURE-----" not in signature:
+            or "-----BEGIN SSH SIGNATURE-----" not in signature or namespace not in (NAMESPACE, PHONE_NAMESPACE):
         raise ApprovalError("approval requires an SSH signature, not a name")
     anchor_status()
     # Workspace creation, write and teardown failures are unavailability, never a raw OSError.
@@ -237,7 +241,7 @@ def verify(data, signature):
             if found.returncode != 0 or len(names) != 1:
                 raise ApprovalError("signature is not from a trusted approver")
             done = subprocess.run([str(SSH_KEYGEN), "-Y", "verify", "-f", str(TRUSTED_SIGNERS), "-I", names[0],
-                                   "-n", NAMESPACE, "-s", str(sig)], input=data, capture_output=True, timeout=30, check=False)
+                                   "-n", namespace, "-s", str(sig)], input=data, capture_output=True, timeout=30, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
             raise TrustUnavailable("signature check could not run") from exc
     except BaseException:
