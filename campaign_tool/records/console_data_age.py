@@ -93,4 +93,4 @@ def insert(body, *, live=False, pin=None, now=None, report_path=None, stale_hour
         label = _export_label(pin, report_path, now, stale_hours)
     strip = f'<div class="data-age" style="grid-column:1/-1;overflow-wrap:anywhere">{label}</div>'
     head, header, rest = body.partition("</header>")
-    return head + header + strip + rest if header else strip + body
+    return head + header + strip + rest if header else body

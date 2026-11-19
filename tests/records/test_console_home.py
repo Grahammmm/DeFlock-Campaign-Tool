@@ -617,8 +617,7 @@ class Routes(panel.ServerCase):
         self.assertIn(self.draft_row["id"], get("/dashboard")[2])
         with mock.patch.object(panel.ap, "load_dashboard", return_value={"synthetic": True}):
             with mock.patch.object(panel.ap, "render_dashboard", return_value="old dashboard bytes"):
-                self.assertEqual(get("/dashboard")[2], '<div class="data-age" style="grid-column:1/-1;'
-                                 'overflow-wrap:anywhere">Live project data</div>old dashboard bytes')
+                self.assertEqual(get("/dashboard")[2], "old dashboard bytes")
         status, headers, _ = self.http.post("/approvals/reject", {"csrf_token": self.tok, "id": self.draft_row["id"], "reason": "not needed"})
         self.assertEqual((status, headers["location"]), (303, "/"))
         self.assertIn("0 need your decision", get("/")[2])
