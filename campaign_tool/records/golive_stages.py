@@ -16,6 +16,8 @@ from . import run_report
 from .console_runs_model import _read_at
 
 EXTERNAL = "external: not provable from run reports"
+NO_RECEIPT = "unproven: v1 reports carry no receipt for this engine step"
+HISTORICAL_OCR = "historical only: OCR pages in ledger snapshot, not per-run proof"
 # stage_outputs keeps the first additive warning, in this producer order.
 # DIGEST_UNRESOLVED is special: it overwrites any earlier additive warning.
 OUTPUT_WARNINGS = (
@@ -51,6 +53,7 @@ class Stage:
     source: str | None = None
     nonblocking: tuple[str, ...] = ()
     masks: tuple[str, ...] = ()
+    receipt: bool = True  # False: a v1 report can never positively prove this stage ran.
 
 
 # GOLIVE-STATUS-2026-11-18 §1. Insertion order is the display order.
@@ -74,8 +77,9 @@ STAGES = {
     # A register failure skips the follow-up clock entirely; that's a blocker, not masking.
     "14": Stage("No-response follow-up drafts", "outputs", after("OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE"),
                 before("OUTPUTS_REGISTER_UNAVAILABLE") + OVERWRITE),
+    # Warnings still show; an ok outputs status never proves the engine step ran (older engines emit it too).
     "15": Stage("Engine-owned follow-ups", "outputs", after("OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE"),
-                before("OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE") + OVERWRITE),
+                before("OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE") + OVERWRITE, receipt=False),
     # V1 has no findings stage or attendance receipt; analysis-ready is not a findings run.
     "16": Stage("Findings lane", "findings"),
     "17": Stage("Packets to website staging"),
@@ -131,10 +135,15 @@ def _observation(number, rule, stage, report, codes):
     qualifies = status == "ok" or warning in rule.nonblocking
     if number == "2" and "SYNC_OFFLINE_SNAPSHOT" in codes:
         qualifies = False
-    if number == "5" and warning and not stage["counts"]["output"]:
-        qualifies = False  # Partial extraction only qualifies if some extraction succeeded.
-    if number == "6" and not report.get("ocr", {}).get("pages_ocr"):
-        qualifies = False  # Native extraction (or a zero OCR tally) isn't OCR evidence.
+    if number == "5" and not stage["counts"]["output"]:
+        qualifies = False  # An ok extract stage with zero documents extracted (idle, deferred) is no evidence.
+    if number == "6":
+        # pages_ocr is a cumulative ledger snapshot: repeated idle runs repeat it, so it never proves this run OCRed.
+        if report.get("ocr", {}).get("pages_ocr") and not warning:
+            return HISTORICAL_OCR, warning, None
+        qualifies = False
+    if qualifies and not rule.receipt:
+        return NO_RECEIPT, warning, None
     return "proven" if qualifies else "not proven", warning, None
 
 

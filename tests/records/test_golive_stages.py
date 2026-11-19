@@ -25,13 +25,17 @@ class GOLiveStagesTests(unittest.TestCase):
         self.reports = Path(scratch.name) / "reports"
         self.reports.mkdir()
 
-    def report(self, hour, warning=None, *, mode="scheduled", name=None, ocr=None, stub=False):
+    def report(self, hour, warning=None, *, mode="scheduled", name=None, ocr=None, stub=False,
+               extracted=None):
         report = json.loads(FIXTURE.read_text(encoding="utf-8"))
         report.update(run_id=f"run_20260101T{hour:02}0000Z_0a1b2c3d", mode=mode,
                       started_at=f"2026-01-01T{hour:02}:00:00Z", finished_at=f"2026-01-01T{hour:02}:07:30Z")
         if warning:
             next(stage for stage in report["stages"] if stage["name"] == "outputs").update(
                 status="warn", error_code=warning)
+        if extracted is not None:
+            next(stage for stage in report["stages"] if stage["name"] == "extract")["counts"].update(
+                input=extracted, output=extracted)
         if ocr is not None:
             report["ocr"] = dict(pages_ocr=ocr, pages_conf_ge80=ocr, pages_conf_lt80=0,
                                  pages_conf_unknown=0, pages_reviewed=0, awaiting_ocr_images=0)
@@ -91,21 +95,55 @@ class GOLiveStagesTests(unittest.TestCase):
                 self.assertEqual(rows["13"]["masked_by"], mask)
 
     def test_external_and_missing_evidence_are_never_proven(self):
-        # An umbrella ok cannot promote external stages, OCR without positive counts, or the findings lane.
+        # An umbrella ok cannot promote external stages, OCR from a ledger snapshot, the engine step or the findings lane.
         self.report(6, ocr=0)
         rows = self.rows()
         external = "external: not provable from run reports"
         self.assertEqual({key for key, row in rows.items() if row["state"] == external},
                          set("1 3 4 17 18 19 20 A1 A2 A3 A4 A5 A6 A7".split()))
         for stage, row in rows.items():
-            if row["state"] == external or stage in ("6", "16"):
+            if row["state"] == external or stage in ("6", "15", "16"):
                 self.assertIsNone(row["last_proven_run"], stage)
         self.assertEqual(rows["16"]["state"], "not reported")
         self.report(7, mode="test", ocr=3)
         self.report(8, stub=True, ocr=4)
         self.assertIsNone(self.rows()["6"]["last_proven_run"])
-        actual = self.report(9, ocr=2)
-        self.assertEqual(self.rows()["6"]["last_proven_run"], actual)
+
+    def test_engine_followup_stage_has_no_receipt_in_v1(self):
+        # Contract: stage 15 is never proven by a bare outputs ok (older engines without the step emit the same
+        # status). Bug: marking it proven would claim an engine step ran that the report cannot show.
+        self.report(6)
+        row = self.rows()["15"]
+        self.assertEqual((row["state"], row["last_proven_run"], row["runs_since_last_proof"]),
+                         (golive_stages.NO_RECEIPT, None, None))
+        self.assertEqual(self.rows()["14"]["state"], "proven")  # neighbours keep their mapped evidence
+        self.report(7, "OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE")  # a failure is still reported
+        row = self.rows()["15"]
+        self.assertEqual((row["last_warning"], row["last_proven_run"]), ("OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE", None))
+
+    def test_zero_work_extract_is_not_extraction_evidence(self):
+        # Contract: stage 5 needs documents actually extracted. Bug: run_stages.extract_result returns ok for zero
+        # inputs or all-deferred OCR, so an idle run would be "proven".
+        real = self.report(6)
+        idle = self.report(7, extracted=0)
+        row = self.rows()["5"]
+        self.assertEqual((row["state"], row["last_proven_run"], row["runs_since_last_proof"]), ("not proven", real, 1))
+        self.assertEqual(self.rows()["8"]["last_proven_run"], idle)  # unrelated stages unaffected
+        self.assertIsNone(row["masked_by"])
+        self.assertEqual(self.rows()["6"]["last_proven_run"], None)
+
+    def test_ocr_snapshot_is_historical_presence_not_per_run_proof(self):
+        # Contract: pages_ocr is a cumulative ledger count, so repeated idle runs must neither prove OCR nor move a
+        # last-proven run or proof age. Bug: each idle run would reset the last proof from the same snapshot.
+        self.report(6, ocr=2)
+        self.report(7, ocr=2, extracted=0)
+        row = self.rows()["6"]
+        self.assertEqual((row["state"], row["last_proven_run"], row["runs_since_last_proof"]),
+                         (golive_stages.HISTORICAL_OCR, None, None))
+        self.report(8, ocr=0)
+        self.assertEqual(self.rows()["6"]["state"], "not proven")
+        self.report(9, "OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE", ocr=2)
+        self.assertEqual(self.rows()["6"]["state"], golive_stages.HISTORICAL_OCR)
 
     def test_module_output_is_stable_and_names_invalid_report(self):
         # Exercise the actual module entry point, stable order, and no leak via validator exception text.
