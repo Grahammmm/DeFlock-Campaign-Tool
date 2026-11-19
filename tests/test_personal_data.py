@@ -957,7 +957,7 @@ _MODULES = {
         records.native_extract records.ocr_closure records.ocr_review records.ocr_stage
         records.analysis_export records.outcomes.analysis_ready records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register records.outcomes.timeline
         records.outcomes.textstate records.outcomes.unmatched records.pipeline_health records.project_init records.portal.download records.portal.engine records.portal.ledger_adapter
-        records.portal.store records.console_apply records.console_journal records.console_manual_events records.public_packets records.packet_changes records.public_updates records.publish records.queue_runtime records.recovery.backup
+        records.portal.store records.console_apply records.console_journal records.console_manual_events records.console_phone records.public_packets records.packet_changes records.public_updates records.publish records.queue_runtime records.recovery.backup
         records.recovery.backup_v2 records.recovery.publication records.quiescence_audit records.records_backup records.review_bundle records.review_retirement
         records.holds records.campaign_readiness
         records.run records.run_orchestrator records.run_stages records.runner.canonical_mail records.runner.core
@@ -1157,6 +1157,7 @@ MODULE_FUNCTIONS = {
     'records.console_apply': ('_receipt',),  # DFGL-16C: one 0600 O_APPEND receipt line per final decisions-apply outcome under the approval store lock; the writers it calls are the existing classified ones; no send
     'records.console_journal': ('append',),  # DFGL-16B decision journal outside the export: one 0600 O_APPEND line per validated console decision under flock; no live-project or export write, no signature check; sends nothing
     'records.console_manual_events': ('append_events', 'post',),  # actor-bearing local-console manual events: append-only journal line and timeline refresh; nothing sent or published
+    'records.console_phone': ('serve',),  # A6 PHONE-SIGN-2: serve writes only the static tap script bytes to the HTTP response on GET; the POST journals via the classified console_journal.append; no file write, no signature check, sends nothing
     'records.public_packets': (
         '_Locked.__enter__', '_Locked.append', '_replace', 'main',
     ),  # private packet journal (actor/signature history), lock and the site-content change file; nothing is published or deployed
