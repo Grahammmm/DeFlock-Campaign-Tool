@@ -21,7 +21,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, console_redactions, draft_templates, mail_drafts, mail_send, run_report, schedule, site_prs
+from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_holds, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, console_redactions, draft_templates, mail_drafts, mail_send, run_report, schedule, site_prs
 from . import console_origin, console_automation
 from . import console_access, console_export, console_journal, console_layout, console_review, console_settings, console_snapshot
 from . import console_data_age, console_pages, console_phone, console_phone_enrol
@@ -901,6 +901,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if console_manual_events.serve(self):
             return
         if console_ocr.serve(self):  # OCR page confirm / reject
+            return
+        if console_holds.serve(self):  # held documents, read-only (DF2222-07)
             return
         if console_findings.serve(self):  # finding review (DF2007-06)
             return
