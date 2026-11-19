@@ -47,9 +47,18 @@ def check_root(root, *write_locations):
     return real
 
 
-def load(root):
-    """-> {state: ok|unavailable, code, rows (FINDING_UNREVIEWED), counts, broken agencies}. Read-only; never a silent empty list."""
+def reviewable(row):
+    """True for a row the review page lists: held FINDING_UNREVIEWED with the exact payload and hash to sign."""
+    return row.get("hold_code") == "FINDING_UNREVIEWED" and bool(row.get("payload")) and bool(row.get("finding_sha256"))
+
+
+def load_all(root):
+    """-> {state: ok|unavailable, code, rows (every finding, any review state, unfiltered), broken agencies}. Read-only; never a silent empty list."""
     try:
+        if not os.path.isdir(root):  # a removed or unreadable root must not look like a root with no findings (glob swallows it)
+            raise OSError
+        if os.path.lexists(os.path.join(root, "agencies")):
+            os.listdir(os.path.join(root, "agencies"))
         names = sorted(p.parent.name for p in Path(root).glob("agencies/*/review-config.json"))
         rows, broken = [], 0
         for slug in names:
@@ -57,13 +66,22 @@ def load(root):
                 rows += fr.list_findings(root, agency=slug)
             except (fr.FindingReviewError, OSError, ValueError, KeyError, TypeError):
                 broken += 1  # one agency's inputs cannot be read: counted and said, never dropped silently
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError):
         return {"state": "unavailable", "code": "finding_inputs_unavailable"}
     if broken and broken == len(names):
         return {"state": "unavailable", "code": "finding_inputs_unavailable"}
-    waiting = [r for r in rows if r.get("hold_code") == "FINDING_UNREVIEWED" and r.get("payload") and r.get("finding_sha256")]
+    return {"state": "ok", "rows": rows, "broken": broken}
+
+
+def load(root):
+    """-> {state: ok|unavailable, code, rows (FINDING_UNREVIEWED), counts, broken agencies}. Read-only; never a silent empty list."""
+    doc = load_all(root)
+    if doc["state"] != "ok":
+        return doc
+    rows = doc["rows"]
+    waiting = [r for r in rows if reviewable(r)]
     count = lambda state: sum(1 for r in rows if r["review_state"] == state)  # noqa: E731
-    return {"state": "ok", "rows": waiting, "rejected": count("rejected"), "deferred": count("deferred"), "broken": broken,
+    return {"state": "ok", "rows": waiting, "rejected": count("rejected"), "deferred": count("deferred"), "broken": doc["broken"],
             "other": len(rows) - len(waiting) - count("rejected") - count("deferred")}
 
 
