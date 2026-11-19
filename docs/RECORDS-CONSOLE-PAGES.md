@@ -1,6 +1,6 @@
 # Console pages: a short phone guide
 
-One entry per page of the records console, in the order of its menu (the menu is read from the running console, not from this text). Links are console paths: open them on the console, not on GitHub. Checked against main `00671bba2cfd` (PR #1769) plus the open Home "System" change (PR #1771, `acaecfa7233d`). It names no record, person, address or private path.
+One entry per page of the records console, in the order of its menu (the menu is read from the running console, not from this text). Links are console paths: open them on the console, not on GitHub. Checked against main `81097c708038` (it includes the Home "System" line, PR #1771, and the Backups section of System health, PR #1770). It names no record, person, address or private path.
 
 ## How to read any page
 
@@ -78,7 +78,7 @@ Buttons: Approve (pasted signature) and Deny (reason). Approving records the dec
 The newest 30 finished runs: start (Pacific time), trigger, state, duration, stage chips and error codes. Source: the `reports` folder beside `--run-report`. Buttons: none, only Details links to [one run](/run?id=RUN_ID), which explains each stage in plain words. Without the option: "not configured on this console".
 
 ### [System health](/health)
-A verdict (worst of stop, warn, unknown, ok), the pipeline checks, open alerts, free disk and whether the export matches the newest run. Source: run report, its `alerts` folder, the export and disk. Buttons: none. Needs `--run-report`; `--analysis-root` adds the analysis check; `--no-system` makes disk readings "unavailable".
+A verdict (worst of stop, warn, unknown, ok), the pipeline checks, open alerts, a Backups section, free disk and whether the export matches the newest run. Source: run report, its `alerts` folder, the export and disk; Backups reads the backup-check alerts folder. Buttons: none. Needs `--run-report`; `--analysis-root` adds the analysis check; `--backup-alerts-dir` fills Backups (without it: "not configured on this console"; an unreadable folder: "unavailable"; no open alarm says so but is not proof that a backup exists or was verified); `--no-system` makes disk readings "unavailable".
 
 ### [Draft history](/drafts)
 Every approval-queue draft in every state, times in Pacific; filter by state, agency or kind, for instance [pending](/drafts?state=pending). No body, no controls. Source: export queue. A draft opens in the [review page](/review?id=DRAFT_ID) with its full text and Save edit, Approve and Reject with reason (recorded only; read-only without decisions).
@@ -100,3 +100,4 @@ Every finding in every review state, with counts by state and hold, never marked
 | `--public-origin`, `--access-config`, `--access-keys` | hosted decisions behind Access |
 | `--meetings-dir`, `--kit-root`, `--manual-events` | Calendar meetings, Dashboard deadlines, manual events |
 | `--timer-unit`, `--no-system` | Jobs, Automation, Health disk |
+| `--backup-alerts-dir` | System health Backups section |
