@@ -97,9 +97,7 @@ def _record_alerts(directory, failures):
             reason = code.lower()
         checks.append({"check": "console_check_" + reason, "reason_code": reason,
                        "state": "warn" if code in failures else "ok"})
-    # Delegate to the already-classified pipeline_health alert writer; this module opens no file itself.
-    refresh = pipeline_health.write_alerts
-    refresh({"now": datetime.now(timezone.utc).isoformat(), "checks": checks}, directory)
+    pipeline_health.write_alerts({"now": datetime.now(timezone.utc).isoformat(), "checks": checks}, directory)
 
 
 def main(argv=None):
