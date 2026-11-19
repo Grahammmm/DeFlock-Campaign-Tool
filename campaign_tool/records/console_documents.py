@@ -365,7 +365,7 @@ def render(model, now, agency=..., *, detail_links=False):
     body = [render_agency(view(model, a, now, detail_links=detail_links)) for a in chosen]
     head = [console_layout.start("Documents and findings", "Library"),
             "<h1>Documents and findings</h1>", "<p>Run %s. %s Nothing is fetched, sent or published.</p>" % (
-                esc(model["run_id"]), esc(LABEL))]
+                esc(model["run_id"]), esc(LABEL))] + (['<p><a href="/holds">Holds</a></p>'] if detail_links else [])
     return "\n".join(head + notes + body + ["</main></body></html>"]) + "\n"
 
 

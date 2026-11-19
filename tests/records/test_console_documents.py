@@ -268,6 +268,7 @@ class ScreenC(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("alpha-pd", body)
         self.assertNotIn("beta-so", body)
+        self.assertIn('href="/holds"', body)
         self.assertIn("i-unbound", body)
         self.assertEqual(body.count('href="/document?id='), 1)
         self.assertIn(f'href="/document?id={H1[:12]}"', body)
