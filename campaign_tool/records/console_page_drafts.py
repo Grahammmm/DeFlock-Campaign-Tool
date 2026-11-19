@@ -24,7 +24,10 @@ def _time(value):
     moment = co._parse_ts(value)
     if moment is None:
         return None, "unknown"
-    return moment.timestamp(), moment.astimezone(ZoneInfo(mail_send.TZ)).strftime("%Y-%m-%d %H:%M %Z")
+    try:  # a timestamp the reader accepts may still be outside what Pacific conversion can represent (year 0001)
+        return moment.timestamp(), moment.astimezone(ZoneInfo(mail_send.TZ)).strftime("%Y-%m-%d %H:%M %Z")
+    except (OverflowError, ValueError, OSError):
+        return None, "unknown"
 
 
 def _project(rows):
@@ -61,6 +64,8 @@ def _filters(query):
     if not set(args) <= {"state", "agency", "kind"} or any(len(v) != 1 for v in args.values()):
         return None
     found = {k: v[0] for k, v in args.items()}
+    if any(not found.get(k) for k in ("agency", "kind") if k in found):  # blank is refused whatever the rows hold
+        return None
     return found if found.get("state", STATES[0]) in STATES else None
 
 
