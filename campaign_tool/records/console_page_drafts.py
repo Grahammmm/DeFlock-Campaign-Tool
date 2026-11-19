@@ -7,8 +7,7 @@ Rows carry whatever status the reader returns; superseded/sent appear only if a 
 import urllib.parse
 from zoneinfo import ZoneInfo
 
-from . import approval_queue, console_layout, console_oversight as co, draft_templates, mail_send
-from .console_home import PLAIN_KINDS
+from . import approval_queue, console_layout, draft_templates, mail_send
 from .outcomes.reading import esc
 
 PATHS = ("/drafts",)
@@ -18,8 +17,10 @@ KINDS = frozenset(draft_templates.KINDS) | {draft_templates.MESSAGE_LINK}
 _TEXT = ("id", "status", "kind", "agency_id", "request_id")
 
 
+# console_oversight and console_home build the nav at import, which loads this registry: import them lazily.
 def _time(value):
     """(epoch or None, Pacific display text)."""
+    from . import console_oversight as co
     moment = co._parse_ts(value)
     if moment is None:
         return None, "unknown"
@@ -27,6 +28,7 @@ def _time(value):
 
 
 def _project(rows):
+    from .console_home import PLAIN_KINDS
     if not isinstance(rows, list):
         raise TypeError("queue rows")
     out = []
@@ -43,6 +45,7 @@ def _project(rows):
 
 def _queue(options):
     """(projected rows, None) or (None, unavailable code), through the same reader and codes as Home."""
+    from . import console_oversight as co
     try:
         state = co._load_queue(options["project"], options["source"])
         if state["state"] != "ok":
