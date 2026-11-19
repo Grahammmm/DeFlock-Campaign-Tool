@@ -27,6 +27,7 @@ import types
 import unittest
 import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = ROOT / "deploy" / "records-runtime"
@@ -1607,20 +1608,37 @@ class RendererTests(unittest.TestCase):
         self.render.check_console_listener("8783", other)
 
     def test_rendered_console_units_pass_systemd_analyze_user_verify(self):
+        self._verify_console_units()
+
+    def test_console_units_verify_without_session_runtime_dir(self):
+        # Services such as prebatch and CI must verify without a login session.
+        # A missing runtime dir can look like a unit failure and leave an approved PR stuck.
+        with mock.patch.dict(os.environ):
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+            self._verify_console_units(require_manager=True)
+
+    def _verify_console_units(self, *, require_manager=False):
         analyzer = shutil.which("systemd-analyze")
         if not analyzer:
             self.skipTest("systemd-analyze not installed")
         self.do_render({**self.values, **self.CONSOLE, "HOST_PYTHON": sys.executable})
         out = self.tmp / "out"
+        env = dict(os.environ)
+        if not os.path.isdir(env.get("XDG_RUNTIME_DIR", "")):
+            env["XDG_RUNTIME_DIR"] = tempfile.mkdtemp(prefix="sd-user-rt-", dir=self.tmp)
         try:
             result = subprocess.run([analyzer, "--user", "verify", str(out / "records-console-check.timer"),
                                      str(out / "records-console-check.service"),
                                      str(out / "records-console.service")],
-                                    capture_output=True, text=True, timeout=30)
+                                    capture_output=True, text=True, timeout=30, env=env)
         except subprocess.TimeoutExpired:
+            if require_manager:
+                raise
             self.skipTest("systemd-analyze --user verify timed out (no user manager)")
         if re.search(r"Failed to connect|No such file or directory.*bus|user manager|Operation not permitted",
                      result.stderr) and "records-console" not in result.stderr:
+            if require_manager:
+                self.fail(result.stderr)
             self.skipTest("systemd-analyze --user unavailable: " + result.stderr.strip()[:200])
         # Only host-specific complaints (paths absent on this machine) may remain.
         problems = [line for line in result.stderr.splitlines()
