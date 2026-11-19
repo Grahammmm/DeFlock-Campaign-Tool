@@ -73,6 +73,7 @@ COMMANDS = {
     "model-advice": ("model_advice", "main"),
     "site-prs": ("site_prs", "main"),
     "panel": ("admin_panel", "main"),
+    "phone-key": ("phone_enrol", "main"),
     "calendar": ("console_calendar", "main"),
     "documents": ("console_documents", "main"),
     "schedule": ("schedule", "schedule_main"),
