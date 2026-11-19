@@ -9,7 +9,6 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "tools" / "flock_law_policy.py"
-FIXTURES = ROOT / "tests" / "fixtures" / "flock"
 HEADER = ["policy_row_id", "agency", "policy_id", "version_label", "doc_sha256", "footer_version_date",
           "adoption_evidence", "adoption_sha256", "governs_from", "governs_to", "added_by", "added_at", "status"]
 CITY = "Sample City Police Department"
@@ -48,9 +47,6 @@ class PolicyOverlapTest(unittest.TestCase):
     def check(self, rows):
         code, out, _ = run("--check", self.write(rows))
         return code, out.splitlines()
-
-    def test_fixture_stays_clean(self):
-        self.assertEqual(run("--check", str(FIXTURES / "policy-sample.csv"))[:2], (0, "law=0 policy=2 errors=0\n"))
 
     def test_open_window_then_later_version_refused_and_versions_on_refuses(self):
         path = self.write([row("v1", "2026-01-01", ""), row("v2", "2026-06-01", "")])

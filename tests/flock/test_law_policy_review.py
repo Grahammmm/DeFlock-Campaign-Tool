@@ -165,10 +165,14 @@ class ReviewTest(unittest.TestCase):
                                                pol_line(p, "(28 days)")]))
 
     def test_default_today_is_the_real_date(self):
-        real = date.today()
-        self.fill([law_row(RULES[0], added=ago(3, real))], [])
-        self.assertEqual(self.review(today=None), (3, [law_line(RULES[0], "unreviewed", ago(3, real), "(3 days)"),
-                                                       totals(1)], ""))
+        for _ in range(2):  # a midnight between our date and the CLI's own date is retried on the new day, never failed
+            real = date.today()
+            self.fill([law_row(RULES[0], added=ago(3, real))], [])
+            result = self.review(today=None)
+            if date.today() == real:
+                break
+        self.assertEqual(result, (3, [law_line(RULES[0], "unreviewed", ago(3, real), "(3 days)"),
+                                      totals(1)], ""))
 
     def test_bad_policy_row_stderr_only(self):
         self.mixed()

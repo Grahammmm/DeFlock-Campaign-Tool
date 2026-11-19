@@ -282,10 +282,9 @@ class DropScanTests(ArrivalCase):
         self.assertEqual(arrival.scan_drop(self.runtime, self.drop), 1)
 
     def test_unsettled_files_are_reported_so_the_caller_can_rescan(self):
-        self.put("fresh.pdf", age=0)
-        self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 1, False))
-        os.utime(self.drop / "fresh.pdf", (time.time() - 60,) * 2)
-        self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (1, 0, False))
+        born = self.put("fresh.pdf", age=0).stat().st_mtime  # explicit scan clock: a scheduling pause cannot age the file early
+        self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop, now=born + 0.5), (0, 1, False))
+        self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop, now=born + 60), (1, 0, False))
 
     def test_retained_full_prefix_does_not_starve_a_later_new_file(self):
         with mock.patch.object(arrival, "MAX_DROP_FILES", 5):
@@ -306,12 +305,11 @@ class DropScanTests(ArrivalCase):
             for n in range(5):
                 self.put(f"b{n}.pdf")
             self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (5, 0, False))
-            self.put("a-fresh.pdf", age=0)  # sorts before every retained file
-            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 1, True))
-            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 1, False))
-            os.utime(self.drop / "a-fresh.pdf", (time.time() - 60,) * 2)
-            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (1, 0, True))
-            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop), (0, 0, False))
+            born = self.put("a-fresh.pdf", age=0).stat().st_mtime  # sorts before every retained file; explicit scan clock
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop, now=born + 0.5), (0, 1, True))
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop, now=born + 0.5), (0, 1, False))
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop, now=born + 60), (1, 0, True))
+            self.assertEqual(arrival.scan_drop_status(self.runtime, self.drop, now=born + 60), (0, 0, False))
 
     def test_trigger_never_reads_record_bytes(self):
         path = self.put("scan.pdf")

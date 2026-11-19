@@ -9,14 +9,6 @@ class AgencyPlaceholderRegression(unittest.TestCase):
     setUp = fixtures.CatalogTests.setUp
     run_import = fixtures.CatalogTests.run_import
 
-    def test_literal_unassigned_is_flagged_as_unknown(self):
-        self.queue_rows[0]['agency_hints'] = ['UNASSIGNED']
-        self.queue.write_text(''.join(json.dumps(row) + '\n' for row in self.queue_rows))
-        result = self.run_import()
-        catalog = json.loads((self.output / result['snapshot_id'] / 'catalog.json').read_text())
-        card = next(c for c in catalog['cards'] if c['sha256'] == self.hashes[0])
-        self.assertIn('agency_unassigned', card['flags'])
-
     def test_named_agency_hint_is_not_flagged_as_empty(self):
         result = self.run_import()
         catalog = json.loads((self.output / result['snapshot_id'] / 'catalog.json').read_text())

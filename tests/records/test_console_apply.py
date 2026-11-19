@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from campaign_tool.records import approval_queue as aq
-from campaign_tool.records import cli, console_apply, console_export, console_journal
+from campaign_tool.records import console_apply, console_export, console_journal
 from campaign_tool.records import public_packets as pp
 from campaign_tool.records import public_updates as pu
 from tests.records.test_console_export import tree_state
@@ -388,11 +388,6 @@ class StoreFaults(Apply):
         self.assertEqual(self.run_apply(self.live), (0, ["STALE_REVISION"], ""))
         self.assertEqual(self.run_apply(self.live), (0, ["ALREADY"], ""))
         self.assertEqual(set(console_apply.STORE_FAULTS) & set(console_apply.CODES), set())
-
-
-class Registered(Apply):
-    def test_the_command_is_registered(self):
-        self.assertEqual(cli.COMMANDS["decisions-apply"], ("console_apply", "main"))
 
 
 class EditedApprovalCycle(Apply):

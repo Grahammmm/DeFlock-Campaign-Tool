@@ -524,10 +524,11 @@ class OrchestratedRunTests(RuntimeHarness):
         first = subprocess.Popen(["/bin/sh", str(self.script), "--target", "TEST"], env=env,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
-            for _ in range(50):
-                if (self.state / "calls").exists() and "info" in self.calls():
-                    break
-                time.sleep(0.1)
+            deadline = time.monotonic() + 60  # the holder is ready once its docker preflight call is recorded, which follows lock acquisition
+            while "info" not in self.calls():  # calls() is empty until the file exists
+                self.assertIsNone(first.poll(), "first run ended before it was observed holding the lock")
+                self.assertLess(time.monotonic(), deadline, "first run never reached its lock-holding preflight")
+                time.sleep(0.05)
             second = self.run_script()
         finally:
             first_rc = first.wait(timeout=60)

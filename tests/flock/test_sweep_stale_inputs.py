@@ -57,8 +57,12 @@ class SweepStaleInputs(unittest.TestCase):
         row, last, _ = self.status("--date", LATER)
         self.assertEqual((row["stage"], last), ("stale-inputs", SUMMARY % (0, 0, 4)))
         self.assertEqual(row["next"], "inputs changed since 2026-10-30 (FACTS.csv); " + self.scaffold(LATER))
-        today = datetime.date.today().isoformat()
-        self.assertEqual(self.status()[0]["next"], "inputs changed since 2026-10-30 (FACTS.csv); " + self.scaffold(today))
+        for _ in range(2):  # a midnight between our date and the CLI's own date is retried on the new day, never failed
+            today = datetime.date.today().isoformat()
+            default_next = self.status()[0]["next"]
+            if datetime.date.today().isoformat() == today:
+                break
+        self.assertEqual(default_next, "inputs changed since 2026-10-30 (FACTS.csv); " + self.scaffold(today))
 
     def test_two_inputs_sorted_one_row(self):  # 3: POLICY edited first; names still sorted
         self.edit_policy(), self.edit_law()

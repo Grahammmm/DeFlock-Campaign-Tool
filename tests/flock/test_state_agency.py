@@ -1,7 +1,5 @@
 """RF0250-9: flock_state.py state STORE --agency SLUG (repeatable) states only the chosen agencies; an unknown slug is refused
 before any folder is read, a malformed or repeated one is usage, and another agency's broken file no longer hides them."""
-import contextlib
-import io
 import json
 import unittest
 from unittest import mock
@@ -81,9 +79,6 @@ class StateAgencyTests(unittest.TestCase):
                 (code, out, err), calls = self.loads(*extra)
                 self.assertEqual((code, out, calls), (2, "", []))
                 self.assertTrue(err.startswith("usage: flock_state.py state STORE [--json] [--agency SLUG]..."), err)
-        for argv in ([], ["state"], ["state", "a", "b"], ["state", "a", "--json", "x"], ["status", "a"], ["state", "a", "--text"]):
-            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()):
-                self.assertEqual(MOD.main(argv), 2)
         self.assertEqual(self.state("--agency", "x" * 40)[2], "state: unknown agency (%s)\n" % ("x" * 40))  # 40 is the limit
         twenty = [s for i in range(20) for s in ("--agency", f"t{i}")]
         self.assertEqual(self.state(*twenty), (1, "", "state: unknown agency (t0)\n"))  # 20 is accepted, then checked

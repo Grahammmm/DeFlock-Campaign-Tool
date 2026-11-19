@@ -98,9 +98,12 @@ class StaleTest(unittest.TestCase):
 
     def test_default_today_is_the_real_date(self):
         a, b = RULES[:2]
-        real = date.today()
-        self.write([law_row(a, ago(400, real)), law_row(b, ago(0, real))])
-        code, out, err = self.stale(today=None)
+        for _ in range(2):  # a midnight between our date and the CLI's own date is retried on the new day, never failed
+            real = date.today()
+            self.write([law_row(a, ago(400, real)), law_row(b, ago(0, real))])
+            code, out, err = self.stale(today=None)
+            if date.today() == real:
+                break
         self.assertEqual((code, out[-1], err), (3, totals(2, stale=1, today=real), ""))
         self.assertTrue(out[0].startswith(f"stale | {a['rule_id']} | accessed {ago(400, real)} | 400 days"))
 

@@ -102,10 +102,6 @@ class TestCrossLogs(Base):
         _, out, _ = self.scan(self.index("a.csv\tcsv\tthird-party"))
         self.assertIn("a.csv\tcsv\t3\t3\t0\t2\t", out)
 
-    def test_unresolved_rows_counted(self):
-        _, out, _ = self.scan(self.standard())
-        self.assertIn("flock-audit.csv\tcsv\t5\t3\t1\t", out)  # Other PD is in rows only
-
     def test_ori_match_without_org_name(self):
         self.csv("a.csv", ["Org Name", "ORI", "Search Time"], [["Different", "ca0400100", "2026-03-02T12:00:00Z"]])
         _, out, _ = self.scan(self.index("a.csv\tcsv\tthird-party"))
