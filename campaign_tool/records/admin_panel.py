@@ -24,7 +24,7 @@ from pathlib import Path
 from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, console_redactions, draft_templates, mail_drafts, mail_send, run_report, schedule, site_prs
 from . import console_origin, console_automation
 from . import console_access, console_export, console_journal, console_layout, console_review, console_settings, console_snapshot
-from . import console_data_age, console_pages
+from . import console_data_age, console_pages, console_phone
 from .ledger import store
 from .outcomes import unmatched
 from .outcomes.reading import BANNER, esc
@@ -798,6 +798,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     timeout = SOCKET_TIMEOUT
     options = pin = actor = None  # set per request by _begin (actor: by do_POST)
+    allow_script = False  # set per request by console_phone.section: that page may load the one same-origin script
 
     def log_message(self, *args):  # request lines and bodies may carry record text or tokens
         pass
@@ -817,7 +818,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         for k, v in SECURITY:
-            self.send_header(k, v)
+            self.send_header(k, v + ("; script-src 'self'" if k == "Content-Security-Policy" and self.allow_script else ""))
         if location:
             self.send_header("Location", location)
         self.end_headers()
@@ -886,6 +887,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if console_automation.serve(self):
             return
         if console_home.serve(self):
+            return
+        if console_phone.serve(self):  # the static "Approve with phone" script (A6)
             return
         if console_review.serve(self):
             return
@@ -1046,6 +1049,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if (self.path == "/manual-event" and not self.server.manual_events_dir) or (self.path != "/manual-event" and not journal):
                 return self._fail(503, "read_only_export")  # no journal: nothing runs before this
         if not self._begin():
+            return
+        if console_phone.post(self):  # one phone tap (A6): journaled only, verified at decisions-apply
             return
         if console_packets.post(self):
             return

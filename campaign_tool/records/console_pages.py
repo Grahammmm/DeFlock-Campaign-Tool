@@ -18,7 +18,7 @@ EXISTING_PATHS = frozenset({
     "/dashboard", "/documents", "/findings/review", "/jobs", "/manual-event",
     "/next-steps", "/ocr-review", "/oversight", "/packets", "/public-updates",
     "/redactions", "/review", "/send", "/settings", "/site-prs",
-    "/approvals/approve", "/approvals/edit", "/approvals/reject",
+    "/approvals/approve", "/approvals/edit", "/approvals/phone-approve", "/approvals/reject", "/phone-approve.js",
     "/findings/review/approve", "/findings/review/reject", "/message-links/relink",
     "/ocr-review/confirm", "/ocr-review/reject", "/packets/approve", "/packets/reject",
     "/public-updates/approve-line", "/public-updates/kill", "/public-updates/off",
