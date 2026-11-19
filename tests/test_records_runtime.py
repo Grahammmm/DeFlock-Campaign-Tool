@@ -1551,8 +1551,9 @@ class RendererTests(unittest.TestCase):
         service = (out / "records-console.service").read_text()
         self.assertIn("--export-root /srv/console-export ", service)
         self.assertIn("--run-report /srv/runtime/TEST/run-report.json ", service)
-        self.assertNotIn("send-config", service)
-        self.assertNotIn("--decisions-dir", service)
+        start = next(l for l in service.splitlines() if l.startswith("ExecStart="))
+        self.assertNotIn("send-config", start)
+        self.assertNotIn("--decisions-dir", start)
         self.assertEqual(self.exec_argv("records-console-check.service"),
                          ["PY", "-B", "-m", "campaign_tool.records", "console-check", "--port", "8782",
                           "--export-root", "PATH", "--max-age-hours", "36"])
@@ -1625,6 +1626,8 @@ class RendererTests(unittest.TestCase):
         problems = [line for line in result.stderr.splitlines()
                     if "records-console" in line and "Executable" not in line and "not found" not in line]
         self.assertEqual(problems, [], result.stderr)
+        if result.returncode and "records-console" not in result.stderr:
+            self.fail("systemd-analyze failed without naming a unit: " + result.stderr)
 
 
 class StageContractTests(unittest.TestCase):
