@@ -2,7 +2,6 @@
 import math
 import os
 import re
-import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -147,13 +146,14 @@ def _alerts(target):
             + (f"<p>{ignored} entries not shown (not open alerts or could not be validated).</p>" if ignored else ""))
 
 def _disk(label, path):
+    from . import admin_panel
+
     if path is None:
         return f"<li>{label}: unavailable: no runtime is configured.</li>"
-    try:
-        usage = shutil.disk_usage(path)
-        return f"<li>{label}: {usage.free / health.GIB:.1f} GiB free of {usage.total / health.GIB:.1f} GiB</li>"
-    except OSError:
+    usage = admin_panel._load_system(path, timers=())["disk"]  # dashboard's disk reader, with no timer probes
+    if usage is None:
         return f"<li>{label}: unavailable: free space could not be read.</li>"
+    return f"<li>{label}: {usage['free'] / health.GIB:.1f} GiB free of {usage['total'] / health.GIB:.1f} GiB</li>"
 
 def _export(pin, path, now):
     if pin is None:
