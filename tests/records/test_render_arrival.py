@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -65,6 +66,38 @@ class MailArrivalTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         return result
 
+    def arrival_graph(self, path_text=None):
+        """Return (PathChanged set, service ExecStart argv) parsed from the same render."""
+        text = path_text or (self.out / "records-arrival.path").read_text()
+        watched = {line.split("=", 1)[1] for line in text.splitlines() if line.startswith("PathChanged=")}
+        unit = next(line.split("=", 1)[1] for line in text.splitlines() if line.startswith("Unit="))
+        service = (self.out / unit).read_text()
+        argv = shlex.split(next(line.split("=", 1)[1] for line in service.splitlines()
+                                if line.startswith("ExecStart=")))
+        return watched, argv
+
+    def test_missing_engine_reports_one_fixed_nonfatal_diagnostic(self):
+        # Contract: a bad engine dir never leaks shell errors and never fails the mail poll.
+        self.status_fixture()
+        result = self.hook(self.render(ENGINE_DIR=str(self.base / "no-such-engine")))  # asserts exit 0, no stdout
+        self.assertEqual(result.stderr, "MAIL_ARRIVAL_FAILED\n")
+        self.assertFalse((self.runtime / "arrival").exists())
+        self.assertFalse(self.state.exists())
+
+    def test_rendered_arrival_unit_graph_passes_systemd_user_verify(self):
+        analyze = shutil.which("systemd-analyze")
+        if analyze is None:
+            self.skipTest("systemd-analyze not available")
+        self.render()
+        # Static syntax check only; never starts a manager or arms the path unit.
+        result = subprocess.run([analyze, "--user", "verify", str(self.out / "records-arrival.path"),
+                                 str(self.out / "records-arrival.service")],
+                                capture_output=True, text=True, timeout=30, cwd=self.base)
+        output = result.stdout + result.stderr
+        if result.returncode and re.search(r"(?i)\bbus\b|connect|permission|not supported|XDG_RUNTIME_DIR", output):
+            self.skipTest("systemd user runtime unavailable: " + output[:120])
+        self.assertEqual(result.returncode, 0, output)
+
     def test_render_private_substituted_and_absent_without_drop(self):
         script = self.render()
         self.assertEqual(script.stat().st_mode & 0o777, 0o700)
@@ -85,13 +118,25 @@ class MailArrivalTests(unittest.TestCase):
     def test_positive_count_consumed_and_report_validates(self):
         self.status_fixture()
         self.assertEqual(self.hook().stderr, "")
-        stamps = list((self.runtime / "arrival").glob("*-mail.json"))
+        stamps = [p for p in (self.runtime / "arrival").iterdir() if p.is_file()]  # excludes done/
         self.assertEqual(len(stamps), 1)
+        named = arrival.STAMP_NAME_RE.match(stamps[0].name)  # documented <utc-ts>-<source>.json
+        self.assertIsNotNone(named, stamps[0].name)
+        self.assertEqual(named and named.group(1), "mail")
         data = json.loads(stamps[0].read_text())
         self.assertEqual(set(data), {"source", "ref", "seen_at"})
         self.assertEqual(data["source"], "mail")
         self.assertEqual(data["ref"], hashlib.sha256(f"{RUN_ID}\0{2}".encode("ascii")).hexdigest())
         self.assertEqual(stamps[0].stat().st_mode & 0o777, 0o600)
+        # Composition contract: the rendered path unit watches the drop dir and the directory
+        # this hook really wrote into, and its service runs the rendered wrapper with
+        # --arrival. Catches hook and watcher rendered with different runtime values.
+        watched, argv = self.arrival_graph()
+        self.assertEqual(watched, {str(self.base / "drop"), str(stamps[0].parent)})
+        self.assertEqual(argv, ["/bin/sh", str(self.runtime / "run-records.sh"), "--arrival"])
+        miswired = (self.out / "records-arrival.path").read_text().replace(
+            f"PathChanged={self.runtime}/arrival", f"PathChanged={self.base}/elsewhere")
+        self.assertNotEqual(self.arrival_graph(path_text=miswired)[0], watched)  # negative control
         self.assertEqual(arrival.pending(self.runtime), [data])
         self.assertTrue(arrival.has_work(self.runtime))
         self.assertEqual(arrival.claim(self.runtime, RUN_ID), [data])
