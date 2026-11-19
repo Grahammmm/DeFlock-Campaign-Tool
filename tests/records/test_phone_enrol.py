@@ -152,6 +152,37 @@ class Line(unittest.TestCase):
         forged.write_text(json.dumps(doc))
         self.assertEqual(self.cli("line", "--from", str(forged), "--principal", "p")[:2], (2, ""))
 
+    # Bug caught: a failed write or fsync leaving the new record (complete or partial) in the folder while the caller
+    # reports "Nothing was recorded"; or a short os.write truncating the record without any error.
+    def test_a_failed_write_or_fsync_leaves_no_record_and_a_short_write_is_completed(self):
+        args = (str(self.enrol), RP_ID, CHALLENGE, CRED_ID, *registration(Phone()))
+        real_write = os.write
+        for target, effect in (("fsync", OSError("synthetic fsync failure")),
+                               ("write", OSError("synthetic write failure"))):
+            with self.subTest(target), mock.patch.object(pe.os, target, side_effect=effect):
+                with self.assertRaises(OSError):
+                    pe.store(*args)
+            self.assertEqual(os.listdir(self.enrol), [], target)
+
+        state = {"calls": 0}
+
+        def partial_then_stall(fd, data):  # one short write, then no progress at all
+            state["calls"] += 1
+            return real_write(fd, bytes(data)[:5]) if state["calls"] == 1 else 0
+        with mock.patch.object(pe.os, "write", side_effect=partial_then_stall):
+            with self.assertRaises(OSError):
+                pe.store(*args)
+        self.assertEqual(os.listdir(self.enrol), [])
+        chunks = []
+
+        def small(fd, data):
+            chunks.append(1)
+            return real_write(fd, bytes(data)[:7])
+        with mock.patch.object(pe.os, "write", side_effect=small):
+            name, parsed = pe.store(*args)
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual(pe.load(str(self.enrol / name))["blob"], parsed["blob"])
+
 
 class Page(Journal):
     def setUp(self):
@@ -214,6 +245,20 @@ class Page(Journal):
         self.assertEqual(stat.S_IMODE(os.stat(self.enrol / name).st_mode), 0o600)
         self.assertEqual(pe.load(str(self.enrol / name))["blob"], phone.blob)
         self.assertEqual((tree_state(self.root), self.lines()), (root_before, []))
+
+    # Bug caught: the POST saying "Nothing was recorded" (503) while a record from a failed write/fsync survives.
+    def test_a_storage_failure_reports_nothing_recorded_and_leaves_no_record(self):
+        self.up(phone_enrol_dir=str(self.enrol))
+        with mock.patch.object(cpe, "_rp_id", return_value=RP_ID):
+            fields = self.fields(self.get(cpe.PATH))
+            att, client = registration(Phone(), challenge=pe.unb64url(fields["challenge"]))
+            with mock.patch.object(pe.os, "fsync", side_effect=OSError("synthetic fsync failure")):
+                status, _, body = self.decide(cpe.PATH, **dict(fields, credential_id=pe.b64url(CRED_ID),
+                                                               attestation_object=pe.b64url(att),
+                                                               client_data=pe.b64url(client)))
+        self.assertEqual(status, 503, body[:300])
+        self.assertIn("Nothing was recorded", body)
+        self.assertEqual((os.listdir(self.enrol), self.lines()), ([], []))
 
     def test_the_option_needs_the_journal_and_its_own_private_directory(self):
         loose = self.tmp / "loose"

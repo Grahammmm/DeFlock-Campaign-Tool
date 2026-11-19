@@ -232,12 +232,25 @@ def store(directory, rp_id, challenge, credential_id, attestation_object, client
     name = "%s%s-%s.json" % (PREFIX, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now)),
                              hashlib.sha256(parsed["blob"]).hexdigest()[:12])
     data = (json.dumps(record, sort_keys=True, indent=1) + "\n").encode("ascii")
-    fd = os.open(os.path.join(directory, name), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    path = os.path.join(directory, name)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)  # created here: ours to remove
     try:
-        os.write(fd, data)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        try:
+            view = memoryview(data)
+            while view:  # os.write may be short: write until every byte is out
+                written = os.write(fd, view)
+                if written <= 0:
+                    raise OSError("phone_enrol_short_write")
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except BaseException:
+        try:
+            os.unlink(path)  # a failed write/fsync/close must not leave a partial record behind
+        except OSError:
+            pass
+        raise
     return name, parsed
 
 
