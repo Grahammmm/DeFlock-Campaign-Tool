@@ -119,4 +119,5 @@ class ConsolePagesTests(Base):
                   *console_findings.ROUTES, *console_ocr.ROUTES, *console_oversight.ROUTES,
                   *console_packets.ROUTES, console_redactions.ROUTE,
                   '/calendar.ics', '/redactions', '/review', '/site-prs']
-        self.assertEqual({urlsplit(path).path for path in inputs}, pages.EXISTING_PATHS)
+        # A primary-nav link served by a registered page (Timeline) is a route, not a reserved built-in path.
+        self.assertEqual({urlsplit(path).path for path in inputs} - set(pages._ROUTES), pages.EXISTING_PATHS)
