@@ -186,6 +186,7 @@ class Server(Base):
             status, page = self.request("GET", path)
             self.assertEqual(status, 200)
             self.assertIn("noindex", page)
+        self.assertIn('href="/holds"', self.request("GET", "/oversight")[1])
         self.assertEqual(self.request("GET", "/oversight", host="evil.test")[0], 403)
 
     def test_undo_off_and_kill_work_and_refuse_bad_input(self):

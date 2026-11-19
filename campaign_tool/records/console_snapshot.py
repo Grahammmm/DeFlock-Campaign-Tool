@@ -14,7 +14,7 @@ import sys
 import threading
 from collections import namedtuple
 
-from . import approval_queue as aq, console_export as ce, console_ocr, mail_drafts, mail_send, public_packets as pp, public_updates as pu
+from . import approval_queue as aq, console_export as ce, console_holds, console_ocr, mail_drafts, mail_send, public_packets as pp, public_updates as pu
 from .outcomes import unmatched
 
 MAX_MODEL = 64 * 1024 * 1024
@@ -189,6 +189,11 @@ class LiveSource:
             raise console_ocr.OcrPagesError(doc["code"])
         return doc
 
+    def holds(self):
+        """{state, counts, detail_counts, items} of the held documents, computed live and read-only (DF2222-07)."""
+        doc = console_holds.model(self.project)
+        return doc if doc["state"] == "ok" else {"state": "unavailable"}
+
     def followup_reading(self, run_id):
         """The selected run's machine reading, computed live and read-only (FLK-REC-8)."""
         from . import console_followups
@@ -330,6 +335,13 @@ class SnapshotSource:
         name, error = "ocr-pages.json", console_ocr.OcrPagesError
         return {"rows": self._doc(name, error, "rows", list), "counts": self._doc(name, error, "counts", dict),
                 "truncated": self._doc(name, error, "truncated", bool)}
+
+    def holds(self):
+        """The pinned holds.json when verified and valid, else ``{'state': 'unavailable'}``: never a live read or a zero."""
+        try:
+            return console_holds.validate(self._doc(console_holds.NAME, console_holds.HoldsError))
+        except console_holds.HoldsError:
+            return {"state": "unavailable"}
 
     def followup_reading(self, run_id):
         """Only the pinned followup-reading.json: ok, {'state': 'not_in_export'} (an older export) or unavailable."""

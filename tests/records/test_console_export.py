@@ -107,7 +107,7 @@ class ConsoleExportTests(unittest.TestCase):
         self.assertEqual(files, sorted([
             "EXPORT.json", "agency-retention.csv", "processing-v1/ledger.sqlite",
             *("console-model/" + n for n in ("queue.json", "packets.json", "public-updates.json", "mail-drafts.json",
-                                             "sends.json", "ocr-pages.json", "followup-reading.json", "campaign-summary.json")),
+                                             "sends.json", "ocr-pages.json", "holds.json", "followup-reading.json", "campaign-summary.json")),
             f"run-outputs/{RUN}/outcomes/received-items.json", f"run-outputs/{RUN}/text-state.json"]))
         for entry in ("approvals", "mail", "public-packets.jsonl", "public-updates.jsonl"):
             self.assertFalse((export / entry).exists())
@@ -141,18 +141,22 @@ class ConsoleExportTests(unittest.TestCase):
     def test_tampered_import_keeps_previous_current(self):
         self.assertEqual(self.do_import(self.tar()).returncode, 0)
         link = os.readlink(self.dest / "current")
-        data = io.BytesIO(self.tar())
-        out = io.BytesIO()
-        with tarfile.open(fileobj=data) as src, tarfile.open(fileobj=out, mode="w") as dst:
-            for member in src:
-                body = src.extractfile(member).read()
-                if member.name == "agency-retention.csv":
-                    body = b"tampered\n"
-                member.size = len(body)
-                dst.addfile(member, io.BytesIO(body))
-        result = self.do_import(out.getvalue())
-        self.assertEqual(result.returncode, 1)
-        self.assertIn(b"EXPORT_HASH_MISMATCH", result.stderr)
+        for target, tamper in (("agency-retention.csv", True), ("console-model/holds.json", True),
+                               ("console-model/holds.json", False)):  # DF2222-07: holds.json is hashed like the rest
+            out = io.BytesIO()
+            with tarfile.open(fileobj=io.BytesIO(self.tar())) as src, tarfile.open(fileobj=out, mode="w") as dst:
+                for member in src:
+                    body = src.extractfile(member).read()
+                    if member.name == target and not tamper:
+                        continue  # a member the manifest still lists is missing
+                    if member.name == target:
+                        body = b"tampered\n"
+                    member.size = len(body)
+                    dst.addfile(member, io.BytesIO(body))
+            result = self.do_import(out.getvalue())
+            self.assertEqual(result.returncode, 1, (target, tamper))
+            self.assertIn(b"EXPORT_HASH_MISMATCH", result.stderr, (target, tamper))
+            self.assertEqual(os.readlink(self.dest / "current"), link)
         truncated = self.do_import(self.tar()[:600])
         self.assertEqual(truncated.returncode, 1)
         self.assertEqual(os.readlink(self.dest / "current"), link)

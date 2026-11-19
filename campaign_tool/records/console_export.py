@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import approval
-from . import approval_queue, console_ocr, draft_templates, mail_drafts, mail_send, public_packets, public_updates
+from . import approval_queue, console_holds, console_ocr, draft_templates, mail_drafts, mail_send, public_packets, public_updates
 from .outcomes import unmatched
 
 SCHEMA = "records-console-export-v1"
@@ -313,6 +313,10 @@ def _model_ocr_pages(project, now):
     return console_ocr.model(project)  # OCR-REVIEW-ROUTE-1: pages awaiting a person, with their text; unavailable on its own
 
 
+def _model_holds(project, now):
+    return console_holds.model(project)  # DF2222-07: held documents, 12-hex prefixes and fixed codes only
+
+
 def _model_followups(project, now, run_id=None):
     from . import console_followups  # FLK-REC-8: the selected run's text-free machine reading; no run id, no reading
     if run_id is None:
@@ -323,7 +327,7 @@ def _model_followups(project, now, run_id=None):
 FOLLOWUPS = "followup-reading.json"
 MODEL = {"queue.json": _model_queue, "packets.json": _model_packets, "public-updates.json": _model_public_updates,
          "mail-drafts.json": _model_mail_drafts, "sends.json": _model_sends, "ocr-pages.json": _model_ocr_pages,
-         FOLLOWUPS: _model_followups}
+         console_holds.NAME: _model_holds, FOLLOWUPS: _model_followups}
 PLAIN = {"campaign-summary.json"}  # the count projection (campaign_summary): its own schema, written last
 MODEL_SCHEMA = "records-console-model-v1"
 MODEL_DIR = "console-model"
