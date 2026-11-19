@@ -1199,10 +1199,26 @@ def _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg):
         raise PanelError("access_config_invalid") from None  # the email is too long to label a decision
 
 
+def _check_backup_alerts_dir(path, *write_locations):
+    """The real, existing, absolute, non-symlink backup-alerts directory, or ValueError. Never creates or changes anything."""
+    try:
+        real = os.path.realpath(path)
+        if not (isinstance(path, str) and os.path.isabs(path) and real == path and os.path.isdir(real)):
+            raise ValueError
+        for other in write_locations:  # read-only input: no enabled console write location may be, hold or sit inside it
+            if other is not None:
+                other = os.path.realpath(other)
+                if other == real or other.startswith(real + os.sep) or real.startswith(other + os.sep):
+                    raise ValueError
+    except (ValueError, OSError, TypeError):
+        raise ValueError("backup_alerts_dir_invalid") from None
+    return real
+
+
 def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
                  timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None,
                  access_config=None, access_clock=None, manual_events_dir=None, meetings_dir=None, export_root=None,
-                 decisions_dir=None, access_keys=None, analysis_root=None, flock_store=None,
+                 decisions_dir=None, access_keys=None, analysis_root=None, flock_store=None, backup_alerts_dir=None,
                  stale_hours=console_data_age.DEFAULT_STALE_HOURS):
     """Unstarted loopback-only server; the caller serves and closes it.
 
@@ -1252,6 +1268,11 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
             flock_store = console_redactions.check_store(flock_store, project, export_root, decisions_dir, manual_events_dir, meetings_dir)
         except ValueError:
             raise PanelError("flock_store_invalid") from None
+    if backup_alerts_dir is not None:
+        try:
+            backup_alerts_dir = _check_backup_alerts_dir(backup_alerts_dir, project, export_root, decisions_dir, manual_events_dir, meetings_dir)
+        except ValueError:
+            raise PanelError("backup_alerts_dir_invalid") from None
     access_cfg = _access_cfg(public_origin, access_config)
     _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg)
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
@@ -1274,6 +1295,7 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
     server.decisions_dir = decisions_dir
     server.analysis_root = analysis_root
     server.flock_store = flock_store  # its own attribute: never passed to the dashboard loaders
+    server.backup_alerts_dir = backup_alerts_dir  # likewise: read only by /health, never written
     return server
 
 
@@ -1290,6 +1312,7 @@ def main(argv=None):
                         help="with --export-root: journal each decision in J (absolute, 0700, outside DIR) for the next apply")
     parser.add_argument("--analysis-root", metavar="ROOT", help="read-only analysis root: adds /findings/review (finding review); never written here")
     parser.add_argument("--flock-store", metavar="STORE", help="read-only private Flock store: adds /redactions (redactions waiting for sign-off); never written here")
+    parser.add_argument("--backup-alerts-dir", metavar="DIR", help="read-only host path of the backup-check alerts directory: adds a Backups section to /health; never written here")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-report")
     parser.add_argument("--stale-hours", type=int, default=console_data_age.DEFAULT_STALE_HOURS,
@@ -1369,7 +1392,8 @@ def main(argv=None):
                               send_config=args.send_config, public_origin=args.public_origin,
                               access_config=access, manual_events_dir=args.manual_events, meetings_dir=args.meetings_dir,
                               export_root=args.export_root, decisions_dir=args.decisions_dir, access_keys=args.access_keys,
-                              analysis_root=args.analysis_root, flock_store=args.flock_store, stale_hours=args.stale_hours)
+                              analysis_root=args.analysis_root, flock_store=args.flock_store,
+                              backup_alerts_dir=args.backup_alerts_dir, stale_hours=args.stale_hours)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required", "_unused", "_needs_export")) else 1

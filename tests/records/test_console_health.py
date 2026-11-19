@@ -23,11 +23,11 @@ class HealthPage(Panel):
         self.alerts.mkdir(parents=True)
         self.report_path = str(self.target / "run-report.json")
 
-    def start_health(self, *, export=False, system=False):
+    def start_health(self, *, export=False, system=False, backups=None):
         server = admin_panel.build_server(project=None if export else str(self.live),
                                           export_root=str(self.root) if export else None,
                                           run_id="auto" if export else "run_1", actor="operator", system=system,
-                                          as_of="2026-11-12", run_report_path=self.report_path)
+                                          as_of="2026-11-12", run_report_path=self.report_path, backup_alerts_dir=backups)
         self.server = server
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -88,7 +88,7 @@ class HealthPage(Panel):
             assess.side_effect = None
             assess.return_value = dict(state="ok", checks=checks, waiting=0)
             html = self.get("/health")
-        ordered = ("Verdict:", "Pipeline checks", "Open alerts", "Free disk space", "Console export freshness")
+        ordered = ("Verdict:", "Pipeline checks", "Open alerts", "Backups", "Free disk space", "Console export freshness")
         self.assertEqual(re.findall(r"Verdict:|(?<=<h2>)[^<]+", html.split('<main', 1)[1]), list(ordered))
         self.assertIn('<a href="/health" aria-current="page">System health</a>', html)
         for fragment in ("Later check: stop", "No description is available for this reason (later_reason).",
@@ -154,3 +154,100 @@ class HealthPage(Panel):
         archive.mkdir()
         (archive / (RUN + ".json")).write_text(json.dumps(report))
         self.assertIn("Current: the export matches that run.", self.get("/health"))
+
+    def backup_dir(self, name="backup-alerts"):
+        path = self.tmp / name
+        path.mkdir(mode=0o700)
+        return path
+
+    def backup_section(self, html):
+        return html.split("Backups</h2>", 1)[1].split("<h2>", 1)[0]
+
+    def snapshot(self, directory):
+        return {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in directory.iterdir()}, directory.stat().st_mtime_ns
+
+    # Owner: the Backups section. Fails if "no alarm" is shown as a passed or existing backup, if the scan reads
+    # the backup set instead of the alarms, if an unreadable directory looks empty, or if a set path or digest leaks.
+    def test_backup_section_reports_open_alarms_without_certifying_backup(self):
+        def alarm(directory, code, now):  # the producer's own writer, as `records backup-check` calls it
+            ph.write_alerts({"now": now, "checks": [{"check": "backup", "state": "stop", "reason_code": code}]}, directory)
+
+        self.start_health()
+        self.assertIn("Backups: not configured on this console.", self.backup_section(self.get("/health")))
+        empty = self.backup_dir("empty")
+        os.utime(empty, (1793831400, 1793831400))  # 2026-11-04T22:30:00Z
+        self.start_health(backups=str(empty))
+        section = self.backup_section(self.get("/health"))
+        for fragment in ("No open backup alert.", "last changed 2026-11-04 14:30 PST",
+                         "This is not evidence that a backup exists or was verified."):
+            self.assertIn(fragment, section)
+        self.assertNotIn("entries not shown", section)
+        self.assertEqual(os.stat(empty).st_mtime, 1793831400)
+
+        stale = self.backup_dir("stale")
+        alarm(stale, "backup_stale", "2026-07-01T22:00:00+00:00")
+        alarm(stale, "backup_stale", "2026-11-04T22:30:00+00:00")
+        failed = self.backup_dir("failed")
+        (failed / "health-backup-backup_verify_failed.json").write_text(json.dumps(dict(
+            schema=ph.ALERT_SCHEMA, check="backup", reason_code="backup_verify_failed", state="stop",
+            first_seen="2026-11-04T22:00:00Z", last_seen="2026-11-04T22:30:00Z", set="/srv/backups/set-path-canary",
+            manifest_sha256="d1gest" * 10)))
+        (failed / "notes.txt").write_text("not-an-alert-canary")
+        for directory, sentence, first in ((stale, "The newest recorded backup is older than the allowed age.", "2026-07-01 15:00 PDT"),
+                                           (failed, "The newest recorded backup set failed verification.", "2026-11-04 14:00 PST")):
+            with self.subTest(directory=directory.name):
+                before = self.snapshot(directory)
+                self.start_health(backups=str(directory))
+                html = self.get("/health")
+                section = self.backup_section(html)
+                for fragment in ("Backup: stop", sentence, f"First seen: {first}", "Last seen: 2026-11-04 14:30 PST"):
+                    self.assertIn(fragment, section)
+                self.assertEqual(section.count("First seen:"), 1)
+                self.assertEqual("1 entries not shown" in section, directory is failed)  # the non-alert file is counted
+                self.assertNotRegex(section, r"(?i)no open backup alert|backup (passed|is ok)")
+                for canary in ("set-path-canary", "d1gest", "not-an-alert-canary", str(self.tmp), "<form"):
+                    self.assertNotIn(canary, html)
+                self.assertEqual(self.snapshot(directory), before)
+
+        real_open, target = os.open, str(failed)
+
+        def refuse(path, *args, **kwargs):
+            if str(path) == target:
+                raise PermissionError("backup-dir-canary")
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(os, "open", side_effect=refuse):
+            html = self.get("/health")
+        self.assertIn("Backups: unavailable: the backup alerts directory cannot be read safely.", html)
+        self.assertNotIn("No open backup alert", html)
+        self.assertNotIn("backup-dir-canary", html)
+
+    # Owner: option validation. Fails if a relative, missing, symlinked or console-write-overlapping directory
+    # starts a server, or if the refusal comes after bind.
+    def test_backup_alert_option_refuses_invalid_roots(self):
+        good = self.backup_dir()
+        server = admin_panel.build_server(project=str(self.live), run_id="run_1", actor="operator", backup_alerts_dir=str(good))
+        self.addCleanup(server.server_close)
+        self.assertEqual(server.backup_alerts_dir, str(good))
+        link = self.tmp / "link"
+        link.symlink_to(good)
+        inside = self.live / "backup-alerts"
+        inside.mkdir()
+        file = self.tmp / "file"
+        file.write_text("x")
+        for bad in ("backup-alerts", str(self.tmp / "missing"), str(link), str(file), str(inside), str(self.live),
+                    str(self.live.parent)):
+            with self.subTest(bad=bad), mock.patch("http.server.HTTPServer", side_effect=AssertionError("bound")):
+                with self.assertRaises(admin_panel.PanelError) as raised:
+                    admin_panel.build_server(project=str(self.live), run_id="run_1", actor="operator", backup_alerts_dir=bad)
+                self.assertEqual(raised.exception.code, "backup_alerts_dir_invalid")
+        self.make_export()
+        (self.root / "inner").mkdir()
+        with self.assertRaises(admin_panel.PanelError) as raised:
+            admin_panel.build_server(export_root=str(self.root), run_id="auto", actor="operator",
+                                     backup_alerts_dir=str(self.root / "inner"))
+        self.assertEqual(raised.exception.code, "backup_alerts_dir_invalid")
+        with mock.patch("sys.stderr") as err:
+            self.assertEqual(admin_panel.main(["--project", str(self.live), "--run-id", "run_1", "--actor", "operator",
+                                               "--backup-alerts-dir", "relative"]), 2)
+        self.assertIn("backup_alerts_dir_invalid", "".join(call.args[0] for call in err.write.call_args_list))
