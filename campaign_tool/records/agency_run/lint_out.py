@@ -16,6 +16,7 @@ from .lint_cites import LABEL
 MAX_DRAFT, MAX_LIST = 2 * 1024 * 1024, 64 * 1024
 REFUSED = "refused agency_lint_out_input"
 PREFIX = re.compile(r"\b(?:INBOX|Sent):")
+RUN = re.compile(r"[a-z0-9._%+\-!#$&'*=?^`{|}~]*$")
 ROW_ID = re.compile(r"(?<![\w-])[A-Z]{2,6}-[0-9]{3,}(?![\w-])")
 
 
@@ -46,8 +47,11 @@ def _entries(path):
 
 def _email(text):
     text = re.sub(BDOT, ".", re.sub(AT, "@", text, flags=re.I), flags=re.I)
-    text = re.sub(r"\s+", "", text).lower()
-    return re.sub(r"^mailto:", "", text.strip("<>()[]{}\"',;:"))
+    text = re.sub(r"\s+", "", text).lower().strip("<>()[]{}\"',;:")
+    local, at, domain = text.rpartition("@")
+    # The shared EMAIL match can swallow a preceding label ("Contact:records@..", "mailto:records@..") into the local part;
+    # keep only the trailing run of address characters, so the whole address is still compared but the label is not part of it.
+    return (RUN.search(local).group() + at + domain) if at else text
 
 
 def _phone(text):

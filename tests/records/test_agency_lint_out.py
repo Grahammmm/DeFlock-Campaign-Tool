@@ -63,6 +63,25 @@ class AgencyLintOutTests(unittest.TestCase):
         code, out, _ = self.run_out("records@agency.example.org and other@agency.example.org\n")
         self.assertEqual((code, out), (1, "1 L8_EMAIL\n"))
 
+    def test_labeled_allowed_contacts_are_clean(self):
+        # Contract: an allowed address is accepted whatever label, bracket or mailto: sits against it; the label is never part
+        # of the address. Bug caught: the EMAIL match swallowing "Contact:" into the local part so an allowed contact fails L8_EMAIL.
+        for text in ("Contact:records@agency.example.org", "Email:records@agency.example.org.", "mailto:records@agency.example.org",
+                     "Contact:(records@agency.example.org)", "Reply-to:<records@AGENCY.example.org>,", "Contact:records [at] agency [dot] example.org"):
+            with self.subTest(text=text):
+                self.assertEqual(lint_out.scan(text, ["Jordan Testname"], ["records@agency.example.org"]), [])
+
+    def test_labeled_unallowed_contacts_still_fail(self):
+        # Contract: stripping the label keeps whole-address matching. Bugs caught: a label or the allowed address excusing a
+        # different local part or domain, and a labeled team contact escaping L8_TEAM.
+        allow = ["records@agency.example.org"]
+        for text in ("Contact:other@agency.example.org", "Contact:xrecords@agency.example.org", "Contact:records@agency.example.org.evil.net",
+                     "Contact:records@other.example.org"):
+            with self.subTest(text=text):
+                self.assertEqual(lint_out.scan(text, ["Jordan Testname"], allow), [(1, "L8_EMAIL")])
+        self.assertEqual(lint_out.scan("Contact:jtest@team.example.net", ["jtest@team.example.net"], allow + ["jtest@team.example.net"]),
+                         [(1, "L8_TEAM")])
+
     def test_residue_locations(self):
         # Contract: L10 rows carry the right line. Bug caught: residue found only on the whole text, or reported at line 1.
         code, out, _ = self.run_out(DRAFT)
