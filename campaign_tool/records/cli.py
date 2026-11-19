@@ -44,6 +44,7 @@ COMMANDS = {
     "reopen": ("publish", "reopen_main"),
     "health": ("schedule", "health_main"),
     "pipeline-health": ("pipeline_health", "main"),
+    "console-check": "console_check",
     "release-links": ("outcomes.release_links", "main"),
     "playbook": ("playbook", "main"),
     "ask-parity": ("ask_parity", "main"),
