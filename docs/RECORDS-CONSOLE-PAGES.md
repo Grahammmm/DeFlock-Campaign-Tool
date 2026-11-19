@@ -7,7 +7,7 @@ One entry per page of the records console, in the order of its menu (the menu is
 - **unknown**: a figure or time could not be worked out. It is never shown as `0`, "ok" or "fresh". Home counts, the Home System line and Data age use it.
 - **unavailable**: the page tried to read its source and could not (missing, wrong format, unreadable). It says which source and gives a short code. An unavailable list is never an empty list.
 - **not configured on this console**: the console was started without the option this page needs, so nothing was read. The data is not wrong; the operator must start the console with the option. Some pages say "needs configuration" or "not given to the console" instead.
-- **Buttons only record.** The hosted phone console (`--export-root`) sends no mail, publishes nothing and runs nothing. A button writes the decision to the decision journal (`--decisions-dir`); the next records run applies it. Until then the row says "pending apply", and the Decisions page shows the outcome. Approve always needs G's pasted detached signature; signing in alone never approves. Without `--decisions-dir` every hosted page is read-only and shows no form. A separate local console (`--project`) writes the approval queue directly and is not covered here; sending exists only there, with `--send-config`, switched off by default.
+- **Buttons only record.** The hosted phone console (`--export-root`) sends no mail, publishes nothing and runs nothing. Every button except one writes the decision to the decision journal (`--decisions-dir`); the next records run applies it. The one exception is the agency page's manual-event form (below), which has its own journal. Until then the row says "pending apply", and the Decisions page shows the outcome. Approve always needs G's pasted detached signature; signing in alone never approves. Without `--decisions-dir` the decision buttons are refused (a hosted page can still show a button or form, but saving it fails with "read_only_export"). The only hosted write that works without `--decisions-dir` is the manual event, and only when `--manual-events` is given. A separate local console (`--project`) writes the approval queue directly and is not covered here; sending exists only there, with `--send-config`, switched off by default.
 - **Data age** (top of every page): when the export was made, with "STALE" if it is older than `--stale-hours` (default 13) or a newer run has finished. Each export page footer names the run and export.
 - **Sources**: the *export* is the pinned copy served by `--export-root` (run outputs, ledger copy, queue, packets, public updates). The *run report* is `--run-report`, a path ending in `run-report.json`; the `reports` and `alerts` folders beside it are read too. The *analysis root* is `--analysis-root`. Timer state is read live from the host unless `--no-system`.
 
@@ -23,7 +23,7 @@ Buttons: none here; Review opens the draft. If a source is unavailable the count
 
 ### [Agencies](/board)
 Every request for every agency, with filters, then one page per agency ([agency page](/agency?agency=AGENCY_ID)) with refusals, stated retention and message ties. Source: export timeline, received items and retention table.
-Button: "This tie is wrong", on an agency page only when decisions are on; it queues a replacement for review and changes nothing until signed and applied at the next run. "Add manual event" needs `--manual-events`.
+Button: "This tie is wrong", on an agency page only when decisions are on; it queues a replacement for review and changes nothing until signed and applied at the next run. Link: "Add manual event", on every agency request; it opens a form (Type, Date, Summary, optional Corrects event id) with an "Append event" button. It needs `--manual-events DIR` (a private directory) and does not need `--decisions-dir`: saving appends at once to that separate manual-event journal. Nothing is sent or published, and the event shows on the agency timeline only after the next data refresh. Without `--manual-events` the hosted console refuses the save.
 
 ### [Calendar](/calendar)
 One month grid and an agenda of due dates, marked DATED (recorded or stated) or INFERRED (arithmetic), with a Download .ics link. Source: export; `--meetings-dir` adds meetings.
@@ -94,10 +94,11 @@ Every finding in every review state, with counts by state and hold, never marked
 | Option | Pages |
 | --- | --- |
 | `--export-root` | all hosted pages (the pinned export) |
-| `--decisions-dir` | every button; Decisions |
+| `--decisions-dir` | every decision button (not the manual-event form); Decisions |
 | `--run-report` | Run history, System health, Automation, Oversight, Home System line |
 | `--analysis-root` | Findings, Finding review, Library citing findings, Home line |
 | `--public-origin`, `--access-config`, `--access-keys` | hosted decisions behind Access |
-| `--meetings-dir`, `--kit-root`, `--manual-events` | Calendar meetings, Dashboard deadlines, manual events |
+| `--meetings-dir`, `--kit-root` | Calendar meetings, Dashboard deadlines |
+| `--manual-events` | the agency page's "Append event" button (works without `--decisions-dir`) |
 | `--timer-unit`, `--no-system` | Jobs, Automation, Health disk |
 | `--backup-alerts-dir` | System health Backups section |
