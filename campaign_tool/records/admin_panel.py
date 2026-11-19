@@ -1208,7 +1208,7 @@ def _check_backup_alerts_dir(path, *write_locations):
         for other in write_locations:  # read-only input: no enabled console write location may be, hold or sit inside it
             if other is not None:
                 other = os.path.realpath(other)
-                if other == real or other.startswith(real + os.sep) or real.startswith(other + os.sep):
+                if os.path.commonpath((other, real)) in (other, real):  # root-safe: "/" + os.sep would be "//"
                     raise ValueError
     except (ValueError, OSError, TypeError):
         raise ValueError("backup_alerts_dir_invalid") from None

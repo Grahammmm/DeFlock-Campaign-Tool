@@ -236,7 +236,7 @@ class HealthPage(Panel):
         file = self.tmp / "file"
         file.write_text("x")
         for bad in ("backup-alerts", str(self.tmp / "missing"), str(link), str(file), str(inside), str(self.live),
-                    str(self.live.parent)):
+                    str(self.live.parent), os.sep):  # os.sep: the filesystem root holds every write root
             with self.subTest(bad=bad), mock.patch("http.server.HTTPServer", side_effect=AssertionError("bound")):
                 with self.assertRaises(admin_panel.PanelError) as raised:
                     admin_panel.build_server(project=str(self.live), run_id="run_1", actor="operator", backup_alerts_dir=bad)
