@@ -1,19 +1,25 @@
 """Synthetic Home decisions: newest first, metadata-only packets, degradation and HTTP routing."""
+import hashlib
 import json
+import re
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from campaign_tool.records import approval_queue as aq, console_home as home, public_packets as pp
+from campaign_tool.records import approval_queue as aq, console_data_age, console_home as home, pipeline_health as ph, public_packets as pp
 from campaign_tool.records.console_layout import plain, unavailable_note
 from campaign_tool.records import public_updates as pu, site_prs
 from tests.records import test_admin_panel as panel
 from tests.records.test_console_board import build, put, RUN
 from tests.records import test_console_calendar as cal
+from tests.records.test_console_run import make as make_report
+from tests.records.test_console_snapshot import Panel, RUN as EXPORT_RUN, RUN2, RUN3, RUN4
 
 NOW = datetime(2026, 11, 5, tzinfo=timezone.utc)
+SECTION = re.compile(r'<section id="system">.*?</section>\n', re.S)
+HOME_REST_SHA256 = "c2c1dd77321f5d76d0318147da893a882573da8ac0d57f9ac48ddf98e6736061"  # pragma: allowlist secret (main's Home over Home.fixture, before DFCON17-12; a page digest, not a credential)
 
 
 def put_received(project):
@@ -92,6 +98,16 @@ class Home(unittest.TestCase):
         page = home.render_home(old, "")
         self.assertIn("unknown — approvals are recorded but DEFERRED until the trust anchor is available.", page)
         self.assertNotIn("approvals verify", page)
+
+    # Owner: "nothing else on Home changes". Fails if the System section moves the approval anchor, edits another
+    # section or adds a stray byte: the page minus that section must hash to main's page over this fixture.
+    def test_rest_of_home_is_byte_identical_to_main(self):
+        page = home.render_home(self.model(), "")
+        stripped = SECTION.sub("", page, count=1)
+        self.assertNotEqual(stripped, page)
+        self.assertEqual(hashlib.sha256(stripped.encode()).hexdigest(), HOME_REST_SHA256)
+        self.assertTrue(page.index('id="approval-anchor"') < page.index('<section id="system">') < page.index("need your decision"))
+        self.assertEqual(page.count('<section id="system">'), 1)
 
     def test_layout_labels_and_review_links(self):
         model = self.model()
@@ -611,6 +627,11 @@ class Routes(panel.ServerCase):
         status, _, page = get("/")
         self.assertEqual(status, 200)
         self.assertIn("Needs your decision", page)
+        # Owner: the System section's four destinations. Live console without a run report: run, health and data age
+        # are unknown (never good news); the pending count is a real number from the queue, and a validated empty is 0.
+        section = SECTION.search(page)[0]
+        self.assertEqual(re.findall(r'<a href="([^"]*)">', section), ["/runs", "/health", "/drafts?state=pending", "/health"])
+        self.assertEqual(re.findall(r"</a>: ([^<]*)</li>", section), ["unknown", "unknown", "1", "unknown"])
         link = "/review?id=" + self.draft_row["id"]
         self.assertIn('<a href="%s">Review</a>' % link, page)
         self.assertEqual(get(link)[0], 200)
@@ -621,6 +642,7 @@ class Routes(panel.ServerCase):
         status, headers, _ = self.http.post("/approvals/reject", {"csrf_token": self.tok, "id": self.draft_row["id"], "reason": "not needed"})
         self.assertEqual((status, headers["location"]), (303, "/"))
         self.assertIn("0 need your decision", get("/")[2])
+        self.assertIn('Drafts waiting for a decision</a>: 0</li>', get("/")[2])
         self.assertNotIn("Follow-ups 0", get("/")[2])
         (self.project / pp.JOURNAL).write_bytes(b"invalid\n")
         self.assertEqual(get("/")[0], 200)
@@ -696,3 +718,75 @@ class RefusalNext(unittest.TestCase):
         for refusals in ({"state": "available", "entries": []}, {"state": "unavailable", "code": "stale"}):
             model["refusals"] = refusals
             self.assertNotIn('refusals with no reply drafted', home.render_home(model, ''))
+
+
+class SystemSection(Panel):
+    """Home's System section over a pinned export, synthetic run reports and a stubbed health assessment."""
+    FRESH, OLD = "2026-11-11T20:00:00Z", "2026-11-10T20:00:00Z"  # 4 h and 28 h before the as-of clock; the stale limit is 13 h
+    OK = [{"check": "arrival_backlog", "state": "ok", "reason_code": "none_waiting", "since": None}]
+    WARN = OK + [{"check": "notify", "state": "warn", "reason_code": "notify_failed", "since": None}]
+
+    def setUp(self):
+        super().setUp()
+        self.target = self.tmp / "runtime" / "target"
+        (self.target / "reports").mkdir(parents=True)
+        self.up(as_of="2026-11-12", run_report_path=str(self.target / "run-report.json"))
+
+    def report(self, i, kind):
+        data = make_report(i, kind)
+        (self.target / "reports" / (data["run_id"] + ".json")).write_text(json.dumps(data))
+        return data["run_id"]
+
+    def put_export(self, run, exported_at, queue=True):
+        def mutate(dest):
+            path = dest / "EXPORT.json"
+            path.write_text(json.dumps(dict(json.loads(path.read_text()), exported_at=exported_at)))
+            if not queue:
+                self.drop_queue(dest)
+        self.make_export(run, mutate)
+
+    def section(self, checks=OK, fault=None):
+        with mock.patch.object(ph, "assess", return_value={"state": "ok", "checks": checks}, side_effect=fault):
+            return SECTION.search(self.get("/"))[0]
+
+    @staticmethod
+    def golden(run, health, drafts, age):
+        item = '<li><a href="%s">%s</a>: %s</li>'
+        return '<section id="system"><h2>System</h2><ul>%s</ul></section>\n' % "".join((
+            item % (("/run?id=" + run[0], "Last run", run[1]) if run else ("/runs", "Last run", "unknown")),
+            item % ("/health", "Health", health), item % ("/drafts?state=pending", "Drafts waiting for a decision", drafts),
+            item % ("/health", "Data age", age)))
+
+    # Owner: the System section's truthfulness. Fails if an unknown source reads as good news or as a zero, if one
+    # faulted source blanks its readable siblings, or if a figure comes from anything but the destination page's reader.
+    def test_system_section_reports_independent_sources(self):
+        good = self.report(0, "ok")
+        self.put_export(EXPORT_RUN, self.FRESH)
+        pending = len(re.findall(r"<td>pending</td>", self.get("/drafts?state=pending")))
+        self.assertGreater(pending, 0)  # the same queue, read by the destination page
+        count = str(pending)
+        fresh = "run %s, exported 12:00 PT, 2026-11-11 (4 h ago)" % EXPORT_RUN
+        self.assertEqual(self.section(), self.golden((good, "2026-03-01 04:00 PST, ok. No stage code reported."), "ok", count, fresh))
+        # warning run with a first stage code, warn verdict, and an export older than the stale limit
+        warn = self.report(1, "warn")
+        self.put_export(RUN2, self.OLD)
+        stale = 'run %s, exported 12:00 PT, 2026-11-10 (28 h ago) <strong style="color:#b00020">STALE: this export is more than 13 hours old.</strong>' % RUN2
+        warned = (warn, "2026-03-01 05:00 PST, warn. Some documents were put off to a later run. (EXTRACT_BACKLOG_DEFERRED)")
+        self.assertEqual(self.section(self.WARN), self.golden(warned, "warn", count, stale))
+        with mock.patch.object(console_data_age, "_export_label", None):  # no data-age figure: the export time, with no strip
+            pin = mock.Mock(exported_at=self.OLD, run_id=RUN2)
+            age = home.system_sources({"as_of": "2026-11-12"}, pin, None, None)["age"]
+            self.assertEqual(age, ("exported 12:00 PT, 2026-11-10 (28 h ago)", "/health"))
+            pin.exported_at = "not a time"
+            self.assertIsNone(home.system_sources({"as_of": "2026-11-12"}, pin, None, None)["age"])
+        # an unavailable queue is unknown, never 0, and leaves the other three as they were
+        self.put_export(RUN3, self.OLD, queue=False)
+        stale3 = stale.replace(RUN2, RUN3)
+        self.assertEqual(self.section(self.WARN), self.golden(warned, "warn", "unknown", stale3))
+        # each source fails alone: no assessment, no archive, then no checks at all
+        (self.target / "reports" / (warn + ".json")).unlink()
+        (self.target / "reports" / (good + ".json")).unlink()
+        self.assertEqual(self.section(fault=ValueError("private detail")), self.golden(None, "unknown", "unknown", stale3))
+        self.assertEqual(self.section([]), self.golden(None, "unknown", "unknown", stale3))
+        self.put_export(RUN4, self.FRESH)
+        self.assertEqual(self.section(self.OK), self.golden(None, "ok", count, fresh.replace(EXPORT_RUN, RUN4)))
