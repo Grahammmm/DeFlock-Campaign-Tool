@@ -1,12 +1,16 @@
 """Silent-stop watch: every check, the status line, alerts and the CLI, on synthetic runtime dirs."""
 from datetime import datetime, timedelta, timezone
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
+from unittest import mock
 
 from zoneinfo import ZoneInfo
 
@@ -14,6 +18,7 @@ from campaign_tool.records import pipeline_health as ph, schedule
 from campaign_tool.records.ledger import store
 
 REPO = Path(__file__).resolve().parents[2]
+GIB = 1024 ** 3
 NOW = datetime(2026, 11, 4, 22, 30, tzinfo=timezone.utc)  # 14:30 PST, after the 13:00 slot
 STAGES = ("sync", "delta", "adoption", "portal", "extract", "digest_gates", "outputs", "notify")
 ZERO = {"input": 0, "output": 0, "failed": 0, "skipped": 0}
@@ -51,11 +56,22 @@ def report_for(finished, status="ok", seq=0, notify_failed=False):
             "needs_g": []}
 
 
+def vfs(available_gib, frsize=1024):
+    """statvfs stand-in: f_bavail is what counts; f_bfree (reserved blocks included) and f_bsize deliberately mislead."""
+    blocks = int(available_gib * GIB) // frsize
+    return types.SimpleNamespace(f_bavail=blocks, f_bfree=blocks + 500 * GIB // frsize, f_frsize=frsize, f_bsize=4096)
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         os.umask(0o077)
         tmp = tempfile.TemporaryDirectory(prefix="records-ph-")
         self.addCleanup(tmp.cleanup)
+        # Health assertions must not depend on how full the host disk is: every test sees a roomy volume unless it says otherwise.
+        self.free_gib = 500
+        patcher = mock.patch.object(os, "statvfs", side_effect=lambda path: vfs(self.free_gib))
+        self.statvfs = patcher.start()
+        self.addCleanup(patcher.stop)
         self.base = Path(tmp.name)
         self.runtime = self.base / "runtime"
         self.target_dir = self.runtime / "t"
@@ -101,6 +117,18 @@ class Base(unittest.TestCase):
 
     def check(self, report, name):
         return next(item for item in report["checks"] if item["check"] == name)
+
+    def main(self, *extra, target="t"):
+        """The CLI in-process (so the stubbed filesystem applies); the result mimics a CompletedProcess."""
+        argv = ["--runtime-dir", str(self.runtime), "--target", target, "--root", str(self.root),
+                "--mail-store", str(self.store), "--now", NOW.isoformat(), *extra]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                code = ph.main(argv)
+            except SystemExit as raised:  # argparse refusals
+                code = raised.code
+        return types.SimpleNamespace(returncode=code, stdout=out.getvalue(), stderr=err.getvalue())
 
 
 class CheckTests(Base):
@@ -241,6 +269,78 @@ class CheckTests(Base):
         after = snapshot()
         self.assertEqual([k for k in set(before) | set(after) if before.get(k) != after.get(k)], [])
 
+    def test_disk_assessment_uses_available_bytes_and_distinct_devices(self):
+        """Owner of the disk check. Catches: f_bfree or f_bsize instead of f_bavail * f_frsize, a path in the report,
+        rounding the classification, counting one volume twice, a failed read hiding a known low volume or reading as ok."""
+        run, rec = "/fake/runtime", "/fake/records"
+        fail = OSError(5, "I/O error")
+
+        def observe(runtime, root, same_device=False, warn=100, stop=30):
+            """(runtime, root) available GiB or an OSError; returns the check and the paths statvfs was asked for."""
+            volumes = {run: (1, runtime), rec: (1 if same_device else 2, root)}
+            asked = []
+
+            def fake_stat(path, *args, **kw):
+                return types.SimpleNamespace(st_dev=volumes[str(path)][0])
+
+            def fake_statvfs(path):
+                asked.append(str(path))
+                value = volumes[str(path)][1]
+                if isinstance(value, OSError):
+                    raise value
+                return vfs(value)
+            with mock.patch.object(os, "stat", fake_stat), mock.patch.object(os, "statvfs", fake_statvfs):
+                item = ph._disk(run, rec, dict(ph.LIMITS, disk_warn_gib=warn, disk_stop_gib=stop))
+            return item, asked
+
+        for label, runtime, root, same, expected in (
+                ("above warn", 150, 200, False, ("ok", "disk_ok", 150.0, "runtime")),
+                ("exactly warn is ok", 100, 100, False, ("ok", "disk_ok", 100.0, "runtime")),
+                ("just under warn", 99.99, 150, False, ("warn", "disk_low", 100.0, "runtime")),
+                ("between, records root lower", 150, 60, False, ("warn", "disk_low", 60.0, "records_root")),
+                ("exactly stop is only a warning", 30, 80, False, ("warn", "disk_low", 30.0, "runtime")),
+                ("just under stop, classified from bytes", 29.999, 80, False, ("stop", "disk_critical", 30.0, "runtime")),
+                ("below stop on the records root", 500, 10, False, ("stop", "disk_critical", 10.0, "records_root")),
+                ("stop beats a lower-free warning", 40, 20, False, ("stop", "disk_critical", 20.0, "records_root")),
+                ("tied roles go to runtime", 10, 10, False, ("stop", "disk_critical", 10.0, "runtime")),
+                ("unreadable runtime, other critical", fail, 10, False, ("stop", "disk_critical", 10.0, "records_root")),
+                ("unreadable records root, other warning", 60, fail, False, ("warn", "disk_low", 60.0, "runtime")),
+                ("unreadable runtime, other ok", fail, 150, False, ("unknown", "disk_unreadable", None, "runtime")),
+                ("unreadable alone", 150, fail, False, ("unknown", "disk_unreadable", None, "records_root")),
+                ("same device is read once", 150, 10, True, ("ok", "disk_ok", 150.0, "runtime"))):
+            with self.subTest(label):
+                item, asked = observe(runtime, root, same)
+                self.assertEqual((item["state"], item["reason_code"], item["free_gib"], item["path_role"]), expected)
+                self.assertEqual(asked, [run] if same else [run, rec])
+                self.assertNotIn("/fake", json.dumps(item))
+        self.assertEqual(observe(70, 70, warn=70, stop=40)[0]["state"], "ok")  # the limits come from the options
+
+    def test_disk_check_in_report_line_and_alerts(self):
+        """Contract: the disk check is part of assess, the line and the shared alert writer (dispatch only; the generic
+        state machine is owned by test_alert_dedup_and_clear)."""
+        alerts = self.target_dir / "alerts"
+        report = self.assess()
+        self.assertEqual((self.check(report, "disk")["reason_code"], report["state"]), ("disk_ok", "ok"))
+        self.free_gib = 50
+        report = self.assess()
+        self.assertEqual((report["state"], report["exit_code"]), ("warn", 1))
+        self.assertEqual(ph.status_line(report), "Run health: WARNING - disk_low (runtime, 50.0 GiB free)")
+        self.assertEqual(ph.write_alerts(report, alerts), 1)
+        self.assertEqual(os.listdir(alerts), ["health-disk-disk_low.json"])
+        self.free_gib = 10
+        report = self.assess()
+        self.assertEqual(ph.status_line(report), "Run health: STOPPED - disk_critical (runtime, 10.0 GiB free)")
+        self.assertEqual(ph.write_alerts(report, alerts), 1)
+        self.assertEqual(sorted(os.listdir(alerts)), ["health-disk-disk_critical.json", "health-disk-disk_low.cleared.json"])
+        with mock.patch.object(os, "statvfs", side_effect=OSError(5, "I/O error")):  # unreadable never clears an open alert
+            report = self.assess()
+            self.assertEqual(self.check(report, "disk")["reason_code"], "disk_unreadable")
+            self.assertEqual(ph.write_alerts(report, alerts), 0)
+        self.assertIn("health-disk-disk_critical.json", os.listdir(alerts))
+        self.free_gib = 500
+        self.assertEqual(ph.write_alerts(self.assess(), alerts), 0)
+        self.assertNotIn("health-disk-disk_critical.json", os.listdir(alerts))
+
     def test_status_line_content_free(self):
         report = self.assess(now=NOW + timedelta(days=3))
         report["checks"] = [dict(item, state="stop", reason_code=item["reason_code"] + "_x" * 20) for item in
@@ -319,6 +419,9 @@ class AlertTests(Base):
 
 class CliTests(Base):
     def run_cli(self, *extra, target="t"):
+        return self.main(*extra, target=target)
+
+    def run_subprocess(self, *extra, target="t"):
         cmd = [sys.executable, "-B", "-m", "campaign_tool.records", "pipeline-health", "--runtime-dir", str(self.runtime),
                "--target", target, "--root", str(self.root), "--mail-store", str(self.store),
                "--now", NOW.isoformat(), *extra]
@@ -333,6 +436,39 @@ class CliTests(Base):
         data = json.loads(done.stdout)
         self.assertEqual((data["state"], data["alerts_written"]), ("stop", 1))
         self.assertEqual(os.listdir(self.target_dir / "alerts"), ["health-arrival_backlog-arrival_not_consumed.json"])
+
+    def test_cli_disk_thresholds_default_and_override(self):
+        self.free_gib = 60
+        done = self.run_cli("--json")
+        self.assertEqual(done.returncode, 1, done.stderr)
+        item = self.check(json.loads(done.stdout), "disk")
+        self.assertEqual((item["state"], item["reason_code"], item["free_gib"], item["path_role"]),
+                         ("warn", "disk_low", 60.0, "runtime"))
+        self.assertNotIn(str(self.base), done.stdout)
+        done = self.run_cli()
+        self.assertEqual(done.stdout.strip(), "Run health: WARNING - disk_low (runtime, 60.0 GiB free)")
+        self.assertEqual(self.run_cli("--disk-warn-gib", "50").returncode, 0)  # lowered warn limit: 60 GiB is fine
+        self.assertEqual(self.run_cli("--disk-stop-gib", "59").returncode, 1)
+        stopped = self.run_cli("--disk-stop-gib", "61", "--disk-warn-gib", "70")
+        self.assertEqual((stopped.returncode, stopped.stdout.strip()),
+                         (3, "Run health: STOPPED - disk_critical (runtime, 60.0 GiB free)"))
+
+    def test_cli_refuses_invalid_disk_limits_before_any_read_or_write(self):
+        self.write_stamp(NOW - timedelta(minutes=40))
+        self.statvfs.reset_mock()
+        for args in (("--disk-warn-gib", "0"), ("--disk-warn-gib", "10001"), ("--disk-stop-gib", "0"),
+                     ("--disk-stop-gib", "-5"), ("--disk-stop-gib", "100"), ("--disk-warn-gib", "20"),  # warn <= default stop 30
+                     ("--disk-warn-gib", "50", "--disk-stop-gib", "50"), ("--disk-warn-gib", "50", "--disk-stop-gib", "60"),
+                     ("--disk-warn-gib", "20000", "--disk-stop-gib", "10"), ("--disk-warn-gib", "1.5"), ("--disk-stop-gib", "x")):
+            with self.subTest(args=args):
+                done = self.run_cli(*args, "--record-alerts")
+                self.assertEqual(done.returncode, 2)
+                self.assertIn("--disk-", done.stderr)
+                self.assertEqual(done.stdout, "")
+                self.assertEqual(os.listdir(self.target_dir / "alerts"), [])
+        self.statvfs.assert_not_called()
+        done = self.run_cli("--disk-warn-gib", "10000", "--disk-stop-gib", "1", "--json")  # inclusive bounds are accepted
+        self.assertEqual((done.returncode, self.check(json.loads(done.stdout), "disk")["reason_code"]), (3, "disk_low"))
 
     def test_cli_mail_poll_limits_preserve_defaults_and_accept_daily_cadence(self):
         self.write_poll(NOW - timedelta(hours=7))
@@ -357,7 +493,7 @@ class CliTests(Base):
 
     def test_cli_bad_target(self):
         for bad in ("..", ".", "a/b", "x" * 65, ""):
-            done = self.run_cli(target=bad)
+            done = self.run_subprocess(target=bad)  # the one real-process dispatch control: independent of disk size
             self.assertEqual(done.returncode, 2, bad)
             self.assertIn("target_invalid", done.stderr)
             self.assertEqual(done.stdout, "")
@@ -475,9 +611,7 @@ class AnalysisExportTests(Base):
         self.assertEqual(self.cli("--analysis-max-minutes", "0").returncode, 2)
 
     def cli(self, *extra):
-        cmd = [sys.executable, "-B", "-m", "campaign_tool.records", "pipeline-health", "--runtime-dir", str(self.runtime),
-               "--target", "t", "--root", str(self.root), "--mail-store", str(self.store), "--now", NOW.isoformat(), *extra]
-        return subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=120)
+        return self.main(*extra)
 
 
 if __name__ == "__main__":
