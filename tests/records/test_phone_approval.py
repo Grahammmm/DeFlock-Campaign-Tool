@@ -101,13 +101,15 @@ class PhoneTap(unittest.TestCase):
         self.assertEqual(self.row()["status"], "pending")
 
     # Bug caught: trusting the key carried inside the tap, a phone line without the phone namespace, a tap without
-    # user verification or from another origin, or keeping a removed (lost) phone's approvals valid.
+    # user verification, from another origin or from a framed (cross-origin) page, or keeping a removed (lost) phone's
+    # approvals valid.
     def test_unknown_unverified_or_revoked_device_is_refused(self):
         stranger = Phone("stranger@example.invalid")
         self.tap_entry(stranger.tap(self.envelope(nonce="03" * 16)))
         self.tap_entry(self.phone.tap(self.envelope(nonce="04" * 16), flags=0x01))
         self.tap_entry(self.phone.tap(self.envelope(nonce="05" * 16), origin="https://evil.example.invalid"))
-        self.assertEqual(self.apply(), ["SIGNATURE_REFUSED"] * 3)
+        self.tap_entry(self.phone.tap(self.envelope(nonce="08" * 16), cross=True))
+        self.assertEqual(self.apply(), ["SIGNATURE_REFUSED"] * 4)
         self.trust_file.write_text(self.computer.signers.read_text()
                                    + self.phone.signers_line(namespaces=approval.NAMESPACE))
         self.tap_entry(self.phone.tap(self.envelope(nonce="06" * 16)))

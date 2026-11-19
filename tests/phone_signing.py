@@ -76,10 +76,10 @@ class Phone:
         body = _der_int(r) + _der_int(s)
         return b"\x30" + bytes([len(body)]) + body
 
-    def tap(self, envelope, flags=0x1D, origin=None):
+    def tap(self, envelope, flags=0x1D, origin=None, cross=False):
         """navigator.credentials.get() output for this envelope, as the console page would post it (UP|UV|BE|BS set)."""
         client = json.dumps({"type": "webauthn.get", "challenge": _b64url(phone_approval.challenge(envelope)),
-                             "origin": origin or "https://" + self.rp_id, "crossOrigin": False},
+                             "origin": origin or "https://" + self.rp_id, "crossOrigin": cross},
                             separators=(",", ":")).encode()
         auth = hashlib.sha256(self.rp_id.encode()).digest() + bytes([flags]) + struct.pack(">I", 0)
         return {"envelope": envelope, "authenticator_data": _b64url(auth), "client_data": _b64url(client),

@@ -243,7 +243,8 @@ def check(text, armored, decision, payload):
     _bound(text, decision, payload)
     rp_id, flags, client, origin = _webauthn(armored)
     if (flags & (UP | UV)) != UP | UV or not isinstance(client, dict) or client.get("type") != "webauthn.get" \
-            or origin != "https://" + rp_id or client.get("origin") != origin:
+            or origin != "https://" + rp_id or client.get("origin") != origin \
+            or client.get("crossOrigin", False) is not False or "topOrigin" in client:  # never from a framed page
         raise approval.ApprovalError("phone approval lacks presence, verification or the console origin")
     return approval.verify(text.encode(), armored, namespace=NAMESPACE)
 
