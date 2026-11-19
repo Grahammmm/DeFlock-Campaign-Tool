@@ -25,6 +25,22 @@ assert SPEC is not None and SPEC.loader is not None
 render = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(render)
 RUN_ID = "run_20261113T180000Z_0123abcd"
+# Only these systemd-analyze messages positively identify "no usable user runtime"; anything
+# else (e.g. "Unit connection-missing.service not found.") is a real unit error and must fail.
+RUNTIME_UNAVAILABLE_RE = re.compile(
+    r"(?im)^(?:Failed to (?:connect to|create) (?:user (?:scope )?)?bus\b"
+    r"|Failed to (?:get|determine|acquire) .*\bXDG_RUNTIME_DIR\b"
+    r"|\$XDG_RUNTIME_DIR (?:is )?not set\b)")
+
+
+def user_runtime_unavailable(output):
+    return RUNTIME_UNAVAILABLE_RE.search(output) is not None
+
+
+def systemd_user_verify(analyze, *units, cwd):
+    result = subprocess.run([analyze, "--user", "verify", *map(str, units)],
+                            capture_output=True, text=True, timeout=30, cwd=cwd)
+    return result, result.stdout + result.stderr
 
 
 class MailArrivalTests(unittest.TestCase):
@@ -90,13 +106,40 @@ class MailArrivalTests(unittest.TestCase):
             self.skipTest("systemd-analyze not available")
         self.render()
         # Static syntax check only; never starts a manager or arms the path unit.
-        result = subprocess.run([analyze, "--user", "verify", str(self.out / "records-arrival.path"),
-                                 str(self.out / "records-arrival.service")],
-                                capture_output=True, text=True, timeout=30, cwd=self.base)
-        output = result.stdout + result.stderr
-        if result.returncode and re.search(r"(?i)\bbus\b|connect|permission|not supported|XDG_RUNTIME_DIR", output):
+        result, output = systemd_user_verify(analyze, self.out / "records-arrival.path",
+                                             self.out / "records-arrival.service", cwd=self.base)
+        if result.returncode and user_runtime_unavailable(output):
             self.skipTest("systemd user runtime unavailable: " + output[:120])
         self.assertEqual(result.returncode, 0, output)
+
+    def test_verify_skip_is_only_for_positively_identified_runtime_failures(self):
+        # Contract: a real unit error is never reported as "runtime unavailable" (skip).
+        # Bug caught: a broad connect/permission regex matched "Unit connection-missing.service
+        # not found." and turned a genuine verify failure into a skip.
+        for text in ("Failed to connect to bus: No medium found\n",
+                     "Failed to connect to user scope bus via local transport: No such file\n",
+                     "Failed to create bus connection: No such file or directory\n",
+                     "$XDG_RUNTIME_DIR is not set\n"):
+            with self.subTest(text=text):
+                self.assertTrue(user_runtime_unavailable(text))
+        for text in ("Unit connection-missing.service not found.\n",
+                     "x.service: Failed to parse permission setting\n",
+                     "x.service:3: Unknown key name 'Bogus' in section 'Service'\n", ""):
+            with self.subTest(text=text):
+                self.assertFalse(user_runtime_unavailable(text))
+
+    def test_real_unit_verify_error_is_not_skipped(self):
+        analyze = shutil.which("systemd-analyze")
+        if analyze is None:
+            self.skipTest("systemd-analyze not available")
+        bad = self.base / "bad.service"
+        bad.write_text("[Unit]\nRequires=connection-missing.service\n\n[Service]\nExecStart=/bin/true\n")
+        result, output = systemd_user_verify(analyze, bad, cwd=self.base)
+        if user_runtime_unavailable(output):
+            self.skipTest("systemd user runtime unavailable: " + output[:120])
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn("connection-missing.service", output)
+        self.assertFalse(user_runtime_unavailable(output), output)
 
     def test_render_private_substituted_and_absent_without_drop(self):
         script = self.render()
