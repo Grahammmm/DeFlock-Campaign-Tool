@@ -103,6 +103,54 @@ class RunHistory(unittest.TestCase):
         self.assertNotIn("<tr>", page.render(history))
 
 
+    # Owner: the never-follow-a-symlinked-archive boundary under a race. Fails if the directory is checked by pathname
+    # and then opened, listed or read by pathname again: swapping the directory for a symlink to an outside archive
+    # after the check, after the listing, or between files then shows the outside reports instead of the configured ones.
+    def test_directory_swapped_for_symlink_after_open_never_redirects_reads(self):
+        inside = [make(1), make(2)]
+        for data in inside:
+            self.put(data)
+        outside = self.target / "outside"
+        outside.mkdir()
+        evil = make(9)
+        (outside / (evil["run_id"] + ".json")).write_text(json.dumps(evil))
+        moved = self.target / "moved"
+        real_open, real_names, real_usable = model._open_dir, model._names, model._usable
+        calls = []
+
+        def swap():
+            if not moved.exists():
+                self.reports.rename(moved)
+                self.reports.symlink_to(outside)
+
+        def after_open(directory):
+            fd = real_open(directory)
+            swap()  # between the check and the scan
+            return fd
+
+        def after_scan(dir_fd):
+            names = real_names(dir_fd)
+            swap()  # between the scan and the reads
+            return names
+
+        def after_first_read(dir_fd, name, now, schema):
+            calls.append(name)
+            result = real_usable(dir_fd, name, now, schema)
+            swap()  # between two reads
+            return result
+
+        for hook, attr in ((after_open, "_open_dir"), (after_scan, "_names"), (after_first_read, "_usable")):
+            with self.subTest(attr):
+                if moved.exists():  # restore the configured archive for the next race point
+                    self.reports.unlink()
+                    moved.rename(self.reports)
+                with mock.patch.object(model, attr, hook):
+                    history = model.load_history(self.path, NOW)
+                self.assertEqual(history["state"], "ok")
+                self.assertEqual(sorted(r["run_id"] for r in history["reports"]), sorted(d["run_id"] for d in inside))
+                self.assertNotIn(evil["run_id"], [r["run_id"] for r in history["reports"]])
+
+
 def fetch(server, path):
     connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=10)
     try:
