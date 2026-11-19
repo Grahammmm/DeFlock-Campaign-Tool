@@ -24,6 +24,7 @@ from pathlib import Path
 from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, console_redactions, draft_templates, mail_drafts, mail_send, run_report, schedule, site_prs
 from . import console_origin, console_automation
 from . import console_access, console_export, console_journal, console_layout, console_review, console_settings, console_snapshot
+from . import console_pages
 from .ledger import store
 from .outcomes import unmatched
 from .outcomes.reading import BANNER, esc
@@ -900,6 +901,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._prepare_send(query)
         route = path
         if route not in RETURNS:
+            if console_pages.serve(self):
+                return
             return self._fail(404)
         try:
             if route == "/next-steps":
