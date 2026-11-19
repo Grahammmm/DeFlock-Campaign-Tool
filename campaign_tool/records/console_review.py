@@ -4,7 +4,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from . import approval_queue, console_followups, console_journal, console_layout, console_snapshot, draft_templates, mail_drafts, mail_preview, mail_send
+from . import approval_queue, console_followups, console_journal, console_layout, console_phone, console_snapshot, draft_templates, mail_drafts, mail_preview, mail_send
 from .outcomes.reading import esc
 from . import denial_log, denial_reply_check, followup_clock
 
@@ -171,7 +171,7 @@ def candidate_url(ident, choice):
     return "/review?id=%s&choice=%s" % (urllib.parse.quote(ident), urllib.parse.quote(choice, safe=""))
 
 
-def render_link(row, token, payload, refusal=None, *, read_only=False, choice=None, withheld=False):
+def render_link(row, token, payload, refusal=None, *, read_only=False, choice=None, withheld=False, phone=""):
     """A message_link row, two steps. Step 1 lists the candidates (links, no signable text). Step 2 (``choice`` selected,
     ``payload`` the exact text for that one candidate) shows the bound ``choice:`` line and the payload, and an approve form
     carrying that choice. A selection whose exported payload is missing (``withheld``) offers rejection only."""
@@ -218,6 +218,7 @@ def render_link(row, token, payload, refusal=None, *, read_only=False, choice=No
                                     '<textarea id="signature" name="signature" required>%s</textarea>' % esc(
                                         typed if field_name == "signature" else ""),
                                     "Approve: tie to the chosen request", back="review"))
+                out.append(phone)
         if not read_only:
             out.append(ap._form("/approvals/reject", token, row["id"], "",
                                 '<label for="reason">Why is it not a response?</label>'
@@ -230,7 +231,7 @@ def render_link(row, token, payload, refusal=None, *, read_only=False, choice=No
 
 
 def render(project, row, history, preview, token, payload, send_config=None, *, run_id=None, refusal=None, source=None,
-           export=None, journal=False, context=None, pending_rows=()):
+           export=None, journal=False, context=None, pending_rows=(), phone=""):
     from . import admin_panel as ap
 
     title = "Review: %s for %s / %s" % (row["kind"].replace("-", " "), row["agency_id"], row["request_id"])
@@ -362,6 +363,7 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
                    '<textarea id="signature" name="signature">%s</textarea>'
                    '<button type="submit" formaction="/approvals/approve">%s</button></form>' %
                    (esc(typed if field_name == "signature" else ""), esc(approval_label(row, switches))))
+        out.append(phone)  # "Approve with phone" (journal mode): its own form after the typed one, which is unchanged
         out.append(ap._form("/approvals/reject", token, row["id"], "",
                             '<label for="reason">Rejection reason</label>'
                             '<input id="reason" name="reason" required maxlength="2000" value="%s">' % esc(
@@ -434,8 +436,11 @@ def _show(handler, ident, status, refusal, choice=None):
                         if error.code not in ("link_payloads_missing", "message_link_choice"):
                             raise
                         withheld = True  # an older export: no signable text for this candidate
+            phone = (console_phone.section(handler, row, payload, choice)
+                     if journal and pin is not None and payload is not None and not row.get("approval_unverified") else "")
             handler._send(status, render_link(row, handler.csrf_token(), payload, refusal,
-                                              read_only=pin is not None and not journal, choice=choice, withheld=withheld))
+                                              read_only=pin is not None and not journal, choice=choice, withheld=withheld,
+                                              phone=phone))
             return True
         if choice is not None and status == 200:  # only a tie is selected by a candidate
             handler._fail(400)
@@ -450,9 +455,11 @@ def _show(handler, ident, status, refusal, choice=None):
             preview = (mail_preview.preview(project, row, handler.server.mail_drafts_config)
                        if handler.server.mail_drafts_config is not None else context["preview"])
         payload = source.queue_payload(ids[0]) if row["status"] == "pending" and not row.get("approval_unverified") else None
+        phone = (console_phone.section(handler, row, payload)
+                 if journal and pin is not None and payload is not None and not row.get("edit_pending") else "")
         page = render(project, row, history, preview, handler.csrf_token(), payload,
                       options.get("send_config"), run_id=options["run_id"], refusal=refusal, source=source, export=pin,
-                      journal=journal, context=context, pending_rows=rows.values())
+                      journal=journal, context=context, pending_rows=rows.values(), phone=phone)
     except (approval_queue.ApprovalQueueError, mail_send.MailSendError, mail_drafts.MailDraftError,
             OSError, ValueError, KeyError, TypeError):
         handler._fail(503)
