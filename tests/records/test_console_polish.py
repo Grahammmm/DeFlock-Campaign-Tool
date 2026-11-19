@@ -1,10 +1,17 @@
 """DFGL-14: plain wording, refused review forms that keep the typed text, landmarks, 404s and small console fixes."""
+import io
+import json
 import re
-from datetime import date, datetime, timezone
+from contextlib import redirect_stderr
+from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest import mock
 
 from campaign_tool.records import approval_queue as aq, console_calendar as cc, console_layout as layout
-from tests.records.test_admin_panel import ServerCase, journal, tree_state
+from campaign_tool.records import console_pages
+from tests.records import test_console_snapshot as snapshots
+from tests.records.test_admin_panel import Http, ServerCase, journal, tree_state
+from tests.records.test_pipeline_health import report_for
 
 TYPED = '<b>typed</b> & "quoted"'
 
@@ -82,6 +89,8 @@ class LandmarkAndNavTests(ServerCase):
             body = page.split("<body>", 1)[1]
             self.assertTrue(body.startswith('<a class="skip" href="#content">Skip to content</a><header>'), path)
             self.assertRegex(body, r"<header><p class=\"notice\">PRIVATE[^<]*</p></header>")
+            self.assertRegex(body, r'</header><div class="data-age"[^>]*>Live project data</div>')
+            self.assertEqual(body.count('class="data-age"'), 1, path)
             self.assertEqual(page.count("<main"), 1, path)
 
     def test_error_page_uses_the_shared_layout_with_main(self):
@@ -103,6 +112,118 @@ class LandmarkAndNavTests(ServerCase):
         self.assertEqual(status, 404)
         self.assertIn("Unknown agency", page)
         self.assertEqual(self.get("/documents")[0], 200)
+
+
+class DataAgeTests(snapshots.Panel):
+    now = datetime(2026, 11, 11, tzinfo=timezone.utc)
+
+    def stamp_export(self, value):
+        path = self.root / "current" / "EXPORT.json"
+        manifest = json.loads(path.read_text())
+        manifest["exported_at"] = value
+        path.chmod(0o600)
+        path.write_text(json.dumps(manifest))
+        path.chmod(0o400)
+
+    def status_strip(self, page):
+        self.assertEqual(page.count('class="data-age"'), 1)
+        match = re.search(r'</header>(<div class="data-age"[^>]*>.*?</div>)', page)
+        assert match is not None, "status strip must immediately follow the header"
+        return match.group(1)
+
+    def test_age_strip_uses_pinned_export_and_keeps_other_bytes(self):
+        self.make_export()
+        exported = "2026-11-10T20:00:00Z"
+        self.stamp_export(exported)
+        current = self.root / "current"
+        target = current.readlink()
+        base = layout.shell("Fixture", "<p>Registered page</p>")
+
+        def serve(handler):
+            current.unlink()  # simulate a broken selector after the request has pinned its data
+            handler._send(200, base)
+            return True
+
+        test_page = SimpleNamespace(__name__="fixture", PATHS=("/age-fixture",), NAV=None, serve=serve)
+        with mock.patch.object(console_pages, "_discover", return_value=[test_page]):
+            routes, _ = console_pages._load()
+        self.up(as_of=self.now.date().isoformat())
+        assert self.server is not None
+        http = Http(self.server.server_port)
+        with mock.patch.object(console_pages, "_ROUTES", routes):
+            status, headers, page = http.send("GET", "/age-fixture")
+        self.assertEqual(status, 200)
+        strip = self.status_strip(page)
+        self.assertIn(f"Data from run {snapshots.RUN}, exported 12:00 PT, 2026-11-10 (4 h ago)", strip)
+        self.assertNotIn("STALE", strip)
+        footer = f'<footer class="muted"><p>Run {snapshots.RUN}, export {target.name}, exported {exported}.</p></footer>'
+        self.assertEqual(page.replace(strip, ""), base.replace("</main>", footer + "</main>"))
+        self.assertEqual(int(headers["content-length"]), len(page.encode()))
+        self.assertEqual(headers["content-security-policy"],
+                         "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+                         "base-uri 'none'; frame-ancestors 'none'")
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(self.status_strip(self.get("/")), strip)  # the last-good export
+        current.symlink_to(target)
+        for path in ("/", "/board", "/documents", "/calendar", "/settings", "/next-steps"):
+            self.assertEqual(self.status_strip(self.get(path)), strip, path)
+        status, headers, calendar = http.send("GET", "/calendar.ics")
+        self.assertEqual((status, headers["content-type"]), (200, "text/calendar; charset=utf-8"))
+        self.assertTrue(calendar.startswith("BEGIN:VCALENDAR\r\n"))
+        self.assertNotIn("data-age", calendar)
+
+    def test_stale_when_a_newer_valid_completed_run_exists(self):
+        self.make_export()
+        self.stamp_export("2026-11-10T20:00:00Z")
+        path = self.tmp / "run-report.json"
+        recent = self.tmp / "reports"
+        recent.mkdir()
+        newer = report_for(self.now - timedelta(hours=5))  # newer run, even before the export was made
+        same = report_for(self.now - timedelta(hours=1))
+        same.update(run_id=snapshots.RUN, started_at="2026-11-10T15:00:00Z", duration_seconds=8 * 3600)
+        future = report_for(self.now + timedelta(seconds=1))
+        self.up(as_of=self.now.date().isoformat(), run_report_path=path, stale_hours=5)
+        for doc, stale in ((same, False), (future, False), ({**newer, "stages": []}, False), (newer, True)):
+            with self.subTest(report=doc["run_id"], stale=stale):
+                path.write_text(json.dumps(doc))
+                self.assertEqual('<strong style="color:#b00020">STALE:' in self.status_strip(self.get("/nope", 404)), stale)
+        path.write_text("{invalid")
+        (recent / (future["run_id"] + ".json")).write_text(json.dumps(future))
+        self.assertNotIn("STALE", self.status_strip(self.get("/nope", 404)))
+        history = recent / (newer["run_id"] + ".json")
+        history.write_text(json.dumps(newer))
+        self.assertIn("STALE", self.status_strip(self.get("/nope", 404)))
+        history.unlink()
+        self.stamp_export("2026-11-10T18:59:59Z")  # over 5 h, but under the default 13 h
+        self.assertIn("STALE", self.status_strip(self.get("/nope", 404)))
+
+    def test_default_age_cutoff_is_strict_and_independent_of_reports(self):
+        self.make_export()
+        self.up(as_of=self.now.date().isoformat())
+        for exported, stale in (("2026-11-10T11:00:00Z", False), ("2026-11-10T10:59:59Z", True)):
+            self.stamp_export(exported)
+            self.assertEqual("STALE" in self.status_strip(self.get("/nope", 404)), stale)
+
+    def test_unavailable_exports_and_unadmitted_host_do_not_claim_live_data(self):
+        self.up(as_of=self.now.date().isoformat())
+        with redirect_stderr(io.StringIO()):
+            self.assertIn("Data age: unknown", self.status_strip(self.get("/", 503)))
+            self.make_export()
+            manifest = self.root / "current" / "EXPORT.json"
+            original = manifest.read_text()
+            manifest.chmod(0o600)
+            manifest.write_text("{invalid")
+            self.assertIn("Data age: unknown", self.status_strip(self.get("/", 503)))
+            manifest.write_text(original)
+        for stamp in (None, "nonsense", "2026-11-11T00:00:01Z", "2026-11-10T20:00:00"):
+            self.stamp_export(stamp)
+            self.assertIn("Data age: unknown", self.status_strip(self.get("/nope", 404)))
+        self.stamp_export("2026-11-10T23:00:00Z")
+        assert self.server is not None
+        with mock.patch.object(snapshots.console_snapshot.Pinner, "pin", side_effect=AssertionError("Host refused before pin")):
+            status, _, page = Http(self.server.server_port).send("GET", "/", host="other.invalid")
+        self.assertEqual(status, 403)
+        self.assertIn("Data age: unknown", self.status_strip(page))
 
 
 class SourceWordingTests(ServerCase):

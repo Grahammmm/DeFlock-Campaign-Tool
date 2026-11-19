@@ -755,12 +755,16 @@ class StaticAndCliTests(Base):
         first = out.read_bytes()
         self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o600)
         html = first.decode()
+        self.assertRegex(html, r'</header><div class="data-age"[^>]*>'
+                         r'Live project data · Static snapshot rendered 16:00 PT, 2026-11-04</div>')
+        self.assertEqual(html.count('class="data-age"'), 1)
         self.assertEqual({"mail", "documents", "stages", "findings", "deadlines", "drafts"} - parse(html).ids, set())
         self.assertNotIn("<form", html)
         self.assertNotIn("csrf", html)
         self.assertNotIn("<textarea", html)
         self.assertIn("Static snapshot — decisions unavailable", html)
-        self.assertEqual(self.run_cli(*args).returncode, 0)  # atomic replace of a regular file
+        for bound in ("1", "168"):
+            self.assertEqual(self.run_cli(*args, "--stale-hours", bound).returncode, 0)
         self.assertEqual(out.read_bytes(), first)  # deterministic with fixed inputs
         self.assertEqual([p.name for p in out.parent.iterdir() if p.name.startswith(".snap")], [])
         # refusals leave sources and any existing output untouched
@@ -783,6 +787,7 @@ class StaticAndCliTests(Base):
         done = self.run_cli("--help")
         self.assertEqual(done.returncode, 0)
         self.assertIn("docs/RECORDS-ADMIN-PANEL.md", done.stdout)
+        self.assertIn("--stale-hours", done.stdout)
         missing = Path(self.tmp.name) / "nope"
         for extra in (["--run-id", "../x"], ["--run-id", "."], ["--run-id", RUN, "--as-of", "2026-13-40"],
                       ["--run-id", RUN, "--port", "99999", "--actor", "me"], ["--run-id", RUN],
@@ -790,6 +795,12 @@ class StaticAndCliTests(Base):
             bad = self.run_cli("--project", str(missing), *extra)
             self.assertEqual(bad.returncode, 2, extra)
         self.assertFalse(missing.exists())
+        out = Path(self.tmp.name) / "snap.html"
+        for value in ("0", "169", "2.5"):
+            bad = self.run_cli("--project", str(missing), "--run-id", RUN, "--no-system",
+                               "--render", str(out), "--stale-hours", value)
+            self.assertEqual(bad.returncode, 2, value)
+            self.assertFalse(out.exists())
 
     def test_build_server_is_loopback_only(self):
         for kw in ({"port": -1}, {"port": 70000}, {"port": "80"}, {"actor": " "}, {"actor": "a\nb"}):
@@ -801,6 +812,11 @@ class StaticAndCliTests(Base):
         self.assertEqual(server.server_address[0], "127.0.0.1")
         with self.assertRaises(TypeError):
             ap.build_server(self.project, RUN, actor="me", host="0.0.0.0")
+        with mock.patch.object(ap.http.server, "HTTPServer") as bind:
+            for value in (0, 169, 2.5, "13", True):
+                with self.assertRaisesRegex(ap.PanelError, "stale_hours_invalid"):
+                    ap.build_server(self.project, RUN, actor="me", stale_hours=value)
+            bind.assert_not_called()
 
 
 if __name__ == "__main__":
