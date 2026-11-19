@@ -180,6 +180,26 @@ def _export(pin, path, now):
         status = "Run comparison: unavailable: the export does not match and the run order cannot be confirmed."
     return prefix + f"<p>Newest archived run: {esc(newest['run_id'])}, finished {_pacific(_time(newest['finished_at']))}. {status}</p>"
 
+def assessment(options, pin, analysis_root, now):
+    """(report, fault): the pipeline assessment this page shows; Home's one-line verdict reads it through here too."""
+    from . import console_oversight  # avoid the layout's route discovery cycle
+
+    target = console_oversight._target(options.get("run_report_path"))
+    if target is None:
+        return {}, "no runtime target is configured."
+    try:
+        return health.assess(runtime_dir=str(target.parent), target=target.name,
+                             records_root=Path(options["project"]) / "processing-v1", now=now,
+                             analysis_root=analysis_root, check_disk=options.get("system", True),
+                             pinned_export_run_id=pin.run_id if pin else None), None
+    except (health.HealthError, OSError, ValueError, TypeError, KeyError, RecursionError, OverflowError):
+        return {}, "the pipeline assessment could not be read."
+
+def verdict(checks):
+    """The worst check state, in the page's precedence; no checks is unknown."""
+    states = {_state(check) for check in checks}
+    return next((state for state in STATES if state in states), "unknown")
+
 def serve(handler):
     if handler.path != "/health":
         return False
@@ -193,18 +213,9 @@ def serve(handler):
     root = Path(options["project"]) / "processing-v1"
     system = options.get("system", True)
     roles = dict(ROLES, records_root="Mounted export") if pin else ROLES
-    report, fault = {}, "no runtime target is configured."
-    if target is not None:
-        try:
-            report = health.assess(runtime_dir=str(runtime), target=target.name, records_root=root, now=now,
-                                   analysis_root=handler.server.analysis_root, check_disk=system,
-                                   pinned_export_run_id=pin.run_id if pin else None)
-        except (health.HealthError, OSError, ValueError, TypeError, KeyError, RecursionError, OverflowError):
-            fault = "the pipeline assessment could not be read."
+    report, fault = assessment(options, pin, handler.server.analysis_root, now)
     checks = report.get("checks", [])
-    states = {_state(check) for check in checks}
-    verdict = next((state for state in STATES if state in states), "unknown")
-    body = [f"<h1>System health</h1><p><strong>Verdict: {verdict}</strong></p><h2>Pipeline checks</h2>"]
+    body = [f"<h1>System health</h1><p><strong>Verdict: {verdict(checks)}</strong></p><h2>Pipeline checks</h2>"]
     body.extend(f"<h3>{_label(c.get('check'))}: {_state(c)}</h3><p>{_reason(c.get('reason_code'))}<br>"
                 f"{_details(c, report, roles)}</p>" for c in checks)
     if not checks:

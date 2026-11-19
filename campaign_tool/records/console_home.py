@@ -308,6 +308,85 @@ def unavailable_sources(model):
     return [k for k in keys if not (k == "waiting" and "timeline" in keys)]
 
 
+# ---- System: one line per source for a phone screen (DFCON17-12); each item fails alone as "unknown" --------
+
+def _guard(read, *args):
+    """A source's (html, link) or None; any fault of that one source leaves it unknown and the others untouched."""
+    try:
+        return read(*args)
+    except Exception:  # noqa: BLE001 - deliberate: a System item must never take Home down or hide its siblings
+        return None
+
+
+def _as_of(options):
+    from . import admin_panel
+    return admin_panel.parse_as_of(options.get("as_of"))[0]
+
+
+def _last_run(options):
+    from . import console_page_run, console_page_runs, console_runs_model
+    history = console_runs_model.load_history(options.get("run_report_path"))
+    if history["state"] != "ok" or not history["reports"]:
+        return None
+    report = history["reports"][0]
+    finished = datetime.strptime(report["finished_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    code = next((s["error_code"] for s in report["stages"] if s["error_code"]), None)
+    text = "%s, %s. %s" % (finished.astimezone(console_page_runs.ZONE).strftime("%Y-%m-%d %H:%M %Z"),
+                           report["overall_status"], console_page_run.sentence(code) if code else "No stage code reported.")
+    return esc(text), "/run?id=" + urllib.parse.quote(report["run_id"])
+
+
+def _health(options, pin, analysis_root):
+    from . import console_page_health
+    report, _fault = console_page_health.assessment(options, pin, analysis_root, _as_of(options))
+    return esc(console_page_health.verdict(report.get("checks", []))), "/health"
+
+
+def _data_age(options, pin, stale_hours):
+    from . import console_data_age
+    if pin is None:
+        return None  # live project data: no export time, and nothing says it is fresh
+    now = _as_of(options)
+    figure = getattr(console_data_age, "_export_label", None)  # DFCON17-05's figure, when present
+    if callable(figure):
+        label = figure(pin, options.get("run_report_path"), now, stale_hours or console_data_age.DEFAULT_STALE_HOURS)
+        return None if label == "Data age: unknown" else label.removeprefix("Data from "), "/health"
+    exported = datetime.fromisoformat(pin.exported_at)
+    if exported.tzinfo is None or exported > now:
+        return None
+    return "exported %s (%d h ago)" % (exported.astimezone(console_data_age.PACIFIC).strftime("%H:%M PT, %Y-%m-%d"),
+                                       (now - exported) // timedelta(hours=1)), "/health"
+
+
+def system_sources(options, pin, analysis_root, stale_hours):
+    """The System items that read beyond the loaded Home model (run history, health, export age)."""
+    return {"run": _guard(_last_run, options), "health": _guard(_health, options, pin, analysis_root),
+            "age": _guard(_data_age, options, pin, stale_hours)}
+
+
+def _pending_drafts(queue):
+    """The /drafts?state=pending count from the same queue reader and row projection; a fault is unknown, never 0."""
+    from . import console_page_drafts
+    try:
+        if queue.get("state") != "ok":
+            return None
+        return str(sum(row["state"] == "pending" for row in console_page_drafts._project(queue["rows"])))
+    except (TypeError, KeyError, ValueError, AttributeError):
+        return None
+
+
+def render_system(model):
+    sources = model.get("system") or {}
+    drafts = _pending_drafts(model.get("queue") or {})
+    items = (("Last run", sources.get("run") or (None, "/runs")),
+             ("Health", sources.get("health") or (None, "/health")),
+             ("Drafts waiting for a decision", (drafts, "/drafts?state=pending")),
+             ("Data age", sources.get("age") or (None, "/health")))
+    return '<section id="system"><h2>System</h2><ul>%s</ul></section>' % "".join(
+        '<li><a href="%s">%s</a>: %s</li>' % (esc(link), esc(label), "unknown" if value is None else value)
+        for label, (value, link) in items)
+
+
 def render_home(model, token):
     rows = decision_rows(model, model["now"].date())
     missing = unavailable_sources(model)
@@ -324,6 +403,7 @@ def render_home(model, token):
            "<h1>Home</h1>",
            '<p role="status" id="approval-anchor">%s</p>' % esc(approval_anchor_status.paragraph(
                model.get("approval_anchor", "unknown"), model.get("approval_anchor_pinned", True))),
+           render_system(model),
            '<p role="status">%s need your decision · %s due in the next 7 days · %s</p>' % (decision_count, week_count, waiting_count)
            + ('<p role="status" class="diag">%d open request%s no usable due date, so the 7-day count may be low.</p>' % (
               no_clock, " has" if no_clock == 1 else "s have") if no_clock else ""),
@@ -417,5 +497,7 @@ def serve(handler):
         return True
     model["findings_configured"] = getattr(handler.server, "analysis_root", None) is not None
     model["site_prs"] = site_prs.read(handler)  # independent of the timeline and queue
+    model["system"] = system_sources(options, handler.pin, getattr(handler.server, "analysis_root", None),
+                                     getattr(handler.server, "stale_hours", None))
     handler._send(200, render_home(model, handler.csrf_token()))
     return True
