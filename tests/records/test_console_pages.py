@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 
 from campaign_tool.records import admin_panel as panel, console_layout as layout, console_pages as pages
 from campaign_tool.records import console_edge_smoke, console_findings, console_ocr, console_oversight
-from campaign_tool.records import console_packets, console_redactions
+from campaign_tool.records import console_packets, console_phone, console_redactions
 from tests.records.test_admin_panel import AS_OF, RUN, Base, Http
 from tests.records.test_console_layout import Markup
 
@@ -117,7 +117,7 @@ class ConsolePagesTests(Base):
         inputs = [*(href for _, href in layout.LINKS + layout.MORE), *panel.RETURNS, *panel.ROUTES,
                   panel.RELINK_PATH, *console_edge_smoke.GET_PATHS, *console_edge_smoke.POST_PATHS,
                   *console_findings.ROUTES, *console_ocr.ROUTES, *console_oversight.ROUTES,
-                  *console_packets.ROUTES, console_redactions.ROUTE,
+                  *console_packets.ROUTES, console_redactions.ROUTE, *console_phone.PATHS,
                   '/calendar.ics', '/redactions', '/review', '/site-prs']
         # A primary-nav link served by a registered page (Timeline) is a route, not a reserved built-in path.
         self.assertEqual({urlsplit(path).path for path in inputs} - set(pages._ROUTES), pages.EXISTING_PATHS)

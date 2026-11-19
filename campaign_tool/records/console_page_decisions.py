@@ -20,10 +20,13 @@ REFUSALS = {
     "STALE_REVISION": "Refused. The item changed after this decision was recorded.",
     "SIGNATURE_REFUSED": "Refused. The records run could not verify the approval signature.",
     "INVALID_TRANSITION": "Refused. The item's state did not allow this decision.",
+    "REFUSED phone_expired": "Refused. The phone approval expired before the records run applied it. Tap again.",
+    "REFUSED phone_replay": "Refused. This phone approval was already used. Tap again.",
 }
 GENERIC_REFUSAL = re.compile(r"REFUSED [a-z_]{1,64}")  # console_apply.outcome's generic refusal envelope
 ACTIONS = {
     "approve": ("Approve draft", "Draft", "/review"),
+    "phone_approve": ("Approve draft (phone)", "Draft", "/review"),
     "reject": ("Reject draft", "Draft", "/review"),
     "edit": ("Edit draft", "Draft", "/review"),
     "packet_approve": ("Approve packet", "Packet", "/packets"),
