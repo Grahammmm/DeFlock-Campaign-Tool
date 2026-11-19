@@ -94,13 +94,21 @@ def sources_banner(unavailable, notes=()):
     return '<div role="status" class="diag">%s</div>' % esc(" ".join(text)) if text else ""
 
 
+def more_links():
+    """Static More links followed by the optional in-package page links."""
+    # Page modules can import the shared layout while the registry is loading.
+    from . import console_pages
+
+    return MORE + console_pages.nav_links()
+
+
 def nav(active=None):
     def link(label, href):
         current = ' aria-current="page"' if label == active else ''
-        return '<a href="%s"%s>%s</a>' % (href, current, label)
+        return '<a href="%s"%s>%s</a>' % (esc(href), current, esc(label))
     return ('<nav aria-label="Sections" class="side">' +
             ''.join(link(*pair) for pair in LINKS) + '<p class="more">More: ' +
-            ' · '.join(link(*pair) for pair in MORE) + '</p></nav>')
+            ' · '.join(link(*pair) for pair in more_links()) + '</p></nav>')
 
 
 def start(title, active=None):

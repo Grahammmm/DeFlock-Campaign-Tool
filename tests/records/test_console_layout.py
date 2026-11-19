@@ -27,7 +27,9 @@ class Markup(HTMLParser):
 class LayoutTests(Base):
     def test_nav_order_and_active(self):
         self.assertEqual(layout.LINKS[-1], ("Settings", "/settings"))
-        expected = [url for _, url in layout.LINKS + layout.MORE]
+        more = layout.more_links()
+        self.assertEqual(more[:len(layout.MORE)], layout.MORE)
+        expected = [url for _, url in layout.LINKS + more]
         for active, current in ((None, []), ('Calendar', ['/calendar']), ('unknown', []),
                                 ('<script>', [])):
             with self.subTest(active=active):
@@ -78,7 +80,9 @@ class LayoutTests(Base):
                             rows = list(con.iterdump())
                     return files, rows
                 before = snapshot()
-                paths = dict.fromkeys(url.split('#')[0] for _, url in layout.LINKS + layout.MORE)
+                nav_urls = [u for _, u in layout.LINKS + layout.more_links()]
+                registered = set(nav_urls[len(layout.LINKS + layout.MORE):])
+                paths = dict.fromkeys(url.split('#')[0] for url in nav_urls)
                 paths['/agency?agency=alpha-pd'] = None
                 for path in paths:
                     with self.subTest(path=path, populated=populated):
@@ -86,7 +90,7 @@ class LayoutTests(Base):
                         self.assertEqual(status, 200)
                         parsed = Markup(html)
                         self.assertEqual(parsed.links[0], '#content')  # the skip link comes first
-                        self.assertEqual(parsed.links[1:1 + len(layout.LINKS + layout.MORE)], [u for _, u in layout.LINKS + layout.MORE])
+                        self.assertEqual(parsed.links[1:1 + len(nav_urls)], nav_urls)
                         self.assertEqual(parsed.tags.count('main'), 1)
                         self.assertEqual(parsed.ids.count('content'), 1)
                         self.assertIn(layout.STYLE, html)
@@ -94,7 +98,8 @@ class LayoutTests(Base):
                         active = {'/': '/', '/board': '/board', '/calendar': '/calendar',
                                   '/documents': '/documents', '/settings': '/settings', '/agency?agency=alpha-pd': '/board',
                                   '/automation': '/automation', '/ocr-review': '/ocr-review', '/findings/review': '/findings/review'}
-                        self.assertEqual(parsed.current, [active[path]] if path in active else [])
+                        current = active.get(path, path if path in registered else None)
+                        self.assertEqual(parsed.current, [current] if current else [])
                         if path == '/':
                             self.assertTrue({'decide', 'more'} <= set(parsed.ids))
                         if path == '/calendar':
