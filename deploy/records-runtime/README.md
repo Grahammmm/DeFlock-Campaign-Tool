@@ -760,6 +760,25 @@ but `BACKUP_OK` exits 1 and writes a codes-only alert in `BACKUP_DIR-alerts` bes
 takes the records run lock, never backs up and never writes into the project or the backup directory. Making a backup is the
 operator's attended procedure in `docs/RECORDS-BACKUP-OPERATIONS.md`. Installing the timer is a separate approved step.
 
+## Hosted console units (DFCON17-15, opt-in)
+
+Setting both `console_port` (1024..65535, never 8781) and `console_export_root` (absolute, normalised) in VALUES.json
+also renders `records-console.service` (`records panel --export-root ROOT --run-id auto --run-report
+RUNTIME_DIR/SCHEDULED_TARGET/run-report.json --port PORT --actor G`), `records-console-check.service` (`records
+console-check --port PORT --export-root ROOT --max-age-hours 36`) and an hourly `records-console-check.timer`.
+`console_decisions_dir` (optional, absolute) adds `--decisions-dir`; without it every POST is refused. Neither key alone,
+a decisions directory without the pair, any send/bind-style key, a console port equal to another rendered unit's listener,
+or a port outside the range is refused before any file is written. The panel binds 127.0.0.1 only and is never given
+`--send-config`. Without the keys the output is unchanged. Rendering and `systemd-analyze --user verify` are syntax and
+argv evidence only, not a phone or host run.
+
+- **ATTENDED install** (operator, after the target values are chosen): copy the three rendered units into
+  `~/.config/systemd/user/`, run `systemctl --user daemon-reload`, then `systemctl --user enable --now records-console.service
+  records-console-check.timer`. The renderer installs, enables and starts nothing.
+- **ATTENDED rollback** (operator): `systemctl --user disable --now records-console-check.timer records-console.service`,
+  remove the three unit files, `systemctl --user daemon-reload`, and re-point to the previous unit selection (for example
+  the 127.0.0.1:8781 fallback console). Exported data is untouched.
+
 ## Mail arrival
 
 With `RECORDS_DROP_DIR` configured, rendering also produces

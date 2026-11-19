@@ -26,6 +26,11 @@ stays, so a slot missed during downtime catches up.
 With --analysis-root ROOT (and the CONTAINER_* values) it also renders run-analysis.sh (0700), records-analysis.service
 and records-analysis.timer; without it the output is exactly as before.
 
+Opt-in console units (DFCON17-15): VALUES.json keys console_port (1024..65535, not 8781) and console_export_root
+(absolute), required together, optionally console_decisions_dir, also render records-console.service (loopback
+panel, never --send-config) and records-console-check.service/.timer (hourly `records console-check`). Any other
+send/bind/console key, a port equal to another rendered listener or a half pair is refused before any write.
+
 Output: run-records.sh (0700), records-run.service, records-run.timer,
 records-arrival.path, records-arrival.service, records-health.service,
 records-health.timer and targets/NAME.json (0600). Installing them into the private runtime and the
@@ -67,6 +72,18 @@ BACKUP_CHECK_TEMPLATES = (("records-backup-check.service.in", "records-backup-ch
 ANALYSIS_TEMPLATES = (("run-analysis.sh.in", "run-analysis.sh", 0o700),
                       ("records-analysis.service.in", "records-analysis.service", 0o600),
                       ("records-analysis.timer.in", "records-analysis.timer", 0o600))
+# DFCON17-15: rendered only when console_port and console_export_root are both given (lower-case keys, popped
+# from VALUES before the shell-safe check; console_decisions_dir is optional). The panel is hard-bound to
+# 127.0.0.1 and has no bind option, so no value may add a bind, --send-config or any other panel flag.
+CONSOLE_TEMPLATES = (("records-console.service.in", "records-console.service", 0o600),
+                     ("records-console-check.service.in", "records-console-check.service", 0o600),
+                     ("records-console-check.timer.in", "records-console-check.timer", 0o600))
+CONSOLE_KEYS = {"console_port", "console_export_root", "console_decisions_dir"}
+CONSOLE_PORT_RANGE = (1024, 65535)
+CONSOLE_RESERVED_PORTS = {8781}  # the existing SSH-fallback console
+CONSOLE_PANEL_FLAGS = {"--export-root", "--run-id", "--run-report", "--port", "--actor", "--decisions-dir"}
+REFUSED_KEY = re.compile(r"send|bind|listen|mail_?drafts|manual_?events")
+LISTENER_PORT = re.compile(r"--port[= ](\d+)|ListenStream=(?:[^\s]*:)?(\d+)\s*$", re.MULTILINE)
 PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 SAFE_VALUE = re.compile(r"^[A-Za-z0-9_./:+=,-]+$")
 ABSOLUTE = {"ANALYSIS_ROOT", "BACKUP_DIR", "ENGINE_DIR", "DOCKER", "TIMEOUT", "FLOCK", "RUNTIME_DIR", "HOST_PYTHON",
@@ -130,6 +147,61 @@ ONCALENDAR_LINE = re.compile(r"(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:\.\.(?:Mon|T
 
 class RenderError(ValueError):
     pass
+
+
+def split_console(values):
+    """Return (values without console_* keys, validated console values or None). Refuses before any write."""
+    if not isinstance(values, dict):
+        raise RenderError("values: expected a JSON object")
+    console = {key: value for key, value in values.items() if key in CONSOLE_KEYS}
+    rest = {key: value for key, value in values.items() if key not in CONSOLE_KEYS}
+    for key in rest:
+        lower = key.lower()
+        if REFUSED_KEY.search(lower) or (lower.startswith("console_") and key != "CONSOLE_EXPORT_DIR"):
+            raise RenderError(f"{key}: refused; the console is loopback-only with no send config, bind or extra flags "
+                              f"(only console_port, console_export_root and console_decisions_dir are accepted)")
+    if not console:
+        return rest, None
+    if "console_decisions_dir" in console and not {"console_port", "console_export_root"} <= set(console):
+        raise RenderError("console_decisions_dir: needs console_port and console_export_root")
+    if set(console) & {"console_port", "console_export_root"} != {"console_port", "console_export_root"}:
+        raise RenderError("console: console_port and console_export_root are required together")
+    port = console["console_port"]
+    if isinstance(port, bool) or not (isinstance(port, int) or isinstance(port, str)
+                                      and re.fullmatch(r"[1-9][0-9]{0,4}", port)):
+        raise RenderError("console_port: expected a decimal integer")
+    port = int(port)
+    if not CONSOLE_PORT_RANGE[0] <= port <= CONSOLE_PORT_RANGE[1] or port in CONSOLE_RESERVED_PORTS:
+        raise RenderError(f"console_port: expected {CONSOLE_PORT_RANGE[0]} to {CONSOLE_PORT_RANGE[1]}, "
+                          f"not {sorted(CONSOLE_RESERVED_PORTS)}")
+    checked = {"CONSOLE_PORT": str(port)}
+    for key, name in (("console_export_root", "CONSOLE_EXPORT_ROOT"), ("console_decisions_dir", "CONSOLE_DECISIONS_DIR")):
+        if key not in console:
+            continue
+        value = console[key]
+        if not isinstance(value, str) or not SAFE_VALUE.match(value) or not value.startswith("/") \
+                or os.path.normpath(value) != value or value == "/":
+            raise RenderError(f"{key}: expected a normalised absolute shell-safe path")
+        checked[name] = value
+    checked["CONSOLE_DECISIONS_ARGS"] = (f" --decisions-dir {checked['CONSOLE_DECISIONS_DIR']}"
+                                         if "CONSOLE_DECISIONS_DIR" in checked else "")
+    return rest, checked
+
+
+def check_console_listener(port, files):
+    """Refuse a console port equal to another rendered unit's explicit listener port."""
+    for output, text, _ in files:
+        for match in LISTENER_PORT.finditer(text):
+            if int(match.group(1) or match.group(2)) == int(port):
+                raise RenderError(f"console_port: {port} is already listened on by {output}")
+
+
+def check_console_service(text):
+    """The rendered panel argv may only carry the expected flags: never --send-config, never a bind."""
+    start = next((line for line in text.splitlines() if line.startswith("ExecStart=")), "")
+    flags = {token.split("=", 1)[0] for token in start.split() if token.startswith("--")}
+    if flags - CONSOLE_PANEL_FLAGS or "--send-config" in start:
+        raise RenderError(f"console service: unexpected flag(s) {sorted(flags - CONSOLE_PANEL_FLAGS)}")
 
 
 def check_values(values):
@@ -304,6 +376,7 @@ def check_overlap(plans):
 
 
 def render(values, targets, out):
+    values, console = split_console(values)
     check_values(values)
     out = Path(out).resolve()
     if inside_git_checkout(out):
@@ -365,6 +438,14 @@ def render(values, targets, out):
         files.append((f"targets/{name}.json", rendered, 0o600))
         plans.append((name, config))
     check_overlap(plans)
+    if console:  # opt-in console group; the other units above are untouched
+        check_console_listener(console["CONSOLE_PORT"], files)
+        for template, output, mode in CONSOLE_TEMPLATES:
+            text = (HERE / template).read_text(encoding="utf-8")
+            used.update(PLACEHOLDER.findall(text))
+            files.append((output, substitute(text, {**values, **console}, template), mode))
+        check_console_service(next(text for output, text, _ in files if output == "records-console.service"))
+        check_health_timer(next(text for output, text, _ in files if output == "records-console-check.timer"))
     unknown = sorted(set(values) - used - set(TIMER_KEYS))
     if unknown:
         raise RenderError(f"values: unknown placeholder(s) {unknown}")

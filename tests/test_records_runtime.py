@@ -1522,6 +1522,110 @@ class RendererTests(unittest.TestCase):
     def test_unknown_timer_value_names_still_refused(self):
         self.assert_refused("unknown placeholder", values={**self.values, "TIMER_DAY": "Mon"})
 
+    # DFCON17-15. The staged C3 kit's panel ExecStart (paths replaced by PATH): the contract the rendered unit must keep.
+    C3_PANEL_ARGV = ["PY", "-B", "-m", "campaign_tool.records", "panel", "--export-root", "PATH", "--run-id", "auto",
+                     "--run-report", "PATH", "--port", "8782", "--actor", "G"]
+    CONSOLE = {"console_port": "8782", "console_export_root": "/srv/console-export"}
+    CONSOLE_OUTPUTS = {"records-console.service", "records-console-check.service", "records-console-check.timer"}
+
+    def exec_argv(self, name, out="out"):
+        line = next(l for l in (self.tmp / out / name).read_text().splitlines() if l.startswith("ExecStart="))
+        tokens = shlex.split(line.split("=", 1)[1])
+        tokens[0] = "PY"
+        return [("PATH" if prev in ("--export-root", "--run-report") else token)
+                for prev, token in zip([None] + tokens, tokens)]
+
+    def test_console_units_opt_in_matches_staged_contract(self):
+        # Owner: opt-in group. Catches rendering a console unconditionally, passing the wrong report/config, or a
+        # send/bind flag, and any change to bytes of the existing units.
+        self.do_render(out=self.tmp / "plain")
+        written = self.do_render({**self.values, **self.CONSOLE, "console_port": 8782}, out=self.tmp / "out")
+        plain, out = self.tmp / "plain", self.tmp / "out"
+        self.assertFalse(list(plain.glob("records-console*")))
+        self.assertEqual(self.CONSOLE_OUTPUTS, set(written) - {p.relative_to(plain).as_posix()
+                                                               for p in plain.rglob("*") if p.is_file()})
+        for path in plain.rglob("*"):
+            if path.is_file():
+                self.assertEqual(path.read_bytes(), (out / path.relative_to(plain)).read_bytes(), path.name)
+        self.assertEqual(self.exec_argv("records-console.service"), self.C3_PANEL_ARGV)
+        service = (out / "records-console.service").read_text()
+        self.assertIn("--export-root /srv/console-export ", service)
+        self.assertIn("--run-report /srv/runtime/TEST/run-report.json ", service)
+        self.assertNotIn("send-config", service)
+        self.assertNotIn("--decisions-dir", service)
+        self.assertEqual(self.exec_argv("records-console-check.service"),
+                         ["PY", "-B", "-m", "campaign_tool.records", "console-check", "--port", "8782",
+                          "--export-root", "PATH", "--max-age-hours", "36"])
+        timer = (out / "records-console-check.timer").read_text().splitlines()
+        self.assertIn("OnCalendar=hourly", timer)
+        self.assertIn("Persistent=true", timer)
+        self.assertIn("Unit=records-console-check.service", timer)
+        for name in self.CONSOLE_OUTPUTS:
+            self.assertEqual(stat.S_IMODE((out / name).stat().st_mode), 0o600, name)
+            self.assertIsNone(re.search(r"@[A-Z_]+@", (out / name).read_text()), name)
+        self.do_render({**self.values, **self.CONSOLE, "console_decisions_dir": "/srv/decisions"},
+                       out=self.tmp / "dec")
+        self.assertEqual(self.exec_argv("records-console.service", "dec"),
+                         self.C3_PANEL_ARGV + ["--decisions-dir", "/srv/decisions"])
+
+    def test_console_render_refuses_configuration_before_writes(self):
+        # Owner: fail-closed console values. Catches partial output and flag/bind/send injection.
+        good = {"console_port": "8782", "console_export_root": "/srv/console-export"}
+        cases = {
+            "half pair, port only": ({"console_port": "8782"}, "required together"),
+            "half pair, root only": ({"console_export_root": "/srv/x"}, "required together"),
+            "decisions alone": ({"console_decisions_dir": "/srv/d"}, "needs console_port"),
+            "port bool": ({**good, "console_port": True}, "decimal integer"),
+            "port token": ({**good, "console_port": "8782 --send-config"}, "decimal integer"),
+            "port leading zero": ({**good, "console_port": "08782"}, "decimal integer"),
+            "port too low": ({**good, "console_port": "1023"}, "console_port"),
+            "port too high": ({**good, "console_port": "65536"}, "console_port"),
+            "port reserved": ({**good, "console_port": "8781"}, "console_port"),
+            "root relative": ({**good, "console_export_root": "export"}, "absolute"),
+            "root injected": ({**good, "console_export_root": "/srv/x --send-config /y"}, "absolute"),
+            "root not normal": ({**good, "console_export_root": "/srv/../x"}, "normalised"),
+            "decisions injected": ({**good, "console_decisions_dir": "/d;rm"}, "absolute"),
+            "send config key": ({**good, "console_send_config": "/srv/s"}, "refused"),
+            "SEND_CONFIG key": ({**good, "SEND_CONFIG": "/srv/s"}, "refused"),
+            "bind key": ({**good, "console_bind": "0.0.0.0"}, "refused"),
+            "listen key": ({**good, "CONSOLE_LISTEN": "0.0.0.0"}, "refused"),
+        }
+        for label, (extra, fragment) in cases.items():
+            with self.subTest(label):
+                out = self.tmp / ("out-" + str(len(label)) + label[:3])
+                self.assert_refused(fragment, values={**self.values, **extra}, out=out)
+                self.assertFalse(out.exists() and any(out.iterdir()), "partial output")
+
+    def test_console_port_equal_to_another_rendered_listener_is_refused(self):
+        # Owner: listener-clash validator, exercised on a synthetic plan (no current template listens).
+        other = [("other.service", "[Service]\nExecStart=/bin/x serve --port 8782\n", 0o600),
+                 ("other.socket", "[Socket]\nListenStream=127.0.0.1:8790\n", 0o600)]
+        for port in ("8782", "8790"):
+            with self.assertRaisesRegex(self.render.RenderError, "already listened"):
+                self.render.check_console_listener(port, other)
+        self.render.check_console_listener("8783", other)
+
+    def test_rendered_console_units_pass_systemd_analyze_user_verify(self):
+        analyzer = shutil.which("systemd-analyze")
+        if not analyzer:
+            self.skipTest("systemd-analyze not installed")
+        self.do_render({**self.values, **self.CONSOLE, "HOST_PYTHON": sys.executable})
+        out = self.tmp / "out"
+        try:
+            result = subprocess.run([analyzer, "--user", "verify", str(out / "records-console-check.timer"),
+                                     str(out / "records-console-check.service"),
+                                     str(out / "records-console.service")],
+                                    capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            self.skipTest("systemd-analyze --user verify timed out (no user manager)")
+        if re.search(r"Failed to connect|No such file or directory.*bus|user manager|Operation not permitted",
+                     result.stderr) and "records-console" not in result.stderr:
+            self.skipTest("systemd-analyze --user unavailable: " + result.stderr.strip()[:200])
+        # Only host-specific complaints (paths absent on this machine) may remain.
+        problems = [line for line in result.stderr.splitlines()
+                    if "records-console" in line and "Executable" not in line and "not found" not in line]
+        self.assertEqual(problems, [], result.stderr)
+
 
 class StageContractTests(unittest.TestCase):
     def setUp(self):
