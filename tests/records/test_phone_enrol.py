@@ -183,6 +183,20 @@ class Line(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertEqual(pe.load(str(self.enrol / name))["blob"], parsed["blob"])
 
+    # Bug caught: fsync/write failing AND the cleanup unlink failing, with store() re-raising a plain OSError that the
+    # caller reads as "nothing was recorded" while a complete or partial record survives.
+    def test_a_failed_write_whose_cleanup_also_fails_says_a_record_may_remain(self):
+        args = (str(self.enrol), RP_ID, CHALLENGE, CRED_ID, *registration(Phone()))
+        for target in ("fsync", "write"):
+            with self.subTest(target), mock.patch.object(pe.os, target, side_effect=OSError("synthetic failure")), \
+                    mock.patch.object(pe.os, "unlink", side_effect=PermissionError("synthetic unlink failure")):
+                with self.assertRaises(pe.RecordLeftBehind) as caught:
+                    pe.store(*args)
+            self.assertIsInstance(caught.exception, OSError)
+            (name,) = os.listdir(self.enrol)  # the record really survived: the error is not a false "nothing left"
+            self.assertIn(name, str(caught.exception))
+            os.unlink(self.enrol / name)
+
 
 class Page(Journal):
     def setUp(self):
@@ -259,6 +273,22 @@ class Page(Journal):
         self.assertEqual(status, 503, body[:300])
         self.assertIn("Nothing was recorded", body)
         self.assertEqual((os.listdir(self.enrol), self.lines()), ([], []))
+
+    # Bug caught: the POST saying "Nothing was recorded" when the failed record could not be removed and survives.
+    def test_a_storage_failure_that_cannot_be_cleaned_up_does_not_claim_nothing_was_recorded(self):
+        self.up(phone_enrol_dir=str(self.enrol))
+        with mock.patch.object(cpe, "_rp_id", return_value=RP_ID):
+            fields = self.fields(self.get(cpe.PATH))
+            att, client = registration(Phone(), challenge=pe.unb64url(fields["challenge"]))
+            with mock.patch.object(pe.os, "fsync", side_effect=OSError("synthetic fsync failure")), \
+                    mock.patch.object(pe.os, "unlink", side_effect=PermissionError("synthetic unlink failure")):
+                status, _, body = self.decide(cpe.PATH, **dict(fields, credential_id=pe.b64url(CRED_ID),
+                                                               attestation_object=pe.b64url(att),
+                                                               client_data=pe.b64url(client)))
+        self.assertEqual(status, 503, body[:300])
+        self.assertNotIn("Nothing was recorded", body)
+        self.assertIn("may remain", body)
+        self.assertEqual((len(os.listdir(self.enrol)), self.lines()), (1, []))
 
     def test_the_option_needs_the_journal_and_its_own_private_directory(self):
         loose = self.tmp / "loose"

@@ -47,6 +47,10 @@ class EnrolError(ValueError):
     """A content-free refusal code; never carries record bytes."""
 
 
+class RecordLeftBehind(OSError):
+    """store() failed AND the new record could not be removed: a complete or partial record may remain."""
+
+
 # ---- minimal strict CBOR -------------------------------------------------------------------------------------------
 
 class _Cbor:
@@ -220,7 +224,8 @@ def check_dir(path, *others):
 
 def store(directory, rp_id, challenge, credential_id, attestation_object, client_data, now=None):
     """Parse, then write ONE public record as a new 0600 file; -> (file name, parsed). EnrolError or OSError/ValueError
-    (directory unusable or full) leave nothing behind."""
+    (directory unusable or full) leave nothing behind; if the failed record cannot be removed either, RecordLeftBehind
+    (an OSError) says so."""
     parsed = parse(attestation_object, client_data, rp_id, challenge, credential_id)
     check_dir(directory)
     if sum(1 for name in os.listdir(directory) if name.startswith(PREFIX)) >= MAX_RECORDS:
@@ -245,11 +250,15 @@ def store(directory, rp_id, challenge, credential_id, attestation_object, client
             os.fsync(fd)
         finally:
             os.close(fd)
-    except BaseException:
+    except BaseException as failure:
         try:
             os.unlink(path)  # a failed write/fsync/close must not leave a partial record behind
-        except OSError:
-            pass
+        except FileNotFoundError:
+            pass  # already gone: nothing is left
+        except OSError as stuck:
+            # Removal cannot be established: a complete or partial record may remain, so say that instead of
+            # letting the caller report "nothing was recorded".
+            raise RecordLeftBehind("phone_enrol_record_may_remain: %s" % name) from stuck
         raise
     return name, parsed
 

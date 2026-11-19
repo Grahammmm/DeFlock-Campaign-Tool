@@ -153,6 +153,9 @@ def post(handler):
         name, parsed = phone_enrol.store(directory, rp_id, *values)
     except phone_enrol.EnrolError as error:
         return handler._fail(400, detail="The passkey was not accepted (%s). Nothing was recorded." % error) or True
+    except phone_enrol.RecordLeftBehind:  # before OSError: it is one. Never claim "nothing was recorded" here
+        return handler._fail(503, detail="The passkey could not be saved cleanly and a partial record may remain in "
+                             "the enrolment folder. Do not rely on it. Ask the operator to check the folder.") or True
     except (OSError, ValueError):
         return handler._fail(503, detail="The enrolment folder is unavailable or full. Nothing was recorded. "
                              "Ask the operator.") or True
