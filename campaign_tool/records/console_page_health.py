@@ -60,6 +60,10 @@ REASONS = {
     "disk_low": "A filesystem is low on free space.",
     "disk_ok": "The checked filesystems have enough free space.",
     "disk_unreadable": "Free space could not be read for a filesystem.",
+    "backup_none": "No backup has been recorded for the check to verify.",
+    "digests_invalid": "The backup record list could not be read or is malformed.",
+    "backup_verify_failed": "The newest recorded backup set failed verification.",
+    "backup_stale": "The newest recorded backup is older than the allowed age.",
 }
 
 
@@ -145,6 +149,27 @@ def _alerts(target):
     return (("<ul>" + "".join(rows) + "</ul>" if rows else "<p>No validated open alerts found.</p>")
             + (f"<p>{ignored} entries not shown (not open alerts or could not be validated).</p>" if ignored else ""))
 
+def _backups(directory):
+    """Open backup-check alarms only. Absence of an alarm is never shown as proof that a backup exists or was verified."""
+    if directory is None:
+        return "<p>Backups: not configured on this console.</p>"
+    result = read_open_alerts(directory)
+    if result["state"] != "ok":
+        return "<p>Backups: unavailable: the backup alerts directory cannot be read safely.</p>"
+    rows = [r for r in result["rows"] if r["check"] == "backup"]
+    ignored = result["ignored"] + len(result["rows"]) - len(rows)  # other checks' alerts are counted, never shown
+    if rows:
+        shown = ("<ul>" + "".join(f"<li><strong>{_label(r['check'])}: {r['state']}</strong> — {_reason(r['reason_code'])}<br>"
+                                   f"First seen: {_pacific(r['first_seen'])}; Last seen: {_pacific(r['last_seen'])}</li>" for r in rows) + "</ul>")
+    else:
+        try:
+            changed = _pacific(datetime.fromtimestamp(result["mtime"], timezone.utc))
+        except (OSError, OverflowError, ValueError):
+            changed = "unknown"
+        shown = (f"<p>No open backup alert. The alerts directory last changed {changed}. "
+                 "This is not evidence that a backup exists or was verified.</p>")
+    return shown + (f"<p>{ignored} entries not shown (not open backup alerts or could not be validated).</p>" if ignored else "")
+
 def _disk(label, path):
     from . import admin_panel
 
@@ -220,7 +245,8 @@ def serve(handler):
                 f"{_details(c, report, roles)}</p>" for c in checks)
     if not checks:
         body.append(f"<p>Health checks: unavailable: {'no checks were returned.' if report else fault}</p>")
-    body.extend(("<h2>Open alerts</h2>", _alerts(target), "<h2>Free disk space</h2>",
+    body.extend(("<h2>Open alerts</h2>", _alerts(target), "<h2>Backups</h2>", _backups(handler.server.backup_alerts_dir),
+                 "<h2>Free disk space</h2>",
                  "<ul>" + _disk(roles["runtime"], runtime) + _disk(roles["records_root"], root) + "</ul>" if system
                  else "<p>Disk readings: unavailable: Disk checks are disabled.</p>",
                  "<h2>Console export freshness</h2>", _export(pin, path, now),

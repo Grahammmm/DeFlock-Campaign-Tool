@@ -634,6 +634,10 @@ DOCUMENT stays explicit (a proposal carries no original location). Each processe
 (APPLIED, STALE_PROPOSAL, SIGNATURE_REFUSED, INVALID_ENTRY or SIGNOFF_CONFLICT); a second run prints ALREADY. If the trust anchor is unavailable the
 entry is DEFERRED with no receipt and a rerun retries. `records decisions-apply` skips these entries (`SIGNOFF_APPLY_REQUIRED`).
 
+### Backup alarms on System health (DFCON17-06)
+
+`--backup-alerts-dir DIR` (absolute, an existing real directory, not a symlink and disjoint from the project, `--export-root`, `--decisions-dir` and the other console directories, else `backup_alerts_dir_invalid`) is the host path where the operator makes the `records backup-check` alerts directory (`<into>-alerts`) visible to the console. `GET /health` then has a Backups section listing each open `backup` alert (reason in plain words, first and last seen in Pacific time); DIR is read-only and nothing in it is created or written, and no set path or digest is shown. With no open alert it says "No open backup alert" with the directory's last change time, which is not evidence that a backup exists or was verified (a clean check clears the alert and a missing check leaves nothing); an unreadable DIR is "unavailable", and without the option the section says "not configured on this console".
+
 ### Hosted decisions behind Access (DFB-11)
 
 `records panel --export-root DIR --run-id auto --decisions-dir J --public-origin URL --access-config C --access-keys K --actor G` is the
