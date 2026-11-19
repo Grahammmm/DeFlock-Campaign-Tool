@@ -38,8 +38,18 @@ def user_runtime_unavailable(output):
 
 
 def systemd_user_verify(analyze, *units, cwd):
-    result = subprocess.run([analyze, "--user", "verify", *map(str, units)],
-                            capture_output=True, text=True, timeout=30, cwd=cwd)
+    env = dict(os.environ)
+    runtime_dir = env.get("XDG_RUNTIME_DIR")
+    temp_runtime_dir = None
+    if not runtime_dir or not os.path.isdir(runtime_dir):
+        temp_runtime_dir = tempfile.mkdtemp(prefix="sd-user-rt-")
+        env["XDG_RUNTIME_DIR"] = temp_runtime_dir
+    try:
+        result = subprocess.run([analyze, "--user", "verify", *map(str, units)],
+                                capture_output=True, text=True, timeout=30, cwd=cwd, env=env)
+    finally:
+        if temp_runtime_dir is not None:
+            shutil.rmtree(temp_runtime_dir)
     return result, result.stdout + result.stderr
 
 
@@ -128,18 +138,40 @@ class MailArrivalTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertFalse(user_runtime_unavailable(text))
 
+    def broken_verify_unit(self):
+        bad = self.base / "bad.service"
+        bad.write_text("[Unit]\nRequires=connection-missing.service\n\n[Service]\nExecStart=/bin/true\n")
+        return bad
+
     def test_real_unit_verify_error_is_not_skipped(self):
         analyze = shutil.which("systemd-analyze")
         if analyze is None:
             self.skipTest("systemd-analyze not available")
-        bad = self.base / "bad.service"
-        bad.write_text("[Unit]\nRequires=connection-missing.service\n\n[Service]\nExecStart=/bin/true\n")
-        result, output = systemd_user_verify(analyze, bad, cwd=self.base)
+        result, output = systemd_user_verify(analyze, self.broken_verify_unit(), cwd=self.base)
         if user_runtime_unavailable(output):
             self.skipTest("systemd user runtime unavailable: " + output[:120])
         self.assertNotEqual(result.returncode, 0, output)
         self.assertIn("connection-missing.service", output)
         self.assertFalse(user_runtime_unavailable(output), output)
+
+    def test_verify_runs_without_session_runtime_dir(self):
+        # Contract: offline verify works without a login session (prebatch, CI).
+        # Bug: a missing runtime dir looked like a unit failure and left an approved PR stuck.
+        analyze = shutil.which("systemd-analyze")
+        if analyze is None:
+            self.skipTest("systemd-analyze not available")
+        self.render()
+        with mock.patch.dict(os.environ):
+            os.environ.pop("XDG_RUNTIME_DIR", None)
+            with self.subTest(graph="rendered"):
+                result, output = systemd_user_verify(analyze, self.out / "records-arrival.path",
+                                                     self.out / "records-arrival.service", cwd=self.base)
+                self.assertEqual(result.returncode, 0, output)
+            with self.subTest(graph="missing dependency"):
+                result, output = systemd_user_verify(analyze, self.broken_verify_unit(), cwd=self.base)
+                self.assertNotEqual(result.returncode, 0, output)
+                self.assertIn("connection-missing.service", output)
+                self.assertFalse(user_runtime_unavailable(output), output)
 
     def test_render_private_substituted_and_absent_without_drop(self):
         script = self.render()
