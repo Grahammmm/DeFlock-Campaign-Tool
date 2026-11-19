@@ -45,7 +45,7 @@ intake.
 
 ## Pipeline health watch
 
-`records pipeline-health --runtime-dir ABS --target NAME --root RECORDS_ROOT [--mail-store DIR] [--analysis-root DIR [--analysis-max-minutes 60]] [--console-export-root DIR] [--now ISO] [--json] [--record-alerts]`
+`records pipeline-health --runtime-dir ABS --target NAME --root RECORDS_ROOT [--mail-store DIR] [--analysis-root DIR [--analysis-max-minutes 60]] [--console-export-root DIR] [--disk-warn-gib 100] [--disk-stop-gib 30] [--now ISO] [--json] [--record-alerts]`
 reads the existing state files and prints one line, `Run health: <state> - <reason>`, for the console, the run summary or a
 Telegram line elsewhere. It never runs, retries, restarts, notifies or clears anything, and reads no credentials. **This unit
 installs no timer or service**; wiring it to one is a separate deploy step. Exit codes: `ok` 0, `warn` 1, `unknown` 2, `stop` 3
@@ -73,6 +73,9 @@ are never touched; a symlinked or foreign-owned alert directory or file is refus
 | `console_export_stale` | stop | `--console-export-root`'s `current/EXPORT.json` (absent counts) names another run than `run-report.json`, which finished over 15 min ago: the console shows an older run; check the run log's `console export` line. `console_export_pending` (ok): within the 15 min. |
 | `analysis_unreadable`, `console_export_unreadable`, `console_export_no_run` | unknown | The analysis root, cycle log or ledger, or the export manifest, cannot be read; or there is no valid run report to compare. |
 | `analysis_not_configured`, `console_export_not_configured` | unknown | The root was not given. These two are listed in `--json` but, unlike the other unknowns, never change the overall state or the line, so a unit rendered before the lane or export exists keeps its old result. `render.py` adds the flags to `records-health.service` when `ANALYSIS_ROOT` / `CONSOLE_EXPORT_DIR` are rendered. |
+| `disk_low` | warn | The `disk` check: free space (`os.statvfs` `f_bavail * f_frsize`) of the volume holding `--runtime-dir` or `--root` is below `--disk-warn-gib` (default 100). Each volume (by device) is read once; the report carries `free_gib` and `path_role` (`runtime` or `records_root`), never a path. Free space before the next 20 GB backup, then the run. |
+| `disk_critical` | stop | Free space is below `--disk-stop-gib` (default 30; must be lower than warn, both 1 to 10000, else exit 2 before anything is read). `disk_ok` is ok. Nothing is deleted or cleaned up. |
+| `disk_unreadable` | unknown | A volume could not be read (`path_role` names which; `free_gib` is null). It never hides a known low volume on the other root, and never clears an open alert. |
 
 Historical reports in `reports/` that finished after the assessment clock are ignored by the failure-streak and notify checks and by the oversight run table, so a future-dated success cannot reset a failure streak or suppress a notify alert; they count with the skipped reports. Limits are in `pipeline_health.LIMITS`. A machine-valid report is review-required, not semantic acceptance of the run.
 

@@ -28,7 +28,8 @@ class StagingTests(Base):
 
     def argv(self):
         return ["--runtime-dir", str(self.runtime), "--target", "t", "--root", str(self.root),
-                "--mail-store", str(self.store), "--now", NOW.isoformat(), "--json", "--record-alerts"]
+                "--mail-store", str(self.store), "--now", NOW.isoformat(), "--json", "--record-alerts",
+                "--disk-warn-gib", "2", "--disk-stop-gib", "1"]  # the subprocess run reads the real disk: keep it off these assertions
 
     def run_cli(self):
         cmd = [sys.executable, "-B", "-m", "campaign_tool.records", "pipeline-health", *self.argv()]
