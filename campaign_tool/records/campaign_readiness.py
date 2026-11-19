@@ -18,7 +18,9 @@ FIELDS = ("schema_version", "campaign_id", "display_name", "law_package", "publi
           "records_mailbox_label", "timezone")
 DEGRADED = {"READINESS_CONFIG_INVALID", "READINESS_SETTINGS_INVALID", "READINESS_ASKS_UNAVAILABLE",
             "READINESS_COVERAGE_UNAVAILABLE", "READINESS_PROFILE_INVALID", "READINESS_METHOD_UNAVAILABLE",
-            "READINESS_RETENTION_INVALID", "READINESS_LAW_UNAVAILABLE", "READINESS_PORTAL_APPROVAL_UNAVAILABLE"}
+            "READINESS_RETENTION_INVALID", "READINESS_LAW_UNAVAILABLE", "READINESS_PORTAL_APPROVAL_UNAVAILABLE",
+            "READINESS_OUTPUTS_UNWRITABLE"}
+OUTPUTS = ("run-outputs", "approvals")
 REFUSALS = ("READINESS_PROJECT_UNAVAILABLE", "READINESS_CAMPAIGN_ROOT_UNAVAILABLE", "READINESS_AGENCIES_INVALID")
 _SLUG = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 _EDIT = "a person edits P/%s after reading docs/RECORDS-FOLLOWUP-ENGINE.md (nothing here changes it)"
@@ -69,6 +71,33 @@ def _probe(path, want):
         return "invalid"
     finally:
         os.close(fd)
+
+
+def _can(path, flags):
+    try:
+        return os.access(path, flags, effective_ids=True, follow_symlinks=False)
+    except (OSError, NotImplementedError):
+        return False
+
+
+def _writable(project):
+    """State of each output directory for the effective user; lstat and os.access only, nothing is created."""
+    states = {}
+    for name in OUTPUTS:
+        path = os.path.join(project, name)
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            states[name] = "missing_creatable" if _can(project, os.W_OK | os.X_OK) else "missing_not_creatable"
+            continue
+        except OSError:
+            states[name] = "present_not_writable"
+            continue
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+            states[name] = "present_unsafe"
+        else:
+            states[name] = "present_writable" if _can(path, os.W_OK | os.X_OK) else "present_not_writable"
+    return states
 
 
 def _issue(issues, code, field, kind, remediation, agency=None):
@@ -308,14 +337,19 @@ def collect(project, *, analysis_root=None, portal_approval_file=None):
                 "retention_file": _probe(os.path.join(project, "agency-retention.csv"), "file"),
                 "asks_directory": _probe(os.path.join(project, "agency-asks"), "dir"),
                 "coverage_directory": _probe(os.path.join(project, "followup-coverage"), "dir")}
-    return {"schema": SCHEMA, "campaign_fields": fields, "starter_files": starters, "law_package": law_status,
-            "portal_approval": approval, "agencies": rows, "issues": issues}
+    writable = _writable(project)
+    if not set(writable.values()) <= {"present_writable", "missing_creatable"}:
+        _issue(issues, "READINESS_OUTPUTS_UNWRITABLE", "writable", "human",
+               "An operator must create or correct the affected directory so it is owned by the records runner user and has mode 0700.")
+    return {"schema": SCHEMA, "campaign_fields": fields, "starter_files": starters, "writable": writable,
+            "law_package": law_status, "portal_approval": approval, "agencies": rows, "issues": issues}
 
 
 def render(report):
     lines = [report["schema"] + " (inventory only; not permission to send, publish or approve)"]
     lines.append("campaign_fields: " + " ".join("%s=%s" % kv for kv in report["campaign_fields"].items()))
     lines.append("starter_files: " + " ".join("%s=%s" % kv for kv in report["starter_files"].items()))
+    lines.append("writable: " + " ".join("%s=%s" % kv for kv in report["writable"].items()))
     lines.append("law_package: " + report["law_package"])
     lines.append("portal_approval: %s (presence only)" % report["portal_approval"])
     for row in report["agencies"]:

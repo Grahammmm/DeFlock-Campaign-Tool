@@ -134,6 +134,78 @@ class SloShapedTests(Base):
                     parent.unlink()
             saved.rename(parent)
 
+    def outputs(self, expect, code):
+        """Run once; assert both states, the single fixed issue (or none) and that nothing under tmp changed."""
+        before = snapshot(self.tmp)
+        report, status = self.report()
+        self.assertEqual((report["writable"], status), (expect, code))
+        found = [i for i in report["issues"] if i["code"] == "READINESS_OUTPUTS_UNWRITABLE"]
+        self.assertEqual(len(found), 0 if code == 0 else 1)
+        if found:
+            self.assertEqual((found[0]["field"], found[0]["kind"], found[0]["remediation"]),
+                             ("writable", "human", "An operator must create or correct the affected directory so it is "
+                                                   "owned by the records runner user and has mode 0700."))
+        self.assertEqual(snapshot(self.tmp), before)
+
+    def test_unsafe_outputs_are_degraded_without_following_links(self):
+        # Contract: a symlink, non-directory, loose-mode or foreign-owned target is present_unsafe even if writable;
+        # a bug that follows the link or trusts os.access would call these writable.
+        self.slo()
+        target = self.tmp / "elsewhere"
+        target.mkdir(mode=0o700)
+        (self.project / "approvals").symlink_to(self.tmp / "dangling")
+        (self.project / "run-outputs").mkdir()
+        os.chmod(self.project / "run-outputs", 0o770)
+        unsafe = {"run-outputs": "present_unsafe", "approvals": "present_unsafe"}
+        self.outputs(unsafe, 1)
+        (self.project / "approvals").unlink()
+        (self.project / "approvals").symlink_to(target, target_is_directory=True)
+        self.outputs(unsafe, 1)
+        (self.project / "approvals").unlink()
+        write(self.project / "approvals", "not a directory")
+        self.outputs(unsafe, 1)
+        (self.project / "approvals").unlink()
+        os.chmod(self.project / "run-outputs", 0o700)
+        (self.project / "approvals").mkdir(mode=0o700)
+        os.chmod(self.project / "approvals", 0o700)
+        self.outputs({"run-outputs": "present_writable", "approvals": "present_writable"}, 0)
+        real = os.lstat
+
+        def foreign(path, *a, **kw):
+            info = real(path, *a, **kw)
+            return os.stat_result((info[0], info[1], info[2], info[3], info.st_uid + 1, *info[5:])) \
+                if str(path).endswith("run-outputs") else info
+        with mock.patch.object(campaign_readiness.os, "lstat", foreign):
+            report = campaign_readiness.collect(str(self.project))
+        self.assertEqual(report["writable"], {"run-outputs": "present_unsafe", "approvals": "present_writable"})
+        self.assertIn("READINESS_OUTPUTS_UNWRITABLE", self.codes(report))
+
+    def test_outputs_that_cannot_be_created_or_written_are_degraded(self):
+        # Contract: the live failure (project not writable by the runner, outputs unusable) must exit 1 with no writes;
+        # a bug that only looked at presence, or that created the directory to probe, would exit 0 or change the tree.
+        self.slo()
+        (self.project / "run-outputs").mkdir(mode=0o700)
+        os.chmod(self.project / "run-outputs", 0o700)
+        calls = []
+
+        def deny(path, mode, **kw):
+            calls.append((os.path.basename(path), mode, kw))
+            return False
+        with mock.patch.object(campaign_readiness.os, "access", deny):
+            report = campaign_readiness.collect(str(self.project))
+        self.assertEqual(report["writable"], {"run-outputs": "present_not_writable", "approvals": "missing_not_creatable"})
+        self.assertEqual({(n, m) for n, m, _ in calls}, {("run-outputs", os.W_OK | os.X_OK), ("project", os.W_OK | os.X_OK)})
+        self.assertTrue(all(kw == {"effective_ids": True, "follow_symlinks": False} for _, _, kw in calls))
+        if os.geteuid() == 0:
+            self.skipTest("mode denial needs a non-root effective user")
+        try:
+            os.chmod(self.project / "run-outputs", 0o500)
+            os.chmod(self.project, 0o500)
+            self.outputs({"run-outputs": "present_not_writable", "approvals": "missing_not_creatable"}, 1)
+        finally:
+            os.chmod(self.project, 0o700)
+            os.chmod(self.project / "run-outputs", 0o700)
+
     def test_invalid_profiles_directory_is_degraded(self):
         self.slo()
         parent = self.analysis / "profiles"
@@ -178,6 +250,8 @@ class SloShapedTests(Base):
 
     def test_states_privacy_parity_and_no_writes(self):
         ids = self.slo()
+        (self.project / "run-outputs").mkdir(mode=0o700)
+        os.chmod(self.project / "run-outputs", 0o700)
         before = snapshot(self.project, self.campaign, self.analysis, self.method, self.approval)
         args = ("--analysis-root", str(self.analysis), "--portal-approval-file", str(self.approval))
         report, code = self.report(*args)
@@ -195,7 +269,10 @@ class SloShapedTests(Base):
         self.assertEqual((report["law_package"], report["portal_approval"]), ("draft", "present"))
         self.assertTrue(all(v == "present" for v in report["campaign_fields"].values()))
         self.assertEqual(sorted(report), ["agencies", "campaign_fields", "issues", "law_package", "portal_approval", "schema",
-                                          "starter_files"])
+                                          "starter_files", "writable"])
+        self.assertEqual(report["writable"], {"run-outputs": "present_writable", "approvals": "missing_creatable"})
+        self.assertNotIn("READINESS_OUTPUTS_UNWRITABLE", self.codes(report))
+        self.assertIn("writable: run-outputs=present_writable approvals=missing_creatable\nlaw_package:", text.stdout)
         for item in report["issues"]:
             self.assertTrue(item["remediation"] and item["code"].startswith("READINESS_"))
         for line in campaign_readiness.render(report).splitlines():
