@@ -88,6 +88,9 @@ class DraftHistory(unittest.TestCase):
         self.assertIn("/review?id=a%2Fb%20c", get(Source([{**rows[0], "id": "a/b c"}]))[1])  # the id is encoded
         status, page = get(Source([{**rows[0], "updated_at": "bad"}, {**rows[1], "id": "0" * 63 + "9"}]))
         self.assertEqual([r[5] for r in table(page)], ["2026-01-02 02:00 PST", "unknown"])  # unknown time sorts last
+        # Contract: a reader-accepted timestamp outside Pacific range (year 0001) shows "unknown", never a 500.
+        status, page = get(Source([{**rows[0], "created_at": "0001-01-01T00:00:00Z", "updated_at": "0001-01-01T00:00:00Z"}]))
+        self.assertEqual((status, table(page)[0][4:6]), (200, ["unknown", "unknown"]))
 
     def test_filters_intersect_and_unknown_or_duplicate_values_are_refused(self):
         # Contract: one each of state/agency/kind, intersecting; anything else is a 400, not an empty list.
@@ -106,6 +109,9 @@ class DraftHistory(unittest.TestCase):
                     "kind=" + kind + "&kind=" + kind, "page=2", "STATE=sent"):
             with self.subTest(bad=bad):
                 self.assertEqual(get(source, "/drafts?" + bad)[0], 400)
+        blank = Source([{**rows[0], "agency_id": "", "kind": ""}])  # blank filters are refused even if a row's field is blank
+        for bad in ("agency=", "kind="):
+            self.assertEqual(get(blank, "/drafts?" + bad)[0], 400)
 
     def test_unavailable_queue_is_said_never_shown_as_no_drafts(self):
         # Contract: a reader or shape fault shows the existing unavailable sentence; only a good empty fold says none.
