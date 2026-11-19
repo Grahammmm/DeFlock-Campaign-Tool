@@ -24,7 +24,7 @@ from pathlib import Path
 from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, console_redactions, draft_templates, mail_drafts, mail_send, run_report, schedule, site_prs
 from . import console_origin, console_automation
 from . import console_access, console_export, console_journal, console_layout, console_review, console_settings, console_snapshot
-from . import console_pages
+from . import console_data_age, console_pages
 from .ledger import store
 from .outcomes import unmatched
 from .outcomes.reading import BANNER, esc
@@ -305,6 +305,11 @@ def check_run_id(run_id):
     if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id) or run_id in (".", ".."):
         raise PanelError("run_id_invalid")
     return run_id
+
+
+def _check_stale_hours(value):
+    if type(value) is not int or not 1 <= value <= console_data_age.MAX_STALE_HOURS:
+        raise PanelError("stale_hours_invalid")
 
 
 def load_dashboard(project, run_id, *, run_report_path=None, kit_root=None, as_of=None, timers=DEFAULT_TIMERS,
@@ -801,6 +806,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if self.pin is not None:  # every export page names its run and export
             body = body.replace("</main>", '<footer class="muted"><p>Run %s, export %s, exported %s.</p></footer></main>' % (
                 esc(self.pin.run_id), esc(self.pin.name), esc(self.pin.exported_at)), 1)
+        # Options are set only after admission. An unadmitted request never reads reports.
+        options = self.options or {}
+        body = console_data_age.insert(
+            body, live=self.options is not None and getattr(self.server, "pinner") is None,
+            pin=self.pin, now=parse_as_of(options.get("as_of"))[0] if self.pin is not None else None,
+            report_path=options.get("run_report_path"), stale_hours=getattr(self.server, "stale_hours"))
         data = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1191,7 +1202,8 @@ def _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg):
 def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
                  timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None,
                  access_config=None, access_clock=None, manual_events_dir=None, meetings_dir=None, export_root=None,
-                 decisions_dir=None, access_keys=None, analysis_root=None, flock_store=None):
+                 decisions_dir=None, access_keys=None, analysis_root=None, flock_store=None,
+                 stale_hours=console_data_age.DEFAULT_STALE_HOURS):
     """Unstarted loopback-only server; the caller serves and closes it.
 
     export_root (DFGL-16A) with run_id "auto" serves the one real export DIR/current points at, pinned per request.
@@ -1202,6 +1214,7 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
     check_run_id(run_id)
     check_actor(actor)
     parse_as_of(as_of)
+    _check_stale_hours(stale_hours)
     if decisions_dir is not None and export_root is None:
         raise PanelError("journal_needs_export")
     if export_root is not None:
@@ -1257,6 +1270,7 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
                       "kit_root": kit_root, "as_of": as_of, "timers": tuple(timers), "system": system,
                       "send_config": send_config, "source": console_snapshot.LiveSource(os.path.abspath(project))}
     server.pinner = console_snapshot.Pinner(os.path.abspath(project)) if export_root is not None else None
+    setattr(server, "stale_hours", stale_hours)
     server.decisions_dir = decisions_dir
     server.analysis_root = analysis_root
     server.flock_store = flock_store  # its own attribute: never passed to the dashboard loaders
@@ -1278,6 +1292,8 @@ def main(argv=None):
     parser.add_argument("--flock-store", metavar="STORE", help="read-only private Flock store: adds /redactions (redactions waiting for sign-off); never written here")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-report")
+    parser.add_argument("--stale-hours", type=int, default=console_data_age.DEFAULT_STALE_HOURS,
+                        help="warn when an export exceeds this age in hours (1..168; default: %(default)s)")
     parser.add_argument("--kit-root")
     parser.add_argument("--meetings-dir", metavar="DIR", help="read-only campaign directory for calendar meetings")
     parser.add_argument("--as-of", help="YYYY-MM-DD; fixes the deadline day and health clock (UTC midnight)")
@@ -1302,6 +1318,7 @@ def main(argv=None):
     try:
         check_run_id(args.run_id)
         parse_as_of(args.as_of)
+        _check_stale_hours(args.stale_hours)
         if args.decisions_dir is not None and args.export_root is None:
             raise PanelError("journal_needs_export")
         if (args.project is None) == (args.export_root is None) or (args.export_root is not None and (
@@ -1328,6 +1345,7 @@ def main(argv=None):
                 if out == root or out.startswith(root + os.sep):
                     raise PanelError("output_collides_with_source")
                 text = text.replace("</main>", "<section id=\"finding-review\">%s</section></main>" % console_findings.render_body(console_findings.load(root), None), 1)
+            text = console_data_age.insert(text, live=True, static=True, now=datetime.fromisoformat(model["captured_at"]))
             write_snapshot(args.render, text, protected)
             return 0
         if not args.actor:
@@ -1351,7 +1369,7 @@ def main(argv=None):
                               send_config=args.send_config, public_origin=args.public_origin,
                               access_config=access, manual_events_dir=args.manual_events, meetings_dir=args.meetings_dir,
                               export_root=args.export_root, decisions_dir=args.decisions_dir, access_keys=args.access_keys,
-                              analysis_root=args.analysis_root, flock_store=args.flock_store)
+                              analysis_root=args.analysis_root, flock_store=args.flock_store, stale_hours=args.stale_hours)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required", "_unused", "_needs_export")) else 1
