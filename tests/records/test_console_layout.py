@@ -96,7 +96,7 @@ class LayoutTests(Base):
                         self.assertIn(layout.STYLE, html)
                         self.assertIn(BANNER, html)
                         active = {'/': '/', '/board': '/board', '/calendar': '/calendar',
-                                  '/documents': '/documents', '/settings': '/settings', '/agency?agency=alpha-pd': '/board',
+                                  '/documents': '/documents', '/timeline': '/timeline', '/settings': '/settings', '/agency?agency=alpha-pd': '/board',
                                   '/automation': '/automation', '/ocr-review': '/ocr-review', '/findings/review': '/findings/review'}
                         current = active.get(path, path if path in registered else None)
                         self.assertEqual(parsed.current, [current] if current else [])
