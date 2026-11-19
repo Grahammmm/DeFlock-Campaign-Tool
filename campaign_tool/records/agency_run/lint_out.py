@@ -16,7 +16,7 @@ from .lint_cites import LABEL
 MAX_DRAFT, MAX_LIST = 2 * 1024 * 1024, 64 * 1024
 REFUSED = "refused agency_lint_out_input"
 PREFIX = re.compile(r"\b(?:INBOX|Sent):")
-RUN = re.compile(r"[a-z0-9._%+\-!#$&'*=?^`{|}~]*$")
+RUN = re.compile(r"[a-z0-9._%+\-/!#$&'*=?^`{|}~]*$")  # every RFC 5322 atext character, including the valid "/"
 ROW_ID = re.compile(r"(?<![\w-])[A-Z]{2,6}-[0-9]{3,}(?![\w-])")
 
 

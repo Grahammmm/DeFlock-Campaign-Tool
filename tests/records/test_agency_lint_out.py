@@ -79,6 +79,13 @@ class AgencyLintOutTests(unittest.TestCase):
                      "Contact:records@other.example.org"):
             with self.subTest(text=text):
                 self.assertEqual(lint_out.scan(text, ["Jordan Testname"], allow), [(1, "L8_EMAIL")])
+        # A valid "/" in the local part is part of the address: "private/records@" is not "records@" (nor excused by it).
+        for text in ("private/records@agency.example.org", "Contact:private/records@agency.example.org",
+                     "mailto:a/b/records@agency.example.org", "Contact:records/@agency.example.org"):
+            with self.subTest(text=text):
+                self.assertEqual(lint_out.scan(text, ["Jordan Testname"], allow), [(1, "L8_EMAIL")])
+        self.assertEqual(lint_out.scan("Contact:private/records@agency.example.org", ["Jordan Testname"],
+                                       ["private/records@agency.example.org"]), [])
         self.assertEqual(lint_out.scan("Contact:jtest@team.example.net", ["jtest@team.example.net"], allow + ["jtest@team.example.net"]),
                          [(1, "L8_TEAM")])
 
