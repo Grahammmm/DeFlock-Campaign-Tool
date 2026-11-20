@@ -1099,10 +1099,12 @@ def stage_outputs(args):
     else:
         register_ok = True
     # No-response follow-up drafts (REC-AUTO-7): need this run's register; own try, own codes; nothing is sent.
+    held_for_answer = 0
     if register_ok:
         try:
             from .followup_clock import queue_followups
             queued = queue_followups(args.project, args.run_id)
+            held_for_answer = int(queued.get("skipped_answer_unrecorded", 0))
             if queued.get("settings_invalid"):
                 warnings.append("OUTPUTS_FOLLOWUP_SETTINGS_INVALID")
             elif not queued.get("register_missing"):
@@ -1187,9 +1189,10 @@ def stage_outputs(args):
             items = items + needs(("OUTPUTS_DIGEST_UNRESOLVED", "action", 1))
             warnings = ["OUTPUTS_DIGEST_UNRESOLVED"]  # Overrides only the primary code, not the item list.
     if warnings:
-        return result("warn", {"input": 1, "output": produced}, warnings[0], needs_g=items,
+        return result("warn", {"input": 1, "output": produced, "skipped": held_for_answer}, warnings[0], needs_g=items,
                       draft_queue_counts=draft_counts), 0
-    return result("ok", {"input": 1, "output": produced}, draft_queue_counts=draft_counts), 0
+    return result("ok", {"input": 1, "output": produced, "skipped": held_for_answer},
+                  draft_queue_counts=draft_counts), 0
 
 
 HANDLERS = {"sync": stage_sync, "delta": stage_delta, "adoption": stage_adoption,
