@@ -505,7 +505,8 @@ def execute(config, run_id, mode, started_at, deadline_epoch, report_path, work_
         if code == "STAGE_TIMEOUT" and entry["timeout_seconds"] > remaining:
             code = "RUN_DEADLINE_REACHED"
         stages.append(stage_entry(name, status, counts, seconds, code))
-        if result and result.get("outcomes") and dict(result["counts"]) == counts:
+        if result and "outcomes" in result and (result["outcomes"] or name in run_report.GAP_STAGES) \
+                and dict(result["counts"]) == counts:
             stages[-1]["outcomes"] = [dict(item) for item in result["outcomes"]]
         if result and code == "STAGE_INTERNAL_ERROR" == result.get("error_code") and "internal" in result:
             # Schema-valid class and function names only; never exception text, args, paths or lines.

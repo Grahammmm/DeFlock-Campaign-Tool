@@ -17,7 +17,7 @@ import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from campaign_tool.records.run_report import STAGE_ORDER, validate_run_report
+from campaign_tool.records.run_report import STAGE_ORDER, adoption_gap_breakdown, validate_run_report
 
 CODE = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
 RUN_ID = re.compile(r"run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}")
@@ -201,6 +201,8 @@ def document(facts):
 def outcome_counts(report):
     counts = {}
     for stage in report["stages"]:
+        if adoption_gap_breakdown(stage) is not None:  # validated gap partition, not extraction outcomes
+            continue
         for item in stage.get("outcomes", []):
             counts[item["code"]] = counts.get(item["code"], 0) + item["count"]
     return counts
