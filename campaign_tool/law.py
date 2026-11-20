@@ -40,6 +40,12 @@ HOLIDAY_NOTE = ("Provisional reminders only, not legal due dates. Business-day "
                 "counts skip Saturday and Sunday only; public holidays are not modeled. "
                 "Confirm actual receipt, applicable last-day holiday exclusions and "
                 "lawful extension notice before any lateness conclusion.")
+# Register-only variants: the holiday list is the custodian's file, never part of a law package.
+CUSTODIAN_HOLIDAY_NOTE = ("Provisional reminders only, not legal due dates. Holidays come from the custodian's "
+                          "own list, not the law package, and dates stay provisional: confirm the list, actual "
+                          "receipt, last-day exclusions and lawful extension notice before any lateness conclusion.")
+CUSTODIAN_HOLIDAY_INVALID_NOTE = ("The custodian's holiday list was invalid and was not used; only Saturday and "
+                                  "Sunday were rolled, so dates stay provisional. " + HOLIDAY_NOTE)
 
 _TYPES = {
     "object": dict, "array": list, "string": str, "integer": int,

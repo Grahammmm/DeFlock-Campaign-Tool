@@ -107,8 +107,13 @@ class ConsoleExportTests(unittest.TestCase):
         self.assertEqual(files, sorted([
             "EXPORT.json", "agency-retention.csv", "processing-v1/ledger.sqlite",
             *("console-model/" + n for n in ("queue.json", "packets.json", "public-updates.json", "mail-drafts.json",
-                                             "sends.json", "ocr-pages.json", "holds.json", "followup-reading.json", "campaign-summary.json")),
+                                             "sends.json", "ocr-pages.json", "holds.json", "followup-reading.json",
+                                             "cited-pages.json", "campaign-summary.json")),
             f"run-outputs/{RUN}/outcomes/received-items.json", f"run-outputs/{RUN}/text-state.json"]))
+        # DF2307-07: this run has no fact sheet or gap proposals to cite from, so the model says unavailable, never empty.
+        cited = json.loads((export / "console-model" / "cited-pages.json").read_text())
+        self.assertEqual((cited["schema"], cited["state"]), ("records-console-cited-pages-v1", "unavailable"))
+        self.assertNotIn("pages", cited)
         for entry in ("approvals", "mail", "public-packets.jsonl", "public-updates.jsonl"):
             self.assertFalse((export / entry).exists())
         for base, dirs, names in os.walk(export):

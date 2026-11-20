@@ -18,6 +18,7 @@ import sys
 
 from .lint_out import QuietParser, _literal, _read
 
+RULES_VERSION = "1"  # bump on any rule change: agency lint receipts bind it
 MAX_DRAFT, MAX_AGENCIES = 2 * 1024 * 1024, 64 * 1024
 REFUSED = "refused agency_lint_precedent_input"
 OTHER = "\ue000"  # stands in for a matched other agency while cues are searched

@@ -14,6 +14,7 @@ import re
 import stat
 import sys
 
+RULES_VERSION = "1"  # bump on any rule change: agency lint receipts bind it
 DRAFT_MAX, PACKAGE_MAX = 512 * 1024, 2 * 1024 * 1024
 NUM = r"[0-9]+(?:\.[0-9]+)*"
 CODE = (r"(?:Gov\.?|Government|Civ\.?|Civil|Penal|Veh\.?|Vehicle|Sts\.? & Hy\.?|"

@@ -7,6 +7,7 @@ import contextlib
 import copy
 import csv
 from datetime import date, timedelta
+import hashlib
 import io
 import json
 import os
@@ -17,6 +18,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from campaign_tool import law
 from campaign_tool.records import run_stages
 from campaign_tool.records.ledger.migrations import v001
 from campaign_tool.records.outcomes import register
@@ -124,6 +126,35 @@ class RegisterTests(unittest.TestCase):
                         self.assertEqual(row["deadline"]["state"], state)
                         self.assertEqual(row["next_action"], action)
                         self.assertEqual(row["issues"], [])
+
+    def test_listed_holidays_roll_both_periods_like_weekends(self):
+        # Contract: a custodian-listed last day moves forward exactly as a weekend does, repeatedly.
+        # Start 2029-12-31 -> Thursdays 01-10 / 01-24; start 2030-01-01 -> Fridays 01-11 / 01-25.
+        for start, days, base, extended, label in (
+                ("2030-01-01", (), "2030-01-11", "2030-01-25", "no list"),
+                ("2029-12-31", ("2030-01-10", "2030-01-24"), "2030-01-11", "2030-01-25", "Thursday holiday"),
+                ("2030-01-01", ("2030-01-11", "2030-01-25"), "2030-01-14", "2030-01-28", "Friday before a weekend"),
+                ("2029-12-31", ("2030-01-10", "2030-01-11", "2030-01-24", "2030-01-25"), "2030-01-14", "2030-01-28",
+                 "Thursday and Friday in a row"),
+                ("2030-01-01", ("2030-01-14", "2030-01-28"), "2030-01-11", "2030-01-25", "Monday list is not reached")):
+            for extension, due in (("No", base), ("Yes", extended)):
+                with self.subTest(label=label, extension=extension):
+                    source = data()
+                    source["requests"] = [request(submitted_at=start)]
+                    tracker = [{"agency": "a1", "request_id": "FB-01", "extension": extension,
+                                "asked": "Audit logs", "source": {"file": "synthetic.csv", "row": 2}}]
+                    kwargs = {"holiday": ("used", frozenset(map(date.fromisoformat, days)), "0123456789ab")} if days else {}
+                    states = []
+                    for offset in (-1, 0, 1):
+                        day = (date.fromisoformat(due) + timedelta(days=offset)).isoformat()
+                        out = register.build_register(source, tracker, as_of=day, **kwargs)
+                        row = out["requests"][0]
+                        states.append(row["deadline"]["state"])
+                        self.assertEqual((row["deadline"]["base_due"], row["deadline"]["extended_due"]), (base, extended))
+                        self.assertEqual(row["deadline"]["due"], due)
+                        self.assertEqual(row["promised"], {"state": "none", "date": None})
+                    self.assertEqual(states, ["running", "due_today", "past_due_reminder"])
+                    self.assertEqual(("holiday_list" in row, "holiday_list" in out), (bool(days),) * 2)
 
     def test_receipt_not_send_proxy_and_no_production_deadline(self):
         issues = []
@@ -643,6 +674,66 @@ class RegisterIntegrationTests(unittest.TestCase):
         with mock.patch.object(register, "MAX_ROWS", 0):
             with self.assertRaisesRegex(ValueError, "ledger_row_limit:agencies"):
                 register.read_ledger(self.ledger)
+
+    def test_holiday_file_absent_leaves_register_unchanged(self):
+        # Contract: without PROJECT/holidays.csv no holiday key, limit or gap appears (byte-identical output).
+        report = register.write_for_run(self.project, "no-list", as_of=TODAY)
+        text = (self.project / "run-outputs" / "no-list" / "CURRENT-REQUEST-REGISTER.json").read_text()
+        self.assertNotIn("holiday_list", text)
+        self.assertEqual(report["limits"], register.LIMITS)
+        self.assertNotIn("holiday_list", (self.project / "run-outputs" / "no-list" / "CURRENT-REQUEST-REGISTER.md").read_text())
+
+    def test_holiday_file_used_rolls_both_endpoints_and_records_provenance(self):
+        # Believable bug: reading the file but dropping the prefix, leaking names, or ignoring the extension.
+        raw = ("\ufeffdate,name,source\n2030-01-11,Synthetic Closure,custodian note\n"
+               "2030-01-25,Second Closure,custodian note\n").encode("utf-8")
+        (self.project / "holidays.csv").write_bytes(raw)
+        report = register.write_for_run(self.project, "listed", as_of=TODAY)
+        row = next(r for r in report["requests"] if r["request_id"] == "FB-02")
+        self.assertEqual((row["deadline"]["base_due"], row["deadline"]["extended_due"], row["deadline"]["due"]),
+                         ("2030-01-14", "2030-01-28", "2030-01-28"))
+        self.assertEqual((row["holiday_list"], row["holiday_list_sha256_prefix"]),
+                         ("used", hashlib.sha256(raw).hexdigest()[:12]))
+        self.assertEqual(report["holiday_list"]["dates"], ["2030-01-11", "2030-01-25"])
+        self.assertIn(law.CUSTODIAN_HOLIDAY_NOTE, report["limits"])
+        text = (self.project / "run-outputs" / "listed" / "CURRENT-REQUEST-REGISTER.json").read_text()
+        self.assertNotIn("Closure", text)
+        self.assertNotIn("holiday_list_invalid", text)
+        self.assertEqual(register.read_holidays(self.project)[1], {date(2030, 1, 11), date(2030, 1, 25)})
+
+    def test_any_bad_holiday_row_or_unsafe_file_refuses_the_whole_list(self):
+        good = "2030-01-11,Closure,custodian note\n"
+        header = "date,name,source\n"
+        big = header + "".join(f"{date(2031, 1, 1) + timedelta(days=n)},N,S\n" for n in range(1001))
+        for label, content in (("valid prefix then bad date", header + good + "2030-02-30,Bad,note\n"),
+                               ("wrong header", "day,name,source\n" + good),
+                               ("duplicate date", header + good + good),
+                               ("blank name", header + good + "2030-01-25, ,note\n"),
+                               ("extra column", header + good.rstrip() + ",x\n"),
+                               ("blank line", header + good + "\n"),
+                               ("not utf-8", header.encode() + b"2030-01-11,\xff,note\n"),
+                               ("too many rows", big),
+                               ("too large", header + good + "#" * 70000)):
+            with self.subTest(label=label):
+                path = self.project / "holidays.csv"
+                path.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+                report = register.write_for_run(self.project, "bad-" + label.replace(" ", "-"), as_of=TODAY)
+                row = next(r for r in report["requests"] if r["request_id"] == "FB-02")
+                self.assertEqual(row["holiday_list"], "invalid")
+                self.assertEqual(row["deadline"]["base_due"], "2030-01-11")  # weekend-only arithmetic, no list date used
+                self.assertIn("holiday_list_invalid", row["issues"])
+                self.assertEqual(row["next_action"], "clarify")
+                self.assertIn("holiday_list_invalid", report["gaps"])
+                self.assertNotIn("dates", report["holiday_list"])
+                self.assertIn(law.CUSTODIAN_HOLIDAY_INVALID_NOTE, report["limits"])
+        alias = self.project / "alias.csv"
+        alias.write_text(header + good)
+        path.unlink()
+        path.symlink_to(alias)
+        self.assertEqual(register.read_holidays(self.project), ("invalid", frozenset(), None))
+        path.unlink()
+        os.mkfifo(path)
+        self.assertEqual(register.read_holidays(self.project), ("invalid", frozenset(), None))
 
     def test_second_file_write_failure_never_publishes_partial_pair(self):
         real_open = os.open

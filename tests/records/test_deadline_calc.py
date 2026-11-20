@@ -1,5 +1,6 @@
 """Synthetic register -> cited, read-only deadline labels (DL-CALC-1)."""
 import copy
+from datetime import date
 import hashlib
 import json
 from pathlib import Path
@@ -13,13 +14,17 @@ from campaign_tool.records import deadline_calc as dc
 from campaign_tool.records.outcomes import register
 
 
-def report(**values):
+def report(holiday=("absent", frozenset(), None), **values):
     data = {table: [] for table in register.correspondence.TABLES}
     data["agencies"] = [{"id": "alpha-pd", "name": "Alpha Police"}]
     data["requests"] = [{"id": "r1", "agency_id": "alpha-pd", "external_ref": "A-1",
                          "received_at": "2026-11-06", "submitted_at": "2026-11-05",
                          "determination_at": None, "production_at": None, "status": "open", **values}]
-    return register.build_register(data, as_of="2026-12-01")
+    return register.build_register(data, as_of="2026-12-01", holiday=holiday)
+
+
+def listed(*days):
+    return "used", frozenset(date.fromisoformat(d) for d in days), "0123456789ab"
 
 
 class Deadlines(unittest.TestCase):
@@ -80,6 +85,63 @@ class Deadlines(unittest.TestCase):
                 self.assertIn("computed_mismatch", result["issues"])
                 self.assertEqual(result[name]["label"], "UNVERIFIED")
         self.assertEqual(self.calc(original)["issues"], original["requests"][0]["issues"])
+
+    def test_custodian_holiday_labels_and_dishonest_dates(self):
+        # Contract: a date rolled past a listed holiday is COMPUTED with the custodian note; the weekend-only
+        # note stays for weekend moves; anything else (shifted date, missing or doctored snapshot) is UNVERIFIED.
+        note = "holiday-rolled (custodian list)"
+        cases = (("2026-11-16", (), "2026-11-26", ""),                     # no file: Thursday, unchanged
+                 ("2026-11-16", ("2026-11-26",), "2026-11-27", note),     # Thursday holiday
+                 ("2026-12-15", ("2026-12-25",), "2026-12-28", note),     # Friday holiday, then the weekend
+                 ("2026-11-16", ("2026-11-26", "2026-11-27"), "2026-11-30", note),  # two in a row
+                 ("2026-11-05", ("2026-11-26",), "2026-11-16", "weekend-rolled"))  # unrelated list, weekend only
+        for start, days, due, expect in cases:
+            with self.subTest(start=start, days=days):
+                doc = report(listed(*days) if days else ("absent", frozenset(), None), received_at=start)
+                entry = self.calc(doc)["determination_due"]
+                self.assertEqual((entry["date"], entry["label"]), (due, "COMPUTED"))
+                self.assertTrue(entry["note"].endswith(expect), entry["note"])
+                self.assertEqual("holiday-rolled" in entry["note"], expect == note)
+                self.assertEqual(entry["caveat"], dc.CUSTODIAN_CAVEAT if days else dc.CAVEAT)
+                self.assertNotIn("computed_mismatch", self.calc(doc)["issues"])
+        self.assertIn("custodian's list, not the law package", dc.CUSTODIAN_CAVEAT)
+        good = report(listed("2026-11-26"), received_at="2026-11-16")
+        self.assertNotIn("holiday", self.calc(good)["extension_limit"]["note"])  # 2026-12-10 is not listed
+        tampered = []
+        for edit in (lambda d: d["requests"][0]["deadline"].update(base_due="2026-11-28"),  # shifted date
+                     lambda d: d.pop("holiday_list"),                                       # missing snapshot
+                     lambda d: d["holiday_list"]["dates"].append("2026-11-27"),             # doctored list
+                     lambda d: d["requests"][0].update(holiday_list_sha256_prefix="f" * 12)):
+            doc = copy.deepcopy(good)
+            edit(doc)
+            tampered.append(doc)
+        legacy = report(received_at="2026-11-16")
+        legacy["requests"][0]["deadline"]["base_due"] = "2026-11-27"                        # rolled with no list at all
+        for doc in tampered + [legacy]:
+            result = self.calc(doc)
+            self.assertIn("computed_mismatch", result["issues"])
+            self.assertEqual(result["determination_due"]["label"], "UNVERIFIED")
+
+    def test_invalid_holiday_list_uses_weekends_only_and_keeps_its_issue(self):
+        doc = report(("invalid", frozenset(), None), received_at="2026-11-06")
+        result = self.calc(doc)
+        self.assertEqual(result["determination_due"]["label"], "COMPUTED")
+        self.assertIn("holiday_list_invalid", result["issues"])
+        self.assertEqual(result["determination_due"]["caveat"], dc.INVALID_CAVEAT)
+        doc["requests"][0]["holiday_list"] = "used"   # the row cannot claim a list the snapshot says is invalid
+        self.assertIn("computed_mismatch", self.calc(doc)["issues"])
+
+    def test_cli_table_banner_names_the_custodian_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "run-outputs" / "run-1"
+            directory.mkdir(parents=True)
+            (directory / "CURRENT-REQUEST-REGISTER.json").write_text(
+                json.dumps(report(listed("2026-11-26"), received_at="2026-11-16")), encoding="utf-8")
+            table = subprocess.run([sys.executable, "-B", "-m", "campaign_tool.records", "deadlines",
+                                    "--project", tmp, "--run-id", "run-1"], capture_output=True, text=True)
+            self.assertEqual(table.returncode, 0, table.stderr)
+            self.assertIn("Private; REVIEW REQUIRED. " + dc.CUSTODIAN_CAVEAT, table.stdout)
+            self.assertIn("2026-11-27\tCOMPUTED", table.stdout)
 
     def test_cli_json_table_and_failure_paths_are_read_only(self):
         with tempfile.TemporaryDirectory() as tmp:

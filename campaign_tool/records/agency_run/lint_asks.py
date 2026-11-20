@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .. import playbook
 
+RULES_VERSION = "1"  # bump on any rule change: agency lint receipts bind it
 DRAFT_MAX = 256 * 1024
 TABLE_MAX = 5 * 1024 * 1024
 REPEAT_RATINGS = {"answered", "missing", "unclear"}
