@@ -315,6 +315,22 @@ class WorksheetTest(unittest.TestCase):
         text = (self.out_dir / "worksheet.json").read_text()
         self.assertTrue(all(raw not in text for raw in ("garbage-date", "2030-13-45", "2031-01-01", "2031-02-02", "not-a-date")))
 
+    # Contract: a date issue withholds a proposal only when it concerns the field that proposal rests on (receipt vs proxy).
+    # Bug caught: a malformed submitted_at dropping a valid recorded receipt, or an invalid received_at not stopping a receipt.
+    def test_date_issues_withhold_only_the_basis_they_concern(self):
+        # Real producer row: valid recorded receipt, malformed submitted_at (carries invalid_date:submitted_at).
+        item = self.items([request("REQ-1", "alpha", "E1", received_at="2030-01-03", submitted_at="not-a-date")])[0]["REQ-1"]
+        self.assertEqual((item["received_on"], item["submitted_on"], item["register_issues"]), ("2030-01-03", None, ["invalid_date:submitted_at"]))
+
+        def inject(report):
+            report["requests"][0]["issues"].append("invalid_date:received_at")  # receipt basis: its own issue withholds
+            report["requests"][1]["issues"].append("source_conflict:received_at")  # proxy basis: the receipt field is not its basis
+            report["requests"][2]["issues"].append("source_conflict:submitted_at")  # proxy basis: its own conflict withholds
+        items = self.items([request("REQ-1", "alpha", "E1", received_at="2030-01-03"), request("REQ-2", "alpha", "E2"),
+                            request("REQ-3", "alpha", "E3")], mutate=inject)[0]
+        self.assertEqual([(items[r]["received_on"], items[r]["submitted_on"]) for r in ("REQ-1", "REQ-2", "REQ-3")],
+                         [(None, None), (None, "2030-01-01"), (None, None)])
+
     def test_inventory_mismatches_never_become_proposals(self):
         def duplicate(report):
             row = next(r for r in report["requests"] if r["ledger_request_id"] == "AMBIG")

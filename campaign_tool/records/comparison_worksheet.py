@@ -111,10 +111,12 @@ def _proposal(number, row, as_of):
     clock, issues = row["deadline"], set(row["issues"])
     start = _valid_day(row.get("request_date"), as_of)
     received = submitted = None
-    if start and not issues & {"request_date_in_future", "source_conflict:received_at", "source_conflict:submitted_at",
-                               "invalid_date:submitted_at"}:
-        received = start if clock.get("basis") == "recorded_receipt" else None
-        submitted = start if clock.get("basis") == "submission_proxy" else None
+    basis = clock.get("basis")
+    field = {"recorded_receipt": "received_at", "submission_proxy": "submitted_at"}.get(basis)
+    # Only the issues of the field the proposal rests on can withhold it; the other field's issues stay listed, not blocking.
+    if start and field and not issues & {"request_date_in_future", "source_conflict:" + field, "invalid_date:" + field}:
+        received = start if basis == "recorded_receipt" else None
+        submitted = start if basis == "submission_proxy" else None
     made = _valid_day(clock.get("determination_at"), as_of)
     if made and (issues & {"invalid_date:determination_at", "determination_date_inconsistent", "source_conflict:determination_at"}
                  or (start and made < start)):
