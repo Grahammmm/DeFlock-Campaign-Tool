@@ -9,7 +9,8 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
 
-from campaign_tool.records import admin_panel as ap, console_codes, console_page_run as page, run_stages
+from campaign_tool.records import admin_panel as ap, console_codes, console_page_run as page, mail_adoption, mail_resolution_plan, run_stages
+from campaign_tool.records.intake import mail_delta
 from tests.records.test_console_runs import fetch
 from tests.records.test_pipeline_health import report_for
 
@@ -32,6 +33,12 @@ def make(i, kind):
         data.update(overall_status="warn", review_required_count=1)
     if kind == "pending":
         data["stages"][7].update(status="skipped", error_code="NOTIFY_PENDING", duration_seconds=None)
+    if kind in GAPS:
+        gapped(data, GAPS[kind])
+    if kind == "oldgaps":  # an older engine: the aggregate needs-G items exist but no breakdown was recorded
+        data["stages"][2].update(status="warn", error_code="ADOPTION_CODED_GAPS")
+        data["needs_g"] = [{"code": "ADOPTION_CODED_GAPS", "stage": "adoption", "severity": "action", "count": 3}]
+        data.update(overall_status="warn", review_required_count=1)
     if kind == "unwritable":
         data["stages"][6].update(status="warn", error_code="OUTPUTS_APPROVAL_QUEUE_UNWRITABLE")
         data["needs_g"] = [{"code": "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE", "stage": "outputs", "severity": "action", "count": 1}]
@@ -39,17 +46,52 @@ def make(i, kind):
     return data
 
 
+def gapped(data, partitions):
+    """Record each gap stage's outcomes partition and the matching needs-G totals; adoption warns when it has gaps."""
+    for index, name in ((1, "delta"), (2, "adoption")):
+        rows = partitions[name]
+        data["stages"][index]["outcomes"] = [{"code": code, "count": count} for code, count in rows]
+        data["stages"][index]["counts"] = dict(input=sum(count for _, count in rows), output=0, failed=0, skipped=0)
+        coded = sum(count for code, count in rows if code[:3] in ("GA_", "GB_"))
+        blocking = sum(count for code, count in rows if code[:3] == "GB_")
+        for code, count in (("ADOPTION_CODED_GAPS", coded), ("ADOPTION_UNACCEPTED_GAP", blocking)):
+            if count:
+                data["needs_g"].append({"code": code, "stage": name, "severity": "action", "count": count})
+        if name == "adoption" and coded:
+            data["stages"][index].update(status="warn", error_code="ADOPTION_CODED_GAPS")
+            data.update(overall_status="warn", review_required_count=1)
+
+
 def lines(html):
-    """One text line per block of the page body (heading and intro, each stage, new data, links); parts are joined with ' | '."""
+    """One text line per block of the page body (heading and intro, each stage, new data, links); parts are joined with ' | '.
+
+    A gap table reads as 'Adoption gaps | Gap | Messages | Disposition ; <row cells joined by |> ; ...' (rows end with ' ;').
+    """
     body = html[html.index("<h1>"):html.index("</main>")]
-    body = re.sub(r"</(?:h1|h2|p|li)>", " | ", body.replace("\n", " "))
+    body = re.sub(r"</(?:h1|h2|p|li|caption)>", " | ", body.replace("\n", " "))
+    body = re.sub(r"</t[hd]><t[hd]>", " | ", body).replace("</tr>", " ; ")
     body = re.sub(r"</?section>|<nav[^>]*>", "\n", body)
-    return [re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", "", row))).strip(" |") for row in body.split("\n") if row.strip()]
+    return [re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", "", row))).strip(" |;") for row in body.split("\n") if row.strip()]
 
 
 NAMES = ("sync", "delta", "adoption", "portal", "extract", "digest_gates", "outputs", "notify")
 ZERO = "Counts: input 0, output 0, failed 0, skipped 0."
 NAV_BOTH = "Previous (older) run Next (newer) run All runs"
+MISSING = "breakdown not recorded by this engine"
+NO_GAPS = "No coded adoption gaps."
+ITEM = "%s (%s): needs action, %d"
+CODED = "Some messages could not be adopted and were recorded as known gaps."
+UNACCEPTED = "A gap in the mail has not been accepted by a person yet."
+TABLE = "Adoption gaps | Gap | Messages | Disposition ; "
+# Recorded gap partitions per stage: GA_ accepted, GB_ blocking, GAP_NONE the receipts without a coded gap.
+GAPS = {
+    "nogaps": {"delta": [], "adoption": [("GAP_NONE", 4)]},
+    "mixed": {"delta": [("GB_SOURCE_HASH_MISMATCH", 2), ("GA_UNSUPPORTED_RFC822_PART", 5), ("GB_ORIGINAL_BYTES_CONFLICT", 2),
+                        ("GAP_NONE", 4)],
+              "adoption": [("GB_OTHER", 1), ("GA_OTHER", 1), ("GB_RESOLUTION_NOT_IN_POLICY", 1),
+                           ("GA_ORIGINAL_SCOPE_UNRESOLVED", 2), ("GAP_NONE", 2)]},
+    "gapunmapped": {"delta": [], "adoption": [("GB_ZZZ_NEW_GAP_CODE", 2)]},
+}
 
 
 def golden(i, overall="ok", review=0):
@@ -58,6 +100,8 @@ def golden(i, overall="ok", review=0):
             "finished 2026-03-01 %02d:00:00 PST (Pacific time). Trigger: manual. Overall: %s. Items to review: %d." % (
                 IDS[i], 3 + i, 4 + i, overall, review))
     stages = ["%d. %s: ok | No problem reported. | %s" % (n, name, ZERO) for n, name in enumerate(NAMES, 1)]
+    stages[1] += " | " + MISSING  # delta and adoption: the default fixture records no gap breakdown (an older engine)
+    stages[2] += " | " + MISSING
     stages[7] += " | The summary notification was sent."
     return [head] + stages + ["New data this run: documents 0, pages 0, extracted units 0, portal releases 0, request status changes 0.", NAV_BOTH]
 
@@ -115,6 +159,8 @@ class RunDetail(unittest.TestCase):
         fail[1] = "1. sync: fail | Syncing the mail export failed. (SYNC_FAILED) | " + ZERO
         for n in range(2, 9):
             fail[n] = "%d. %s: skipped | An earlier stage failed, so this stage was skipped. (UPSTREAM_FAILED) | %s" % (n, NAMES[n - 1], ZERO)
+        fail[2] += " | " + MISSING  # delta and adoption: skipped, nothing recorded
+        fail[3] += " | " + MISSING
         fail[8] += " | Not sent: An earlier stage failed, so this stage was skipped. (UPSTREAM_FAILED)"
         fail[-1] = "Previous (older) run Next (newer) run: none All runs"
         self.assertEqual(self.lines(2), fail)
@@ -131,6 +177,65 @@ class RunDetail(unittest.TestCase):
                       "for information, 1 | ZZZ_NEW_GAP_CODE: no description yet: needs action, 2", got)
         self.assertEqual(console_codes.explain("<script>x</script>"), "Unrecognised code: no description yet")
         self.assertEqual(console_codes.explain(None), "Unrecognised code: no description yet")
+
+    def gap_page(self, kind, overall="ok", review=0):
+        """The page lines of the only run, after proving everything outside the delta and adoption stages is the clean golden."""
+        self.put(kind)
+        page_lines, base = self.lines(0), golden(0, overall, review)
+        base[-1] = "Previous (older) run: none Next (newer) run: none All runs"
+        for n in (0, 1, 4, 5, 6, 7, 8, 9, 10):
+            self.assertEqual(page_lines[n], base[n])
+        return page_lines
+
+    def stage(self, n, status, problem, count, *tail):
+        return " | ".join(["%d. %s: %s" % (n, NAMES[n - 1], status), problem,
+                           "Counts: input %d, output 0, failed 0, skipped 0." % count] + list(tail))
+
+    # Owner: the gap table with no gaps. Fails if a recorded empty or remainder-only partition shows a table row, shows the
+    # legacy missing message, or a GAP_NONE remainder is shown as a gap.
+    def test_run_detail_gap_breakdown_no_gaps(self):
+        got = self.gap_page("nogaps")
+        self.assertEqual(got[2], self.stage(2, "ok", "No problem reported.", 0, NO_GAPS))  # recorded zero input
+        self.assertEqual(got[3], self.stage(3, "ok", "No problem reported.", 4, NO_GAPS))  # four receipts, none coded
+        self.assertNotIn("GAP_NONE", self.get("?id=" + IDS[0])[1])
+        self.assertNotIn("<table", self.get("?id=" + IDS[0])[1])
+
+    # Owner: the mixed table. Fails if rows are not sorted by count then code (accepted before blocking on a tie), a disposition
+    # is taken from the stage status or current policy, the Other bucket or a remainder is mis-shown, or wire codes leak.
+    def test_run_detail_gap_breakdown_mixed_sorted(self):
+        got = self.gap_page("mixed", "warn", 1)
+        needs = lambda coded, blocking: (ITEM % (CODED, "ADOPTION_CODED_GAPS", coded), ITEM % (UNACCEPTED, "ADOPTION_UNACCEPTED_GAP", blocking))
+        row = lambda text, code, count, disposition: "%s (%s) | %d | %s" % (text, code, count, disposition)
+        delta = (row("This nested email part could not be adopted; this gap does not block the run.", "UNSUPPORTED_RFC822_PART", 5, "accepted"),
+                 row("The ledger already holds this original with a different size.", "ORIGINAL_BYTES_CONFLICT", 2, "blocking"),
+                 row("The message's source file does not match the checksum its receipt declares.", "SOURCE_HASH_MISMATCH", 2, "blocking"))
+        adoption = (row("The original's scope is not yet resolved; this gap does not block the run.", "ORIGINAL_SCOPE_UNRESOLVED", 2, "accepted"),
+                    row("Additional adoption gaps are grouped here.", "OTHER", 1, "accepted"),
+                    row("Additional adoption gaps are grouped here.", "OTHER", 1, "blocking"),
+                    row("The resolution policy does not cover this message.", "RESOLUTION_NOT_IN_POLICY", 1, "blocking"))
+        self.assertEqual(got[2], self.stage(2, "ok", "No problem reported.", 13, "Needs attention:", *needs(9, 4), TABLE + " ; ".join(delta)))
+        self.assertEqual(got[3], self.stage(3, "warn", CODED + " (ADOPTION_CODED_GAPS)", 7, "Needs attention:", *needs(5, 2),
+                                            TABLE + " ; ".join(adoption)))  # delta stays ok: the status never sets a disposition
+        html = self.get("?id=" + IDS[0])[1]
+        self.assertEqual(html.count("<table"), 2)
+        for wire in ("GAP_NONE", "GA_", "GB_"):
+            self.assertNotIn(wire, html)
+
+    # Owner: unmapped gap codes. Fails if a safe code missing from the table is dropped or shown without its count/disposition.
+    def test_run_detail_gap_breakdown_unmapped(self):
+        got = self.gap_page("gapunmapped", "warn", 1)
+        self.assertEqual(got[3], self.stage(3, "warn", CODED + " (ADOPTION_CODED_GAPS)", 2, "Needs attention:",
+                                            ITEM % (CODED, "ADOPTION_CODED_GAPS", 2), ITEM % (UNACCEPTED, "ADOPTION_UNACCEPTED_GAP", 2),
+                                            TABLE + "ZZZ_NEW_GAP_CODE: no description yet | 2 | blocking"))
+
+    # Owner: reports without the field. Fails if an old report (even one with the aggregate needs-G item) shows a table or the
+    # no-gaps wording instead of the exact missing wording under both stages.
+    def test_run_detail_gap_breakdown_old_report(self):
+        got = self.gap_page("oldgaps", "warn", 1)
+        self.assertEqual(got[2], self.stage(2, "ok", "No problem reported.", 0, MISSING))
+        self.assertEqual(got[3], self.stage(3, "warn", CODED + " (ADOPTION_CODED_GAPS)", 0, "Needs attention:",
+                                            ITEM % (CODED, "ADOPTION_CODED_GAPS", 3), MISSING))
+        self.assertNotIn("<table", self.get("?id=" + IDS[0])[1])
 
     # Owner: the outputs queue code. Fails if the new stage code is hidden or shown without its operator sentence.
     def test_unwritable_queue_code_shows_the_operator_sentence(self):
@@ -190,6 +295,41 @@ def unexplained(source):
     return found - set(console_codes.CODES) - set(ALLOWED)
 
 
+# mail_adoption.py gap-code literals with no sentence on purpose, code -> reason (none: every code it emits has one).
+GAP_ALLOWED = {}
+# Codes mail_adoption relays from mail_delta (source path, MIME) and mail_resolution_plan (planner); each needs a sentence.
+RELAYED_DELTA = """INVALID_SOURCE_PATH SOURCE_PATH_ESCAPE SOURCE_IS_OUTPUT INVALID_MIME_CONTENT_TYPE INVALID_RELATED_CONTAINER
+AMBIGUOUS_RELATED_CONTENT_ID INVALID_RELATED_CONTENT_ID INVALID_RELATED_START MISSING_RELATED_ROOT RELATED_ROOT_TYPE_MISMATCH INVALID_EML
+MIME_PART_LIMIT INVALID_MULTIPART_DISPOSITION UNSUPPORTED_ATTACHED_MULTIPART_PART INVALID_MIME_CONTAINER INVALID_LEAF_DISPOSITION
+MIME_PAYLOAD_SIZE_LIMIT AMBIGUOUS_INLINE_TEXT_PART AMBIGUOUS_INLINE_BODY_PART"""
+RELAYED_PLAN = """RESOLUTION_EXISTING_BINDING_MISMATCH RESOLUTION_IMPORT_BINDING_MISMATCH RESOLUTION_REQUIRES_UNACCEPTED_ORIGINAL
+RESOLUTION_POLICY_RECEIPT_SET_MISMATCH RESOLUTION_NOT_IN_POLICY RESOLUTION_HELD_ORIGINAL_RESOLVED RESOLUTION_DEPENDENCY_CYCLE
+RESOLUTION_BINDING_RECEIPT_BLOCKED RESOLUTION_POLICY_RECEIPT_MISMATCH RESOLUTION_DEPENDENCY_BLOCKED"""
+
+
+def options(node):
+    """The string values an expression can take: literals, either branch of a conditional, and '+' compositions of those."""
+    if isinstance(node, ast.Constant):
+        return {node.value} if isinstance(node.value, str) else set()
+    if isinstance(node, ast.IfExp):
+        return options(node.body) | options(node.orelse)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return {a + b for a in options(node.left) for b in options(node.right)}
+    return set()  # str(error) and other relayed values: covered by the RELAYED_* lists
+
+
+def gap_literals(source):
+    """Upper-cased gap codes in mail_adoption.py: values returned by binding_conflict/mime_precheck and ACCEPTED_GAP_CODES members."""
+    found = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and node.name in ("binding_conflict", "mime_precheck"):
+            for ret in (n for n in ast.walk(node) if isinstance(n, ast.Return) and n.value is not None):
+                found |= options(ret.value)
+        elif isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "ACCEPTED_GAP_CODES" for t in node.targets):
+            found |= {n.value for n in ast.walk(node.value) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    return {code.upper() for code in found}
+
+
 class CodeTable(unittest.TestCase):
     # Owner: code coverage drift. Fails if the engine emits a code in run_stages.py that the table cannot explain, or the
     # allow-list hides a code that has a sentence.
@@ -201,6 +341,24 @@ class CodeTable(unittest.TestCase):
         self.assertEqual(unexplained(added), {"OUTPUTS_BRAND_NEW_UNAVAILABLE"})  # the walk sees a new producer literal
         for code, text in console_codes.CODES.items():
             self.assertTrue(console_codes.CODE_RE.fullmatch(code) and text.endswith(".") and code not in text, code)
+
+    # Owner: gap code coverage drift. Fails if mail_adoption.py gains a coded-gap literal (a returned code in binding_conflict or
+    # mime_precheck, a composed branch, or an ACCEPTED_GAP_CODES member) with no sentence, or a relayed MIME/source/planner code
+    # the adopter can pass through loses its sentence or its producer literal.
+    def test_every_mail_adoption_gap_code_is_explained_or_allowed(self):
+        source = Path(mail_adoption.__file__).read_text(encoding="utf-8")
+        found = gap_literals(source)
+        self.assertLessEqual({"ORIGINAL_SCOPE_UNRESOLVED", "ORIGINAL_SCOPE_NOT_IN_SCOPE", "SOURCE_UNREADABLE", "UNSUPPORTED_RFC822_PART"}, found)
+        self.assertEqual(found - set(console_codes.CODES) - set(GAP_ALLOWED), set())
+        self.assertEqual(set(GAP_ALLOWED) & set(console_codes.CODES), set())
+        for old, new, expected in (('"source_unreadable"', '"source_brand_new"', "SOURCE_BRAND_NEW"),  # a new returned literal
+                                   ('"not_in_scope"', '"brand_new_scope"', "ORIGINAL_SCOPE_BRAND_NEW_SCOPE")):  # a new composed branch
+            self.assertEqual(gap_literals(source.replace(old, new)) - found, {expected})
+        for module, codes in ((mail_delta, RELAYED_DELTA), (mail_resolution_plan, RELAYED_PLAN)):
+            text = Path(module.__file__).read_text(encoding="utf-8")
+            for code in codes.split():
+                self.assertIn(code, console_codes.CODES)
+                self.assertIn('"%s"' % code.lower(), text, code)
 
 
 if __name__ == "__main__":

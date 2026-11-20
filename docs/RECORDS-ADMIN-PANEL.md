@@ -431,7 +431,7 @@ Every console page shares a plain left navigation: Home, Approvals, Agencies,
 Calendar, Timeline and Library. The small More line retains Dashboard, Oversight,
 Public updates, Packets, and Drafts and next steps. On narrow screens the nav
 stacks above the page; overdue notices are bold red (on our records, not a legal finding).
-A short phone guide to every page, its sources, buttons and options is in [RECORDS-CONSOLE-PAGES.md](RECORDS-CONSOLE-PAGES.md).
+A short phone guide to every page, its sources, buttons and options is in [RECORDS-CONSOLE-PAGES.md](RECORDS-CONSOLE-PAGES.md). More: Changes (`GET /changes`) shows what is new in the selected run against the newest older installed export (or, live, the previous settled run), read-only.
 
 ## Jobs
 

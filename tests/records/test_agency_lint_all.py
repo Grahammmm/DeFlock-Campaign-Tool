@@ -1,4 +1,5 @@
 import hashlib
+import json
 import io
 import tempfile
 import types
@@ -8,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from campaign_tool.records import cli
-from campaign_tool.records.agency_run import lint_all
+from campaign_tool.records.agency_run import lint_all, lint_asks, lint_receipt
 
 CANARY = "canary-secret"
 CLEAN = "Please produce existing records.\nSecond line.\nThird line.\n"
@@ -316,3 +317,50 @@ class RealAgencyLintAllTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LintReceiptTests(unittest.TestCase):
+    """records-agency-lint-receipt-v1 production; the export-side checks are in test_agency_draft_export."""
+    setUp = RealAgencyLintAllTests.setUp
+    run_real = RealAgencyLintAllTests.run_real
+
+    def lint(self, **kw):
+        self.receipt = self.root / "r.json"
+        code, out, err = self.run_real(team=True, extra=["--receipt", str(self.receipt), *kw.pop("extra", ())], **kw)
+        return code, out + err
+
+    def doc(self):
+        return json.loads(self.receipt.read_text("utf-8"))
+
+    # Contract: fixed keys, body hash of the exact bytes, fixed roles, coded results; failing lints still write a receipt.
+    # Fails if a path, file name or matched text reaches the receipt/output, or a failing run writes no receipt.
+    def test_receipt_states_and_privacy(self):
+        code, out = self.lint()
+        doc = self.doc()
+        self.assertEqual((code, set(doc), doc["schema"]), (3, set(lint_receipt.KEYS), lint_receipt.SCHEMA))
+        self.assertEqual(doc["body_sha256"], hashlib.sha256(self.draft.read_bytes()).hexdigest())
+        self.assertEqual(set(doc["inputs"]), set(lint_receipt.ROLES))
+        self.assertEqual((doc["inputs"]["quote_ledger"], doc["inputs"]["originals"]), ("not given",) * 2)
+        self.assertEqual(doc["results"]["quotes"], {"status": "skipped", "reason": "q3_not_run"})
+        self.assertEqual(doc["results"]["asks"], {"status": "pass"})
+        self.assertEqual(oct(self.receipt.stat().st_mode & 0o777), "0o600")
+        self.receipt.unlink()
+        self.draft.write_text("1. Please send existing records.\nJordan Testname\n")
+        code, out = self.lint()
+        self.assertEqual((code, self.doc()["results"]["out"]), (1, {"status": "fail", "hit_count": 1}))
+        for secret in (str(self.root), "Jordan", "team.txt", "agency a", "Please send"):
+            self.assertNotIn(secret, self.receipt.read_text("utf-8") + out)
+
+    # Contract: an operational error, an existing receipt path or an input changing mid-run never yields a receipt.
+    def test_no_receipt_on_error_overwrite_or_change_during_run(self):
+        with mock.patch.object(lint_asks, "main", side_effect=ValueError(CANARY)):
+            code, out = self.lint()
+        self.assertEqual((code, self.receipt.exists(), CANARY in out), (2, False, False))
+        self.receipt.write_text("keep")
+        code, out = self.lint()
+        self.assertEqual((code, self.receipt.read_text()), (2, "keep"))
+        self.receipt.unlink()
+        with mock.patch.object(lint_asks, "main", side_effect=lambda argv: (self.draft.write_text("edited\n"), 0)[1]):
+            code, out = self.lint()
+        self.assertEqual((code, self.receipt.exists()), (2, False))
+        self.assertEqual(self.run_real(team=True, extra=["--receipt", str(self.root / "no" / "dir" / "r.json")])[0], 2)

@@ -4,7 +4,9 @@ import io
 import json
 import os
 import sqlite3
+import sys
 import tempfile
+import time
 import unittest
 from contextlib import closing
 from pathlib import Path
@@ -12,9 +14,9 @@ from unittest import mock
 
 from campaign_tool.records import approval_queue as aq
 from campaign_tool.records import followup_clock as fc
-from campaign_tool.records import run_stages, draft_residue, draft_templates
+from campaign_tool.records import run_stages, run_orchestrator, run_report, draft_residue, draft_templates
 from campaign_tool.records.ledger.migrations import v001
-from campaign_tool.records.outcomes import register
+from campaign_tool.records.outcomes import received_items, register
 from campaign_tool.records.outcomes import timeline as tl
 from tests.approval_signing import Signer
 
@@ -138,6 +140,7 @@ class SettingsAndStates(Base):
         self.put_register([row()], run="run-old")
         out = fc.queue_followups(self.root, "run-new")
         self.assertEqual((out["created"], out["existing"]), (0, 0))
+        self.assertIs(out.get("register_missing"), True)
         self.assertFalse((self.root / "approvals").exists())
         with self.assertRaises(ValueError):
             fc.queue_followups(self.root, "../run-old")
@@ -372,6 +375,23 @@ class ProductionChronology(Base):
         self.assertEqual(before["one"][0], before["two"][0])
 
 
+def fee_item():
+    sha = lambda n: f"{n:064x}"  # noqa: E731
+    return {"item_id": sha(1), "original_sha256": sha(1001), "occurrence_ids": [], "agency_id": "a1",
+            "request_id": "FB-01", "received_at": "2026-11-02T18:59:00Z", "kind": "fee",
+            "kind_basis": {"page": 1, "quote": "A fee applies to this request."}, "findings": [],
+            "deadlines": [], "review_required": True}
+
+
+def write_fee_received(project, run_id):
+    out = Path(project) / "run-outputs" / run_id / "outcomes"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "received-items.json").write_text(json.dumps({
+        "schema": "records-received-item-v1", "run_id": run_id, "review_required": True, "legal_conclusion": False,
+        "law_package_status": "draft", "disclaimer": "d", "comparison_sha256": None,
+        "items": [fee_item()], "diagnostics": []}), encoding="utf-8")
+
+
 class Seam(Base):
     def setUp(self):
         super().setUp()
@@ -412,6 +432,82 @@ class Seam(Base):
         self.assertFalse(list(self.root.rglob("*receipt*")))
         self.assertEqual(self.outputs()[0], 0)
         self.assertEqual(len(self.queued()), 1)
+
+    def counts_run(self, **patches):
+        with mock.patch.object(received_items, "write_run_received_items", write_fee_received):
+            return self.outputs()
+
+    def test_outputs_draft_counts_first_run_rerun_and_round_trip(self):
+        self.enable("a1")
+        code, first, _ = self.counts_run()
+        self.assertEqual(code, 0)
+        self.assertEqual({k: first["draft_queue_counts"][k] for k in ("received_items", "followup_clock")},
+                         {"received_items": 1, "followup_clock": 1})
+        self.assertEqual(sorted(first["draft_queue_counts"]), sorted(run_stages.DRAFT_QUEUE_PRODUCERS))
+        self.assertEqual(sorted(r["kind"] for r in self.queued()), ["fee-reply", "reminder-no-response"])
+        rows = self.queued()
+        _, again, _ = self.counts_run()
+        self.assertEqual({k: again["draft_queue_counts"][k] for k in ("received_items", "followup_clock")},
+                         {"received_items": 0, "followup_clock": 0})
+        self.assertEqual(self.queued(), rows)
+        # The orchestrator carries the outputs block (only) into the report, apart from new_data.
+        schema = run_orchestrator.load_stage_result_schema()
+        stage_line = run_orchestrator.parse_stage_result(json.dumps(first).encode(), schema)
+        self.assertEqual(stage_line["draft_queue_counts"], first["draft_queue_counts"])
+        old = run_stages.result("ok", {})
+        stray = dict(old, draft_queue_counts=dict.fromkeys(run_stages.DRAFT_QUEUE_PRODUCERS, 5))
+
+        def report_for(outputs, other):
+            def fake_run_stage(argv, timeout, schema, work_dir, env):
+                line = outputs if "outputs" in argv else other
+                return line["status"], dict(line["counts"]), line["error_code"], line, 1.0
+            stages = [{"name": n, "argv": [sys.executable, "stub", n], "timeout_seconds": 60, "on_fail": "stop"}
+                      for n in run_orchestrator.WORK_STAGES]
+            config = run_orchestrator.validate_target_config(
+                {"target_config_version": 1, "target": "TEST", "mode": "test", "stages": stages})
+            with tempfile.TemporaryDirectory() as work, \
+                    mock.patch.object(run_orchestrator, "run_stage", side_effect=fake_run_stage):
+                path = Path(work) / "report.json"
+                run_orchestrator.execute(config, "run_20261019T120000Z_0123abcd", "test", run_orchestrator.utc_now(),
+                                         time.time() + 600, path, work)
+                report = json.loads(path.read_text(encoding="utf-8"))
+            run_report.validate_run_report(report)
+            return report
+        report = report_for(stage_line, stray)  # a non-outputs stage bearing the field supplies nothing
+        self.assertEqual(report["draft_queue_counts"], first["draft_queue_counts"])
+        self.assertFalse(set(run_stages.DRAFT_QUEUE_PRODUCERS) & set(report["new_data"]))
+        self.assertNotIn("draft_queue_counts", report_for(old, stray))  # an old outputs result: no block, no zeros
+
+    def test_outputs_draft_counts_preserve_unknown_and_warnings(self):
+        self.enable("a1")
+        err = aq.ApprovalQueueError("queue_unwritable")
+        # The clock draft is created on the first run and is an existing row (0 new) on the second.
+        for label, error, code, clock in (("generic", RuntimeError("Canary"), "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE", 1),
+                                          ("unwritable", err, "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE", 0)):
+            with self.subTest(label), mock.patch.object(aq, "queue_received_items", side_effect=error):
+                _, result, _ = self.counts_run()
+            counts = result["draft_queue_counts"]
+            self.assertIsNone(counts["received_items"])
+            self.assertEqual(counts["followup_clock"], clock)
+            self.assertEqual((result["error_code"], [i["code"] for i in result["needs_g"]][:1]), (code, [code]))
+            self.assertNotIn("Canary", json.dumps(result))
+
+    def test_outputs_draft_counts_unknown_when_producer_did_not_run(self):
+        self.enable("a1")
+        with mock.patch.object(fc, "queue_followups", return_value={"created": 0, "register_missing": True}):
+            self.assertIsNone(self.counts_run()[1]["draft_queue_counts"]["followup_clock"])
+        with mock.patch.object(fc, "queue_followups", return_value={"created": 0, "settings_invalid": True}):
+            self.assertIsNone(self.counts_run()[1]["draft_queue_counts"]["followup_clock"])
+        with mock.patch.object(fc, "queue_followups", side_effect=RuntimeError("x")):
+            self.assertIsNone(self.counts_run()[1]["draft_queue_counts"]["followup_clock"])
+        from campaign_tool.records import next_steps
+        for returned, expected in (({"queued": 0, "skipped": "proposals_missing"}, None),
+                                   ({"queued": 2, "existing": 1}, 2)):
+            with self.subTest(returned), mock.patch.object(run_stages, "next_steps_campaign_root", return_value="/x"), \
+                    mock.patch.object(next_steps, "queue_run_next_steps", return_value=returned):
+                self.assertEqual(self.counts_run()[1]["draft_queue_counts"]["next_steps"], expected)
+        with mock.patch.object(run_stages, "next_steps_campaign_root", return_value=None):
+            self.assertIsNone(self.counts_run()[1]["draft_queue_counts"]["next_steps"])
 
     def test_register_failure_means_no_followup_call(self):
         self.enable("a1")
@@ -733,3 +829,98 @@ class Advisories(Base):
         self.put_register([row()], run="run-2")
         with mock.patch.object(fc, "_render", changed), self.assertRaises(aq.ApprovalQueueError):
             fc.queue_followups(self.root, "run-2")
+
+
+def arrived(answer, *issues, **kw):
+    r = row(issues=issues, **kw)
+    r["answer_arrived"] = {"state": answer, "first_arrival": "2030-01-20T10:00:00Z", "occurrence_ids": ["o1"]}
+    return r
+
+
+class AnswerUnrecorded(Base):
+    """DF2307-02: a reply that arrived (or may have) and is not recorded holds the reminder drafts."""
+
+    def settings_for(self, **extra):
+        settings = fc.load_settings(self.root)
+        settings["agencies"] = {"ag1": dict({"autonomy": "draft", "notice_after_days": 10}, **extra)}
+        return settings
+
+    def test_unrecorded_and_unknown_skipped_once_and_counted(self):
+        settings = self.settings_for()
+        ident = fc.item_id("ag1", "req-1", "determination", "2030-01-12")
+        prior = [{"item_id": ident, "kind": "reminder-no-response", "status": "approved",
+                  "updated_at": "2030-01-10T10:00:00Z"}]  # old enough for the formal-notice ladder
+        promised = {"state": "passed", "date": "2030-01-15"}  # a second overdue clock on the same row
+        for state, issues in (("arrived_unrecorded", ()), ("unknown", ("arrival_unresolved",))):
+            rows = [arrived(state, *issues, promised=promised)]
+            found, counts = fc._plan(doc(rows), settings, prior, AS_OF)
+            self.assertEqual(found, [])
+            self.assertEqual(counts, {"skipped_off": 0, "skipped_issue": 0, "not_due": 0, "skipped_answer_unrecorded": 1})
+        # none and the absent key behave as before: both clocks and the notice ladder draft
+        for legacy in (arrived("none", promised=promised), row(promised=promised)):
+            found, counts = fc._plan(doc([legacy]), settings, prior, AS_OF)
+            self.assertEqual(sorted(c["kind"] for c in found),
+                             sorted(["reminder-no-response", fc.NOTICE, "reminder-promised-date"]))
+            self.assertEqual(counts["skipped_answer_unrecorded"], 0)
+        # the held row is not also counted as off, issue or not due
+        off = fc.load_settings(self.root)
+        self.assertEqual(fc._plan(doc([arrived("arrived_unrecorded")]), off, [], AS_OF)[1],
+                         {"skipped_off": 0, "skipped_issue": 0, "not_due": 0, "skipped_answer_unrecorded": 1})
+
+    def test_queue_summary_counts_and_existing_drafts_untouched(self):
+        self.enable()
+        self.put_register([row(request="old")])
+        self.assertEqual(fc.queue_followups(self.root, "run-1")["created"], 1)
+        before = json.dumps(self.queued(), sort_keys=True)
+        self.put_register([arrived("arrived_unrecorded", request="old"), arrived("unknown", "arrival_unresolved", request="b"),
+                           arrived("none", request="c")], run="run-2")
+        out = fc.queue_followups(self.root, "run-2")
+        self.assertEqual((out["created"], out["existing"], out["skipped_answer_unrecorded"]), (1, 0, 2))
+        self.assertEqual([r["request_id"] for r in self.queued()], ["old", "c"])
+        self.assertEqual(json.dumps([r for r in self.queued() if r["request_id"] == "old"], sort_keys=True),
+                         json.dumps(json.loads(before), sort_keys=True))
+        self.assertEqual(fc.queue_followups(self.root, "run-missing")["skipped_answer_unrecorded"], 0)
+
+    def test_none_is_byte_identical_to_no_key(self):
+        self.enable()
+        self.put_register([row(request="a"), row(request="b", state="running")])
+        fc.queue_followups(self.root, "run-1")
+        plain = [(r["id"], r["body"], r["status"]) for r in self.queued()]
+        self.put_register([arrived("none", request="a"), arrived("none", request="b", state="running")], run="run-2")
+        out = fc.queue_followups(self.root, "run-2")
+        self.assertEqual((out["created"], out["existing"], out["skipped_answer_unrecorded"]), (0, 1, 0))
+        self.assertEqual([(r["id"], r["body"], r["status"]) for r in self.queued()], plain)
+
+    def test_reminder_status_distinguishes_confirmed_and_unknown_arrival(self):
+        settings = self.settings_for()
+        rows = [arrived("arrived_unrecorded", request="u"), arrived("unknown", "arrival_unresolved", request="k"),
+                arrived("none", request="n")]
+        queue = [{"id": "q", "item_id": fc.item_id("ag1", "u", "determination", "2030-01-12"),
+                  "kind": fc.REMINDERS[0], "status": "pending", "updated_at": AS_OF}]
+        before = json.dumps([rows, settings, queue], sort_keys=True)
+        result = fc.reminder_status(doc(rows), settings, queue, as_of=AS_OF)
+        self.assertEqual([(r["request_id"], r["reason"]) for r in result],
+                         [("u", "reply arrived; record it first"), ("k", "Reply status unclear; check the source"),
+                          ("n", "No reminder draft queued")])
+        for r in result[:2]:
+            self.assertIsNone(r["state"])
+            self.assertNotIn("queue_id", r)
+        self.assertEqual(json.dumps([rows, settings, queue], sort_keys=True), before)
+
+    def test_stage_output_carries_count(self):
+        seam = Seam("test_outputs_seam_queues_pending_and_sends_nothing")
+        seam.setUp()
+        self.addCleanup(seam.doCleanups)
+        seam.enable("a1")
+
+        def write(project, run_id):
+            seam.put_register([arrived("arrived_unrecorded", agency="a1", request="x"),
+                               arrived("unknown", "arrival_unresolved", agency="a1", request="y"),
+                               arrived("none", agency="a1", request="FB-01")], run=run_id)
+        with mock.patch.object(register, "write_for_run", side_effect=write):
+            code, result, run = seam.outputs(run="held-1")
+        self.assertEqual((code, result["status"]), (0, "ok"))
+        self.assertEqual(result["counts"], {"input": 1, "output": 1, "failed": 0, "skipped": 2})
+        self.assertEqual([r["request_id"] for r in seam.queued()], ["FB-01"])
+        code, result, _ = seam.outputs()
+        self.assertEqual(result["counts"]["skipped"], 0)

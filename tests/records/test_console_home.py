@@ -19,7 +19,7 @@ from tests.records.test_console_snapshot import Panel, RUN as EXPORT_RUN, RUN2, 
 
 NOW = datetime(2026, 11, 5, tzinfo=timezone.utc)
 SECTION = re.compile(r'<section id="system">.*?</section>\n', re.S)
-HOME_REST_SHA256 = "250ddb1e35ded7edc8cce3fe83edfeb69be73305e825f94c6a790e7abc9ef2f2"  # pragma: allowlist secret (main's Home over Home.fixture, before DFCON17-12, plus the DF1117L-01 Policy comparison, DF1117L-04 Coverage, DF1117L-02 Agency fact sheets and GS2-DF-STAGES-PAGE Go-live stages More links; a page digest, not a credential)
+HOME_REST_SHA256 = "d5fcc54f0422a5b9f8b3f6d7c1d924839f954a19eba3fcff60ba5813f82f1ada"  # pragma: allowlist secret (main's Home over Home.fixture, before DFCON17-12, plus the DF1117L-01 Policy comparison, DF1117L-04 Coverage, DF1117L-02 Agency fact sheets and GS2-DF-STAGES-PAGE Go-live stages and DF1117L-14 Changes More links; a page digest, not a credential)
 
 
 def put_received(project):
@@ -698,6 +698,23 @@ class Reminders(unittest.TestCase):
             page = home.render_home(home.load(self.project, RUN, now=NOW), '')
         self.assertIn('Reminder status unavailable', page)
         self.assertNotIn('private detail', page)
+
+    def test_reminder_column_distinguishes_confirmed_and_unknown_reply_status(self):
+        from campaign_tool.records import followup_clock as fc
+        from tests.records.test_followup_clock import row, doc
+        requests = [self.request(s, due="2026-10-01", overdue="2026-10-01") for s in ("held", "unsure", "plain")]
+        register = [row("alpha-pd", s, due="2026-10-01") for s in ("held", "unsure", "plain")]
+        register[0]["answer_arrived"] = {"state": "arrived_unrecorded", "first_arrival": "2026-10-05T10:00:00Z", "occurrence_ids": ["o"]}
+        register[1]["answer_arrived"] = {"state": "unknown", "first_arrival": None, "occurrence_ids": []}
+        register[1]["issues"] = ["arrival_unresolved"]
+        put(self.project / 'run-outputs' / RUN / fc.REGISTER_NAME, doc(register, "2026-11-05"))
+        cal.put(self.project / fc.SETTINGS_FILE, {"schema": fc.SETTINGS_SCHEMA, "default": {"autonomy": "draft"}})
+        model, page = self.page(requests)
+        section = page.split('<section id="waiting">')[1].split('</section>')[0]
+        self.assertEqual(section.count('reply arrived; record it first'), 1)
+        self.assertEqual(section.count('Reply status unclear; check the source'), 1)
+        self.assertNotIn('Request needs checking', section)
+        self.assertEqual(section.count('/review?id='), 0)
 
 
 class RefusalNext(unittest.TestCase):
