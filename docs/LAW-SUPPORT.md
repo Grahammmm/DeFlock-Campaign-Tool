@@ -13,7 +13,7 @@ is legal advice or a finding about any agency.
 - Package status: `draft`
 - Reviewed by (as recorded): none recorded
 - Reviewed at (as recorded): none recorded
-- Rules: 18
+- Rules: 19
 
 | Rule ID | Citation | Effective from | Effective to | Review label | Request scopes |
 | --- | --- | --- | --- | --- | --- |
@@ -25,6 +25,7 @@ is legal advice or a finding about any agency.
 | ca-civ-1798.90.54-civil-action | Civ. Code § 1798.90.54 | 2016-01-01 | open | verified | — |
 | ca-civ-1798.90.55-public-comment-before-implementation | Civ. Code § 1798.90.55(a) | 2016-01-01 | open | verified | hearing-records |
 | ca-civ-1798.90.55-sharing-limits | Civ. Code § 1798.90.55(b) | 2016-01-01 | open | verified | agreements, sharing |
+| ca-gov-34090.6-routine-recordings-destruction | Gov. Code § 34090.6 | 2010-01-01 | open | needs\_attorney\_review | — |
 | ca-gov-7284.6-values-act-immigration-enforcement-limits | Gov. Code § 7284.2 et seq. (California Values Act, SB 54); § 7284.6 | 2018-01-01 | open | needs\_attorney\_review | sharing |
 | ca-gov-7922.525-segregability | Gov. Code § 7922.525(a)-(b) | 2023-01-01 | open | needs\_attorney\_review | — |
 | ca-gov-7922.535-determination-and-extension-2026 | Gov. Code § 7922.535 (AB 370, Stats. 2025, ch. 34, § 1; effective 2026-01-01) | 2026-01-01 | open | needs\_attorney\_review | — |
