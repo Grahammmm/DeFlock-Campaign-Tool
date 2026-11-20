@@ -75,7 +75,8 @@ pending determination on/before due stays unknown; after due it is a documentary
 timing gap. Production/acknowledgment is not determination. Any unresolved date,
 calendar coverage, receipt, exception or counterevidence stays unknown.
 
-The cited legal baseline is the existing draft jurisdictions/us-ca/package.json
+The cited legal baseline is jurisdictions/us-ca/package.json, labelled per row with the status
+and sha256 prefix read at run time (`package unavailable` if unreadable)
 and its official Legislative Information URLs, including Civil Code 1798.90.5
 (scope), .51-.53 (safeguards/policies/access), .55 (public agencies) and Government
 Code 7922.535/6800/6700 (CPRA timing). Civil Code .54 remedies are not adjudicated
