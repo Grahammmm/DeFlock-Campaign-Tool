@@ -27,7 +27,7 @@ ROLE = re.compile(r"[a-z][a-z0-9_-]{1,39}")
 STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})")
 CLAIM = re.compile(r"[ \t]*\[VERIFIED-ORIGINAL\]")
 NOTE_PAGE = re.compile(r"p\.([0-9]+)")
-RULES_VERSION = "1"  # bump on any rule change: agency lint receipts bind it
+RULES_VERSION = "2"  # bump on any rule change: agency lint receipts bind it
 DRAFT_MAX = 2 * 1024 * 1024
 PAGE_MAX = 5 * 1024 * 1024
 MIN_WORDS = 3
@@ -65,8 +65,18 @@ def _quotes(text):
 
 
 def _verbatim(quote, page):
-    pos = 0
     segments = [_norm(s) for s in OMIT.split(quote)]
+    if len(segments) == 1:
+        text = segments[0]
+        if not text:
+            return False
+        # Only a word character next to another word character cuts a word.
+        leading = r"(?<!\w)" if text[0].isalnum() or text[0] == "_" else ""
+        trailing = r"(?!\w)" if text[-1].isalnum() or text[-1] == "_" else ""
+        return re.search(leading + re.escape(text) + trailing, page) is not None
+
+    # Explicit omissions retain ordered substring matching.
+    pos = 0
     segments = [s for s in segments if s]
     if not segments:
         return False
