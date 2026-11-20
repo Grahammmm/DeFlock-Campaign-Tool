@@ -208,8 +208,9 @@ class RunTests(unittest.TestCase):
         self.report = {"schema": "records-timeline-v1", "run_id": "r1", "as_of": DAY,
                        "requests": [request(events=[event("no records")])]}
         self.write("timeline.json", self.report)
-        (self.out.parent / "CURRENT-REQUEST-REGISTER.json").write_text(json.dumps({"requests": [
-            request(asked="1. Annual audits; 2. Policy")]}))
+        self.register_path = self.out.parent / "CURRENT-REQUEST-REGISTER.json"
+        self.register = {"as_of": DAY, "requests": [request(asked="1. Annual audits; 2. Policy")]}
+        self.register_path.write_text(json.dumps(self.register))
 
     def write(self, name, data):
         (self.out / name).write_text(json.dumps(data))
@@ -234,6 +235,34 @@ class RunTests(unittest.TestCase):
         self.write("response-items.json", {"schema": "records-response-items-v1", "run_id": "r1",
                   "requests": [request(asks=[ask(rating="answered")])]})
         self.assertEqual(fs.classify_run(self.root, "r1")["requests"][0]["state"], "answered")
+
+    def test_mismatched_or_malformed_register_date_refused_without_output(self):
+        # Stale scope must not produce classifications, even if all request keys join.
+        for value in ("2026-11-05", "2026-11-07", "2026-02-30", DAY + "garbage", "", None, 20261106):
+            with self.subTest(as_of=value):
+                self.register_path.write_text(json.dumps({**self.register, "as_of": value}))
+                with self.assertRaisesRegex(ValueError, "^followup_state_invalid_input$"):
+                    fs.classify_run(self.root, "r1")
+                with (patch("sys.argv", ["records", "followup-state", "--project", str(self.root), "--run-id", "r1"]),
+                      contextlib.redirect_stdout(io.StringIO()) as out,
+                      contextlib.redirect_stderr(io.StringIO()) as err):
+                    self.assertEqual(cli.main(), 2)
+                self.assertEqual(out.getvalue(), "")
+                self.assertEqual(err.getvalue().strip(), "followup_state_invalid_input")
+
+    def test_undated_legacy_register_still_supplies_scope_and_status(self):
+        del self.register["as_of"]
+        self.register["requests"][0]["status"] = "clarification requested"
+        self.register_path.write_text(json.dumps(self.register))
+        row = fs.classify_run(self.root, "r1")["requests"][0]
+        self.assertEqual(row["state"], "clarification")
+        self.assertEqual(row["item_needs"]["audit_no_records"], [1])
+
+    def test_missing_register_falls_back_to_timeline_only(self):
+        self.register_path.unlink()
+        row = fs.classify_run(self.root, "r1")["requests"][0]
+        self.assertEqual(row["state"], "no_records")
+        self.assertEqual(row["open_items"], [])
 
     def test_stale_duplicate_malformed_and_symlink_inputs_refused(self):
         with self.assertRaises(ValueError):
