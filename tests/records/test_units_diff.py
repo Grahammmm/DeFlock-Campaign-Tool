@@ -107,6 +107,59 @@ class UnitsDiffTests(unittest.TestCase):
                                  "MATCH records-run.service enabled=unknown"])
         self.assertEqual(self.snapshot(), before)
 
+    def test_symlinked_installed_root_is_refused_not_traversed(self):
+        # Contract: no symlink is ever followed, including the --installed root itself. Bug caught: a matching unit
+        # behind a symlinked installed root printed MATCH and exited 0.
+        self.put(self.rendered, "records-run.service", SERVICE)
+        real = self.base / "real-installed"
+        real.mkdir()
+        self.put(real, "records-run.service", SERVICE)
+        link = self.base / "link-installed"
+        os.symlink(real, link)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = units_diff.main(["--rendered", str(self.rendered), "--installed", str(link)], enabled=lambda u: "x")
+        self.assertEqual((code, out.getvalue()), (2, ""))
+        self.assertIn("symlink", err.getvalue())
+        self.assertNotIn(str(self.base), err.getvalue())
+        with self.assertRaises(OSError):  # scan() itself also refuses, whatever calls it
+            units_diff.scan(link)
+
+    def test_symlinked_dropin_file_and_rendered_unit_are_reported_not_followed(self):
+        # Contract: a link at unit or drop-in file level (either side) is DRIFT with its target unread. Bug caught:
+        # a drop-in file link resolving to a matching file reported MATCH.
+        target = self.base / "elsewhere-target"
+        target.write_text("[Service]\nEnvironment=A=1\n", encoding="utf-8")
+        self.put(self.rendered, MAIL, "[Service]\nEnvironment=A=1\n")
+        (self.installed / "deflockslo-daily-mail.service.d").mkdir()
+        os.symlink(target, self.installed / MAIL)
+        self.put(self.installed, "records-run.service", SERVICE)
+        os.symlink(target, self.rendered / "records-run.service")
+        code, lines = self.run_diff()
+        self.assertEqual(code, 1)
+        self.assertEqual(lines, [f"DRIFT {MAIL} enabled=enabled symlink (installed, not followed)",
+                                 "DRIFT records-run.service enabled=enabled symlink (rendered, not followed)"])
+
+    def test_more_than_the_bound_of_units_fails_closed_with_exit_2(self):
+        # Contract: never report a subset as complete. Bug caught: scan() stopped silently after the bound, so a
+        # drifted unit past it was omitted and 501 units could print all-MATCH with exit 0.
+        limit = units_diff.MAX_ENTRIES
+        for i in range(limit):
+            self.both(f"records-u{i:04d}.service")
+        code, lines = self.run_diff()  # exactly the bound is still fully compared
+        self.assertEqual((code, len(lines)), (0, limit))
+        self.both(f"records-u{limit:04d}.service", installed=OTHER)  # one past the bound, and it differs
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = units_diff.main(["--rendered", str(self.rendered), "--installed", str(self.installed)],
+                                   enabled=lambda unit: "enabled")
+        self.assertEqual((code, out.getvalue()), (2, ""))
+        self.assertIn("partial", err.getvalue())
+        for i in range(limit + 1):  # an over-bound installed side alone fails closed too
+            os.unlink(self.rendered / f"records-u{i:04d}.service")
+        self.put(self.rendered, "records-run.service", SERVICE)
+        self.assertEqual(self.run_diff()[0], 2)
+
     def test_unusable_inputs_exit_2_and_unrecognised_status_is_unknown(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):

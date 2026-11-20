@@ -40,9 +40,19 @@ def is_enabled(unit):
     return word if word in ENABLED_STATES else "unknown"  # `disabled` exits non-zero, so the code is not used
 
 
+class TooMany(Exception):
+    """More than MAX_ENTRIES compared names under one root: fail closed rather than compare a subset."""
+
+
 def scan(root):
-    """{relative name: Path} of the compared names under ``root`` (a missing root is empty). Never follows links."""
+    """{relative name: Path} of the compared names under ``root`` (a missing root is empty). Never follows links.
+
+    A symlinked ``root`` is never entered (OSError) and more than MAX_ENTRIES compared names raise TooMany, so a
+    partial listing can never be reported as an all-MATCH result.
+    """
     found = {}
+    if Path(root).is_symlink():
+        raise OSError("symlinked root")
     try:
         with os.scandir(root) as entries:
             for entry in entries:
@@ -51,7 +61,7 @@ def scan(root):
                 elif entry.name == DROPIN_DIR:
                     found[DROPIN_DIR] = Path(entry.path)  # judged below: a symlinked directory is never entered
                 if len(found) > MAX_ENTRIES:
-                    break
+                    raise TooMany
     except FileNotFoundError:
         return {}
     for name, path in list(found.items()):
@@ -66,6 +76,8 @@ def scan(root):
                 for entry in entries:
                     if DROPIN_FILE.fullmatch(entry.name):
                         found[f"{DROPIN_DIR}/{entry.name}"] = Path(entry.path)
+                        if len(found) > MAX_ENTRIES:
+                            raise TooMany
         except OSError:
             found[name] = path  # reported as unreadable
     return found
@@ -146,11 +158,18 @@ def main(argv=None, enabled=is_enabled):
     if rendered_root.is_symlink() or not rendered_root.is_dir():
         print("units-diff: --rendered is not a real directory", file=sys.stderr)
         return 2
+    if installed_root.is_symlink():
+        print("units-diff: --installed is a symlink, not followed", file=sys.stderr)
+        return 2
     if installed_root.exists() and not installed_root.is_dir():
         print("units-diff: --installed is not a directory", file=sys.stderr)
         return 2
     try:
         rendered, installed = scan(rendered_root), scan(installed_root)
+    except TooMany:
+        print(f"units-diff: more than {MAX_ENTRIES} compared unit files in one directory; refusing a partial "
+              "comparison", file=sys.stderr)
+        return 2
     except OSError:
         print("units-diff: a unit directory is unreadable", file=sys.stderr)
         return 2
