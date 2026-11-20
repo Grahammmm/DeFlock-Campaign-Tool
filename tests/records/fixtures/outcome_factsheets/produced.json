@@ -9,7 +9,7 @@
     {
       "document_id": "SYNTH-001", "agency": "maple", "unit": "Records", "request_reference": "MV-2041-01",
       "file_name": "fictional-policy.pdf", "file_path": "synthetic-only", "document_type": "policy", "document_date": "2041-03-17", "production_status": "produced", "pages": [
-        "Vendor: Example Optics Cooperative.\nContract MV-2041-17 runs for two years.\nAnnual fee: $12,345.67.\nThe department operates 7 ALPR cameras.\nCamera locations: Example Lane at Fictional Avenue.\nRetention is 21 days unless evidence is preserved.",
+        "Vendor: Example Optics Cooperative.\nContract MV-2041-17 runs for two years.\nAnnual fee: $12,345.67.\nThe department operates 7 ALPR cameras.\nCamera locations: Example Lane at Fictional Avenue.\nRetention is 21 days\nunless evidence is preserved.",
         "No outside sharing is permitted without written authorization.\nAudits are conducted quarterly.\nSearch logs are retained for 13 months.\nPolicy MV-17 is effective 2041-03-17.\nProposed contract renewal would cost $15,000; it is NOT executed."
       ]
     },

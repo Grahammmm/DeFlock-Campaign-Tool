@@ -36,6 +36,29 @@ FIELDS = {
     "policy_in_force": ("Policy in force (source statement only)", r"\b(?:policy.*\b(?:effective|in force|adopted|superseded|rescinded)|(?:effective|in force|adopted|superseded|rescinded).*\bpolicy)\b"),
 }
 PATTERNS = {key: re.compile(pattern, re.I) for key, (_, pattern) in FIELDS.items()}
+# A line that is only a field name (optionally with a colon) is a heading, not a statement.
+HEADINGS = {name for key, (label, _) in FIELDS.items() for name in (key.replace("_", " "), label.casefold())}
+
+
+def _statements(text):
+    """Yield (quote, line_start, line_end) for each page-local statement; lines are 1-based.
+
+    Consecutive non-blank lines are joined with one space until a line ends in . ! ; or ?,
+    a blank line, a heading line (never quoted) or the end of the unit, so a statement
+    wrapped by extraction is whole and the quote equals the cited lines joined by spaces.
+    """
+    run = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if line and line.rstrip(":").casefold() not in HEADINGS:
+            run.append((number, line))
+            if line[-1] not in ".!;?":
+                continue
+        if run:
+            yield " ".join(part for _, part in run), run[0][0], run[-1][0]
+            run = []
+    if run:
+        yield " ".join(part for _, part in run), run[0][0], run[-1][0]
 
 
 def _need(condition, code):
@@ -157,9 +180,8 @@ def collect(db, processing, run_id):
                 continue
             _need(any(p.get("page_no") == pages[0] for p in manifest.get("pages", [])
                       if isinstance(p, dict)), "factsheet_page_not_in_manifest")
-            for line in payload["text"].splitlines():
-                quote = line.strip()
-                if not quote or "?" in quote:
+            for quote, line_start, line_end in _statements(payload["text"]):
+                if "?" in quote:
                     continue
                 if len(quote) > 2000:
                     sheet["gaps"].append({"document_sha256": subject, "unit_id": unit["id"], "code": "statement_too_long"})
@@ -167,15 +189,15 @@ def collect(db, processing, run_id):
                 for field, pattern in PATTERNS.items():
                     if not pattern.search(quote):
                         continue
-                    # A heading alone is not a statement of a value.
-                    if quote.rstrip(":").casefold() in {field.replace("_", " "), FIELDS[field][0].casefold()}:
-                        continue
-                    statement = {"quote": quote, "citation": {"document_sha256": subject, "page": pages[0],
-                                 "unit_id": unit["id"], "text_sha256": unit["text_sha256"],
-                                 "payload_sha256": digest}}
+                    cite = {"document_sha256": subject, "page": pages[0],
+                            "unit_id": unit["id"], "text_sha256": unit["text_sha256"],
+                            "payload_sha256": digest}
                     values = sheet["fields"][field]
-                    if statement not in values["statements"]:
-                        values["statements"].append(statement)
+                    # An exact repeat (same quote and original citation) keeps its first line range.
+                    if not any(s["quote"] == quote and {k: s["citation"][k] for k in cite} == cite
+                               for s in values["statements"]):
+                        values["statements"].append({"quote": quote, "citation": {
+                            **cite, "line_start": line_start, "line_end": line_end}})
                         values["status"] = "SOURCE STATEMENT — REVIEW REQUIRED"
     return result
 
@@ -203,8 +225,9 @@ def markdown(report):
                 # HTML-escaped text inside code prevents source Markdown links,
                 # headings, images or active HTML from becoming presentation.
                 quote = escape(item["quote"]).replace("`", "&#96;")
+                span = ", lines " + str(cite["line_start"]) + "–" + str(cite["line_end"]) if "line_start" in cite else ""
                 lines.append("- Source statement: <code>" + quote + "</code> [document sha256 "
-                             + cite["document_sha256"] + ", page " + str(cite["page"]) + "]")
+                             + cite["document_sha256"] + ", page " + str(cite["page"]) + span + "]")
             lines.append("")
         if sheet["gaps"]:
             lines += ["Coverage gaps: " + escape(json.dumps(sheet["gaps"], sort_keys=True)), ""]
