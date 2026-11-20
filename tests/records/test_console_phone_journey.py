@@ -22,6 +22,7 @@ import base64
 import json
 import os
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -29,6 +30,8 @@ import tempfile
 import time
 import unittest
 import urllib.request
+from collections import deque
+from contextlib import suppress
 from pathlib import Path
 
 from campaign_tool.records import approval_queue as aq
@@ -42,6 +45,7 @@ WIDTH, HEIGHT = 390, 844
 BROWSERS = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")
 SIGNATURE = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHplaceholderOnlyNotVerifiedHere\n-----END SSH SIGNATURE-----"
 TIMEOUT = 30
+STARTUP_TIMEOUT = TIMEOUT
 
 
 def find_browser():
@@ -60,15 +64,19 @@ class WebSocket:
 
     def __init__(self, host, port, path):
         self.sock = socket.create_connection((host, port), timeout=TIMEOUT)
-        key = base64.b64encode(os.urandom(16)).decode()
-        self.sock.sendall(("GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-                           "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % (path, host, port, key)).encode())
-        self.buffer = b""
-        while b"\r\n\r\n" not in self.buffer:
-            self.buffer += self._chunk()
-        head, _, self.buffer = self.buffer.partition(b"\r\n\r\n")
-        if b" 101 " not in head.split(b"\r\n")[0]:
-            raise CdpError("websocket refused: %r" % head[:80])
+        try:
+            key = base64.b64encode(os.urandom(16)).decode()
+            self.sock.sendall(("GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                               "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % (path, host, port, key)).encode())
+            self.buffer = b""
+            while b"\r\n\r\n" not in self.buffer:
+                self.buffer += self._chunk()
+            head, _, self.buffer = self.buffer.partition(b"\r\n\r\n")
+            if b" 101 " not in head.split(b"\r\n")[0]:
+                raise CdpError("websocket refused: %r" % head[:80])
+        except BaseException:
+            self.close()
+            raise
 
     def _chunk(self):
         data = self.sock.recv(65536)
@@ -126,62 +134,91 @@ class Phone:
     """One headless Chrome with one tab sized and touch-emulated as a 390 px phone."""
 
     def __init__(self, binary):
-        self.profile = tempfile.mkdtemp(prefix="deflock-phone-")
-        self.process = subprocess.Popen(
-            [binary, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run",
-             "--no-default-browser-check", "--disable-extensions", "--disable-background-networking",
-             "--password-store=basic", "--remote-debugging-port=0", "--user-data-dir=" + self.profile, "about:blank"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        self.profile = None
+        self.process = None
         self.ws = None
         self.counter = 0
         self.events = []
-        try:
-            port = self._debug_port()
-            with urllib.request.urlopen("http://127.0.0.1:%d/json/list" % port, timeout=TIMEOUT) as response:
-                page = next(t for t in json.load(response) if t["type"] == "page")
-            self.ws = WebSocket("127.0.0.1", port, "/devtools/page/" + page["id"])
-            self.call("Page.enable")
-            self.call("Runtime.enable")
-            self.call("Emulation.setDeviceMetricsOverride", width=WIDTH, height=HEIGHT, deviceScaleFactor=3, mobile=True)
-            self.call("Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=1)
-        except BaseException:
-            self.close()
-            raise
+        for attempt in (1, 2):
+            started = time.monotonic()
+            profile = self.profile = tempfile.mkdtemp(prefix="deflock-phone-")
+            stderr_path = Path(profile) / "chrome.stderr"
+            try:
+                with stderr_path.open("wb") as stderr:
+                    process = self.process = subprocess.Popen(
+                        [binary, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+                         "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+                         "--disable-background-networking", "--password-store=basic", "--remote-debugging-port=0",
+                         "--user-data-dir=" + profile, "about:blank"],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True)
+                port = self._debug_port(process, Path(profile) / "DevToolsActivePort", started + STARTUP_TIMEOUT)
+                if port is not None:
+                    self._connect(port)
+                    return
+                if attempt == 2:
+                    raise CdpError("the browser never opened its debugging port")
+            except (CdpError, OSError) as exc:
+                elapsed = time.monotonic() - started
+                try:
+                    with stderr_path.open(encoding="utf-8", errors="replace") as stderr:
+                        tail = "".join(deque(stderr, maxlen=20)).rstrip()
+                except OSError as error:
+                    tail = f"(unavailable: {error})"
+                finally:
+                    self.close()
+                raise CdpError(f"{exc} (attempt {attempt}/2, elapsed {elapsed:.2f}s)\n"
+                               f"Chrome stderr (last 20 lines):\n{tail or '(empty)'}") from exc
+            except BaseException:
+                self.close()
+                raise
+            self.close()  # Only a port deadline can reach the next launch.
 
-    def _debug_port(self):
-        marker = Path(self.profile) / "DevToolsActivePort"
-        deadline = time.monotonic() + TIMEOUT
-        while time.monotonic() < deadline:
-            if self.process.poll() is not None:
-                raise CdpError("the browser exited at start (code %s)" % self.process.returncode)
+    def _connect(self, port):
+        with urllib.request.urlopen("http://127.0.0.1:%d/json/list" % port, timeout=TIMEOUT) as response:
+            page = next(t for t in json.load(response) if t["type"] == "page")
+        self.ws = WebSocket("127.0.0.1", port, "/devtools/page/" + page["id"])
+        self.call("Page.enable")
+        self.call("Runtime.enable")
+        self.call("Emulation.setDeviceMetricsOverride", width=WIDTH, height=HEIGHT, deviceScaleFactor=3, mobile=True)
+        self.call("Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=1)
+
+    @staticmethod
+    def _debug_port(process, marker, deadline):
+        while True:
             try:
                 lines = marker.read_text().splitlines()
                 if len(lines) >= 2:
                     return int(lines[0])
             except (OSError, ValueError):
                 pass
-            time.sleep(0.05)
-        raise CdpError("the browser never opened its debugging port")
+            if process.poll() is not None:
+                raise CdpError("the browser exited at start (code %s)" % process.returncode)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            time.sleep(min(0.05, remaining))
 
     def close(self):
-        if self.ws is not None:
-            self.ws.close()
-        if self.process.poll() is None:
+        try:
+            if self.ws is not None:
+                self.ws.close()
+                self.ws = None
+        finally:
             try:
-                os.killpg(self.process.pid, 15)
-            except OSError:
-                pass
-            try:
-                self.process.wait(10)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(self.process.pid, 9)
-                except OSError:
-                    pass
-                self.process.wait(10)
-        else:
-            self.process.wait()
-        shutil.rmtree(self.profile, ignore_errors=True)
+                if self.process is not None:
+                    with suppress(ProcessLookupError):
+                        os.killpg(self.process.pid, signal.SIGTERM)
+                    with suppress(subprocess.TimeoutExpired):
+                        self.process.wait(10)
+                    # Chrome can leave children behind even if its leader already exited.
+                    with suppress(ProcessLookupError):
+                        os.killpg(self.process.pid, signal.SIGKILL)
+                    self.process.wait(10)
+                    self.process = None
+            finally:
+                if self.profile is not None:
+                    shutil.rmtree(self.profile)
+                    self.profile = None
 
     def call(self, method, **params):
         mine = self._next_id()
