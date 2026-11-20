@@ -1054,8 +1054,10 @@ def stage_outputs(args):
         queue_received_items(args.project, args.run_id, directory / name / "outcomes" / "received-items.json")
     except StageTimeout:
         raise
-    except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
-        warnings.append("OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE")
+    except Exception as error:  # noqa: BLE001 - content-free additive warning; never expose private exception text
+        from .approval_queue import ApprovalQueueError
+        unwritable = isinstance(error, ApprovalQueueError) and error.code == "queue_unwritable"
+        warnings.append("OUTPUTS_APPROVAL_QUEUE_UNWRITABLE" if unwritable else "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE")
     # Untied received messages become 'tie to a request' decisions (DFGL-04): own try, own code; earlier outputs stay.
     try:
         from .outcomes.unmatched import write_run_unmatched
