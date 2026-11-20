@@ -76,10 +76,12 @@ def _coverage(needs, queue, items, table):
         if raw == "none":
             numbers = []
         elif isinstance(raw, str) and re.fullmatch(r"[1-9][0-9]*(?:,[1-9][0-9]*)*", raw):
-            numbers = [int(n) for n in raw.split(",")]
+            tokens = raw.split(",")
+            eligible = {str(n): n for n in needs.get(COVERERS[q["kind"]], [])}
+            if len(tokens) != len(set(tokens)) or any(token not in eligible for token in tokens):
+                return [], [], "coverage_table_invalid"
+            numbers = [eligible[token] for token in tokens]
         else:
-            return [], [], "coverage_table_invalid"
-        if len(numbers) != len(set(numbers)) or not set(numbers) <= set(needs.get(COVERERS[q["kind"]], [])):
             return [], [], "coverage_table_invalid"
         overrides[qid] = numbers
     covered, unknown, used = [], [], set()
