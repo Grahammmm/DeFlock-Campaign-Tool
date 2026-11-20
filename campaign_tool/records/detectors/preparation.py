@@ -103,7 +103,7 @@ def _prepare(snapshot, supplied, bindings, source_units, originals, join_rows):
     require(normalized.get("complete") is True, "normalization_incomplete")
     require(normalized.get("source_inventory_sha256") == digest(bindings), "normalization_inventory_changed")
     sources = _sources(bindings)
-    mapped, dated = set(), {}
+    first_records, dated = {}, {}
     for item in normalized["units"]:
         require(type(item) is dict and set(item) == {"record", "source"}, "normalized_unit_shape")
         record, binding = item["record"], item["source"]
@@ -118,13 +118,16 @@ def _prepare(snapshot, supplied, bindings, source_units, originals, join_rows):
         require(kind in KNOWN_TYPES, "normalization_mapping_unresolved")
         require(record["original_sha256"] == snapshot.subject_sha256 or kind not in TARGET_TYPES,
                 "unrelated_support_record")
-        mapped.add(identity)
         if kind in TARGET_TYPES:
             require(type(record.get("event_id")) is str and 0 < len(record["event_id"].strip()) <= 256,
                     "event_identity_missing")
             moment(record.get("event_at"))
             dated.setdefault(identity, []).append({"event_id": record["event_id"], "event_at": record["event_at"]})
-    require(mapped == set(sources), "normalization_inventory_incomplete")
+        # Match the evaluator's canonical comparison without removing exact repeats.
+        record_text = canonical(record)
+        require(first_records.setdefault(identity, record_text) == record_text,
+                "normalized_source_record_conflict")
+    require(first_records.keys() == sources.keys(), "normalization_inventory_incomplete")
     require({row["unit_id"] for row in source_units} == set(sources), "source_unit_inventory_changed")
     require(type(rules.get("version")) is str and bool(rules["version"].strip()), "rules_version_missing")
     for rule in rules.get("entries", []):
