@@ -1,6 +1,7 @@
 name: Offline engine checks
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   merge_group:
     types: [checks_requested]
   push:
@@ -16,7 +17,7 @@ permissions:
 jobs:
   affected:
     # Only the merge clock; the full source set runs separately below.
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
     runs-on: ubuntu-latest
     # Shards 2/3 run up to ~10 min; 20 leaves headroom (AUD-DF3, 2026-10-31).
     timeout-minutes: 20
@@ -42,6 +43,7 @@ jobs:
     # R12.2 / HOSTED-DIET-DFPY (t_afa433cb): both full shards run on 3.12 on PRs, and on 3.11–3.13 otherwise.
     # One 4-CPU job ran 20-35 min and hit the old 35-minute offline timeout on slow runners
     # (main runs 43768448222, 43769348646, 43772136816: 'cancelled').
+    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
@@ -65,7 +67,7 @@ jobs:
   offline:
     # Preserve the required check name, and fail closed on any failed shard.
     needs: [affected, full]
-    if: always()
+    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && (always())
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
@@ -98,7 +100,7 @@ jobs:
       - name: Affected-selector unit checks (synthetic graph only)
         run: python -B tools/ci_affected.py --self-test
   pin-guard:
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
