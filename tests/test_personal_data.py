@@ -1111,6 +1111,7 @@ MODULE_FUNCTIONS = {
     'records.ledger_catalog': ('_write_new', 'export',),
     'records.console_calendar': ('main', 'serve',),  # main --ics writes one owner-chosen 0600 file; serve answers GET only
     'records.comparison_worksheet': ('_write', 'main',),  # one new 0600 worksheet in a safe existing directory outside the checkout, store and project; candidates are reviewed facts, no store write, sends nothing
+    # DF2307-03 scope amendment approved by G (receipt 71829429): retain this writer inventory entry.
     'records.tracker_update_proposals': ('_publish', 'build',),  # one new 0700 directory of two 0600 files outside the project; build only renders bytes in memory; never the live tracker, ledger or a store; sends nothing
     'records.console_documents': ('main',),  # --html writes one new owner-chosen review file (open mode x); read-only otherwise, sends nothing
     'records.console_export': (
