@@ -13,6 +13,7 @@ from ..draft_residue import codes
 from ...privacy_patterns import AT, BDOT, EMAIL, PHONE
 from .lint_cites import LABEL
 
+RULES_VERSION = "1"  # bump on any rule change: agency lint receipts bind it
 MAX_DRAFT, MAX_LIST = 2 * 1024 * 1024, 64 * 1024
 REFUSED = "refused agency_lint_out_input"
 PREFIX = re.compile(r"\b(?:INBOX|Sent):")

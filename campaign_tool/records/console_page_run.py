@@ -8,7 +8,7 @@ evidence, not semantic acceptance of the run's outputs.
 import urllib.parse
 from datetime import datetime, timezone
 
-from . import console_codes, console_layout, console_page_runs as runs, console_runs_model as model
+from . import console_codes, console_layout, console_page_runs as runs, console_runs_model as model, run_report
 from .outcomes.reading import esc
 
 PATHS = ("/run",)
@@ -49,6 +49,22 @@ def _notify(stage):
     return "Not sent: " + (sentence(stage["error_code"]) if stage["error_code"] else "the notify stage did not complete.")
 
 
+def _gaps(stage):
+    """Delta/adoption: the coded adoption gaps recorded in the stage (DF1117L-06), read through run_report only.
+
+    The disposition is the recorded bool, never current policy or stage status; counts are numbers, sentences escaped.
+    """
+    rows = run_report.adoption_gap_breakdown(stage)
+    if rows is None:
+        return "<p>breakdown not recorded by this engine</p>"
+    if not rows:
+        return "<p>No coded adoption gaps.</p>"
+    rows = sorted(rows, key=lambda r: (-r["count"], r["code"], not r["accepted"]))
+    return ("<table><caption>Adoption gaps</caption><thead><tr><th>Gap</th><th>Messages</th><th>Disposition</th></tr></thead>"
+            "<tbody>%s</tbody></table>" % "".join("<tr><td>%s</td><td>%d</td><td>%s</td></tr>" % (
+                esc(sentence(r["code"])), r["count"], "accepted" if r["accepted"] else "blocking") for r in rows))
+
+
 def _stage(number, stage, report):
     body = ["<h2>%d. %s: %s</h2>" % (number, esc(stage["name"]), esc(stage["status"]))]
     body.append("<p>%s</p>" % (esc(sentence(stage["error_code"])) if stage["error_code"] else "No problem reported."))
@@ -57,6 +73,8 @@ def _stage(number, stage, report):
     if items:
         body.append("<p>Needs attention:</p><ul>%s</ul>" % "".join("<li>%s: %s, %d</li>" % (
             esc(sentence(i["code"])), esc(SEVERITY.get(i["severity"], i["severity"])), i["count"]) for i in items))
+    if stage["name"] in run_report.GAP_STAGES:
+        body.append(_gaps(stage))
     if stage["name"] == "notify":
         body.append('<p role="status">%s</p>' % esc(_notify(stage)))
     return "<section>%s</section>" % "".join(body)

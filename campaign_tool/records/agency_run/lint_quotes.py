@@ -27,6 +27,7 @@ ROLE = re.compile(r"[a-z][a-z0-9_-]{1,39}")
 STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})")
 CLAIM = re.compile(r"[ \t]*\[VERIFIED-ORIGINAL\]")
 NOTE_PAGE = re.compile(r"p\.([0-9]+)")
+RULES_VERSION = "1"  # bump on any rule change: agency lint receipts bind it
 DRAFT_MAX = 2 * 1024 * 1024
 PAGE_MAX = 5 * 1024 * 1024
 MIN_WORDS = 3

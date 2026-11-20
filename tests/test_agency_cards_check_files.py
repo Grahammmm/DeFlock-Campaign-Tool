@@ -110,7 +110,10 @@ class CheckFiles(unittest.TestCase):
         sock_path = Path(sock_dir.name) / "s"
         server = socket.socket(socket.AF_UNIX)
         self.addCleanup(server.close)
-        server.bind(str(sock_path))
+        try:
+            server.bind(str(sock_path))
+        except OSError:
+            self.skipTest("unix sockets unavailable or path too long")
         dangling = self.dir / "dangling.json"
         dangling.symlink_to(self.dir / "absent.json")
         for label, path in (("fifo", fifo), ("fifo link", link), ("directory", self.dir),
