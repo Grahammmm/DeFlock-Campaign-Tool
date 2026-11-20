@@ -405,6 +405,23 @@ class CheckTests(Base):
             (self.target_dir / "run-report.json").unlink()
             self.assertEqual(self.check(self.assess(), "release_links")["state"], "unknown")
 
+    def test_release_links_rejects_symlinked_project_and_ancestor(self):
+        latest = json.loads((self.target_dir / "run-report.json").read_text())
+        self.write_links([])
+        # A valid register must not make health OK if reaching it follows a project symlink.
+        project_link = self.base / "project-link"
+        project_link.symlink_to(self.root, target_is_directory=True)
+        ancestor_link = self.base / "ancestor-link"
+        ancestor_link.symlink_to(self.base, target_is_directory=True)
+        for project in (project_link, ancestor_link / self.root.name):
+            for root in (project, project / "processing-v1"):
+                with self.subTest(root=root):
+                    result = ph._release_links(root, latest, NOW)
+                    self.assertEqual((result["state"], result["reason_code"]),
+                                     ("unknown", "release_links_unavailable"))
+        result = ph._release_links(self.root, latest, NOW)
+        self.assertEqual((result["state"], result["reason_code"]), ("ok", "release_links_ok"))
+
     def test_read_only_assess(self):
         self.write_stamp(NOW - timedelta(minutes=5))
 

@@ -376,10 +376,12 @@ def _release_register(project, run_id):
     """The newest run's release-links.json, read without following links; ValueError when absent or unsafe."""
     fds = []
     try:
-        fd = os.open(project, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        project = Path(project).absolute()  # preserve lexical components; resolve() would follow symlinks
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        fd = os.open(project.anchor, flags)
         fds.append(fd)
-        for part in ("run-outputs", run_id, "outcomes"):
-            fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fd)
+        for part in (*project.parts[1:], "run-outputs", run_id, "outcomes"):
+            fd = os.open(part, flags, dir_fd=fd)
             fds.append(fd)
         fd = os.open("release-links.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
         fds.append(fd)
