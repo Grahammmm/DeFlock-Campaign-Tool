@@ -30,7 +30,8 @@ def stamp_text(moment):
     return moment.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z"
 
 
-def report_for(finished, status="ok", seq=0, notify_failed=False):
+def report_for(finished, status="ok", seq=0, notify_failed=False, outputs=None, items=()):
+    """``outputs`` is the outputs stage's warn error_code; ``items`` are (code, stage) needs_g entries."""
     started = finished - timedelta(seconds=60)
     stages = []
     for name in STAGES:
@@ -43,17 +44,21 @@ def report_for(finished, status="ok", seq=0, notify_failed=False):
         elif name == "notify" and notify_failed:
             stages.append({"name": name, "status": "fail", "counts": dict(ZERO), "duration_seconds": 1.0,
                            "error_code": "NOTIFY_FAILED"})
+        elif name == "outputs" and outputs:
+            stages.append({"name": name, "status": "warn", "counts": dict(ZERO), "duration_seconds": 1.0,
+                           "error_code": outputs})
         else:
             stages.append({"name": name, "status": "ok", "counts": dict(ZERO), "duration_seconds": 1.0,
                            "error_code": None})
+    overall = "fail" if (status == "fail" or notify_failed) else "warn" if outputs else "ok"
     return {"schema_version": 1, "report_kind": "flock-records-run-report",
             "run_id": "run_%sZ_%08x" % (started.strftime("%Y%m%dT%H%M%S"), seq), "mode": "scheduled",
             "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"), "finished_at": finished.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "duration_seconds": 60.0, "overall_status": "fail" if (status == "fail" or notify_failed) else "ok",
+            "duration_seconds": 60.0, "overall_status": overall,
             "stages": stages, "new_data": {"documents": 0, "pages": 0, "extracted_units": 0, "portal_releases": 0,
                                            "request_status_changes": 0},
             "review_required_count": 0, "notify_failed": notify_failed,
-            "needs_g": []}
+            "needs_g": [{"code": code, "stage": stage, "severity": "action", "count": 1} for code, stage in items]}
 
 
 def vfs(available_gib, frsize=1024):
@@ -104,6 +109,21 @@ class Base(unittest.TestCase):
     def write_poll(self, updated):
         (self.store / "mail-poll" / "state.json").write_text(json.dumps({"updated_at": updated.isoformat()}))
 
+    def seed_history(self):
+        """Two earlier clean reports: the default outputs window is three valid runs (one seeded report is too short)."""
+        self.write_report(NOW - timedelta(hours=3), seq=21, latest=False)
+        self.write_report(NOW - timedelta(hours=2), seq=22, latest=False)
+
+    def history(self, *runs):
+        """Replace the history with one report per run, oldest first. A run is a list of OUTPUTS_* codes (the first is the
+        stage's error_code, all are outputs-stage items; [] is a clean run) or a dict(outputs=..., items=[(code, stage)])."""
+        for path in (self.target_dir / "reports").iterdir():
+            path.unlink()
+        for index, run in enumerate(runs):
+            if not isinstance(run, dict):
+                run = dict(outputs=run[0] if run else None, items=[(code, "outputs") for code in run])
+            self.write_report(NOW - timedelta(minutes=10 * (len(runs) - index)), seq=index + 1, **run)
+
     def write_stamp(self, seen):
         arrival_dir = self.runtime / "arrival"
         arrival_dir.mkdir(mode=0o700, exist_ok=True)
@@ -133,6 +153,7 @@ class Base(unittest.TestCase):
 
 class CheckTests(Base):
     def test_all_ok(self):
+        self.seed_history()
         report = self.assess()
         self.assertEqual((report["state"], report["exit_code"]), ("ok", 0))
         self.assertEqual(ph.status_line(report), "Run health: ok - last run 60 min ago, 0 waiting")
@@ -147,6 +168,7 @@ class CheckTests(Base):
                          "Run health: STOPPED - arrival_not_consumed (1 waiting, oldest 31 min)")
 
     def test_arrival_within_limit_and_malformed(self):
+        self.seed_history()
         self.write_stamp(NOW - timedelta(minutes=29))
         report = self.assess()
         self.assertEqual((report["state"], report["waiting"]), ("ok", 1))
@@ -193,6 +215,46 @@ class CheckTests(Base):
         self.write_report(NOW - timedelta(minutes=30), "fail", seq=3)
         item = self.check(self.assess(), "run_failures")
         self.assertEqual((item["state"], item["reason_code"]), ("warn", "latest_run_failed"))
+
+    def test_outputs_streak_uses_newest_valid_reports(self):
+        """Contract: N newest valid reports sharing one OUTPUTS_* code warn (a warn-level run is ok to every other check);
+        fewer than N is unknown, a break clears. Bugs caught: warn runs reading ok, short history reading ok, damaged,
+        future or pointer entries counted or breaking the streak, a stage-only or wrong-stage reading of the code."""
+        A, B = "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE", "OUTPUTS_REGISTER_UNAVAILABLE"
+
+        def outputs(*runs, **kw):
+            self.history(*runs)
+            report = self.assess(**kw)
+            return self.check(report, "outputs"), report
+
+        item, report = outputs([A], [A])
+        self.assertEqual((item["state"], item["reason_code"], report["state"]), ("unknown", "outputs_history_short", "unknown"))
+        item, report = outputs([A], [A], [A])
+        self.assertEqual((item["state"], item["reason_code"], item["code"], item["streak"]), ("warn", "outputs_degraded", A, 3))
+        self.assertEqual(item["since"], (NOW - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S+00:00"))
+        self.assertEqual(self.check(report, "run_failures")["state"], "ok")
+        self.assertEqual((report["state"], report["exit_code"]), ("warn", 1))
+        self.assertEqual(ph.status_line(report), f"Run health: WARNING - outputs_degraded ({A}, 3 runs)")
+        for label, runs in (("different code in the middle", ([A], [B], [A])), ("clean middle run", ([A], [], [A])),
+                            ("newest run clean", ([A], [A], [])), ("wrong-stage item", (dict(items=[(A, "extract")]),) * 3)):
+            with self.subTest(label):
+                item, report = outputs(*runs)
+                self.assertEqual((item["state"], item["reason_code"], report["state"]), ("ok", "outputs_ok", "ok"))
+        item, _ = outputs([B], [A], [A], [A])  # only the newest three count
+        self.assertEqual((item["state"], item["code"]), ("warn", A))
+        item, _ = outputs(dict(outputs=A), dict(outputs=A), dict(outputs=A))  # a stage code with no items still counts
+        self.assertEqual((item["state"], item["code"]), ("warn", A))
+        carried = dict(outputs=B, items=[(B, "outputs"), (A, "outputs")])  # the code rides only as an item
+        item, _ = outputs([A], carried, carried)
+        self.assertEqual((item["state"], item["code"]), ("warn", A))
+        item, _ = outputs([B, A], [A, B], [B, A])  # two common codes: the lexically first, every time
+        self.assertEqual((item["state"], item["code"]), ("warn", A))
+        item, _ = outputs([A], [A], [A], limits=dict(ph.LIMITS, outputs_streak=4))
+        self.assertEqual((item["reason_code"], ph._outputs(self.target_dir, {}, NOW)["streak"]), ("outputs_history_short", 3))
+        self.history([A], [A], [A])  # a damaged file and a future report are neither runs nor breaks
+        (self.target_dir / "reports" / "run_20261104T223000Z_00000099.json").write_text("{bad")
+        self.write_report(NOW + timedelta(hours=1), seq=98, latest=False)
+        self.assertEqual(self.check(self.assess(), "outputs")["reason_code"], "outputs_degraded")
 
     def test_notify_failed_after_last_success(self):
         alert = self.target_dir / "alerts" / "notify-failed-run_x.json"
@@ -319,6 +381,7 @@ class CheckTests(Base):
         """Contract: the disk check is part of assess, the line and the shared alert writer (dispatch only; the generic
         state machine is owned by test_alert_dedup_and_clear)."""
         alerts = self.target_dir / "alerts"
+        self.seed_history()
         report = self.assess()
         self.assertEqual((self.check(report, "disk")["reason_code"], report["state"]), ("disk_ok", "ok"))
         self.free_gib = 50
@@ -394,6 +457,39 @@ class AlertTests(Base):
         ph.write_alerts(self.assess(), alerts)
         self.assertIn("health-arrival_backlog-arrival_not_consumed.json", os.listdir(alerts))
 
+    def test_outputs_alert_lifecycle(self):
+        """Contract: the outputs alert opens, counts observations apart from the streak, stays open on unknown history,
+        clears on a known break, carries only a code and counts, and the line names it beside a competing stop."""
+        A, B = "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE", "OUTPUTS_REGISTER_UNAVAILABLE"
+        alerts, name = self.target_dir / "alerts", "health-outputs-outputs_degraded.json"
+        self.history([A], [A], [A])
+        self.assertEqual(ph.write_alerts(self.assess(), alerts), 1)
+        self.assertEqual(ph.write_alerts(self.assess(), alerts), 1)
+        text = (alerts / name).read_text()
+        data = json.loads(text)
+        self.assertEqual(sorted(data), ["check", "code", "count", "first_seen", "last_seen", "reason_code", "schema", "state",
+                                        "streak"])
+        self.assertEqual((data["count"], data["streak"], data["code"], data["state"], data["schema"]),
+                         (2, 3, A, "warn", ph.ALERT_SCHEMA))
+        self.assertNotIn(str(self.base), text)
+        self.assertEqual(oct(os.lstat(alerts / name).st_mode & 0o777), "0o600")
+        self.history([A], [A])  # history too short: unknown never clears
+        self.assertEqual(self.check(self.assess(), "outputs")["reason_code"], "outputs_history_short")
+        self.assertEqual(ph.write_alerts(self.assess(), alerts), 0)
+        self.assertEqual(os.listdir(alerts), [name])
+        self.history([A], [B], [A])  # a known break clears it
+        self.assertEqual(ph.write_alerts(self.assess(), alerts), 0)
+        self.assertEqual(os.listdir(alerts), ["health-outputs-outputs_degraded.cleared.json"])
+        self.history([A], [A], [A])
+        self.write_stamp(NOW - timedelta(minutes=45))  # a competing stop keeps its state and still names the outputs code
+        report = self.assess()
+        self.assertEqual(ph.status_line(report), "Run health: STOPPED - arrival_not_consumed (1 waiting, oldest 45 min); "
+                                                 f"outputs_degraded ({A}, 3 runs)")
+        report["checks"] = [dict(item, reason_code=item["reason_code"] + "_x" * 100) if item["state"] == "stop" else item
+                            for item in report["checks"]]
+        line = ph.status_line(report)
+        self.assertEqual((len(line), line.endswith(f"; outputs_degraded ({A}, 3 runs)")), (ph.LINE_MAX, True))
+
     def test_alerts_dir_unsafe(self):
         report = self.stop_report()
         real = self.base / "elsewhere"
@@ -428,6 +524,7 @@ class CliTests(Base):
         return subprocess.run(cmd, cwd=REPO, capture_output=True, text=True, timeout=120)
 
     def test_cli(self):
+        self.seed_history()
         done = self.run_cli()
         self.assertEqual((done.returncode, done.stdout.strip()), (0, "Run health: ok - last run 60 min ago, 0 waiting"))
         self.write_stamp(NOW - timedelta(minutes=40))
@@ -438,6 +535,7 @@ class CliTests(Base):
         self.assertEqual(os.listdir(self.target_dir / "alerts"), ["health-arrival_backlog-arrival_not_consumed.json"])
 
     def test_cli_disk_thresholds_default_and_override(self):
+        self.seed_history()
         self.free_gib = 60
         done = self.run_cli("--json")
         self.assertEqual(done.returncode, 1, done.stderr)
@@ -470,7 +568,27 @@ class CliTests(Base):
         done = self.run_cli("--disk-warn-gib", "10000", "--disk-stop-gib", "1", "--json")  # inclusive bounds are accepted
         self.assertEqual((done.returncode, self.check(json.loads(done.stdout), "disk")["reason_code"]), (3, "disk_low"))
 
+    def test_cli_outputs_streak_limits(self):
+        A = "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"
+        self.history([A], [A])
+        self.assertEqual(self.run_cli().returncode, 2)  # default 3: two reports is unknown, never ok
+        done = self.run_cli("--outputs-streak", "2", "--json")
+        self.assertEqual(done.returncode, 1, done.stderr)
+        item = self.check(json.loads(done.stdout), "outputs")
+        self.assertEqual((item["state"], item["code"], item["streak"]), ("warn", A, 2))
+        self.assertEqual(self.run_cli("--outputs-streak", "10").returncode, 2)  # inclusive bounds are accepted
+        self.write_stamp(NOW - timedelta(minutes=40))
+        self.statvfs.reset_mock()
+        for bad in ("1", "11", "0", "-3", "x", "2.5"):
+            with self.subTest(bad=bad):
+                done = self.run_cli("--outputs-streak", bad, "--record-alerts")
+                self.assertEqual((done.returncode, done.stdout), (2, ""))
+                self.assertIn("--outputs-streak", done.stderr)
+                self.assertEqual(os.listdir(self.target_dir / "alerts"), [])
+        self.statvfs.assert_not_called()
+
     def test_cli_mail_poll_limits_preserve_defaults_and_accept_daily_cadence(self):
+        self.seed_history()
         self.write_poll(NOW - timedelta(hours=7))
         default = self.run_cli("--json")
         self.assertEqual(default.returncode, 1, default.stderr)
@@ -530,6 +648,7 @@ class AnalysisExportTests(Base):
         return found["state"], found["reason_code"]
 
     def test_unconfigured_is_unknown_and_leaves_the_old_checks_alone(self):
+        self.seed_history()
         report = self.assess()
         self.assertEqual((self.check(report, "analysis")["state"], self.check(report, "analysis")["reason_code"]),
                          ("unknown", "analysis_not_configured"))
@@ -592,6 +711,7 @@ class AnalysisExportTests(Base):
         self.assertEqual(self.item("console_export"), ("unknown", "console_export_unreadable"))
 
     def test_alerts_and_cli(self):
+        self.seed_history()
         self.touch("LANE-ON", 600)
         self.touch("cycle.log", 120)
         alerts = self.target_dir / "alerts"

@@ -3,7 +3,8 @@
 ``records health`` knows the configured run calendar (weekdays twice a day by
 default). This module adds what it cannot
 see: mail that arrived but no run consumed, a mail poll that stopped, repeated
-failed runs, a failed notify, a run report that went stale and (when their roots
+failed runs, a failed notify, a run report that went stale, an outputs stage that keeps repeating one failure code and
+(when their roots
 are given) an analysis lane that stopped ticking or a console export left behind
 the newest run. ``assess`` only
 reads existing state files. ``write_alerts`` is the only write: one small alert
@@ -28,9 +29,12 @@ SCHEMA = "records-health-v1"
 ALERT_SCHEMA = "records-health-alert-v1"
 LIMITS = {"arrival_max_minutes": 30, "mail_poll_warn_hours": 6, "mail_poll_stop_hours": 24, "run_max_hours": 26,
           "failure_streak": 3, "report_window": 20, "analysis_max_minutes": 60, "export_grace_minutes": 15,
-          "disk_warn_gib": 100, "disk_stop_gib": 30}
+          "disk_warn_gib": 100, "disk_stop_gib": 30, "outputs_streak": 3}
 GIB = 1024 ** 3
 DISK_GIB_RANGE = (1, 10000)
+OUTPUTS_STREAK_RANGE = (2, 10)
+REPORT_NAME_RE = re.compile(r"^run_[0-9TZ]{16}_[0-9a-f]{8}\.json$")
+OUTPUTS_CODE_RE = re.compile(r"^OUTPUTS_[A-Z0-9_]{1,57}$")  # report codes are 3..64 characters, uppercase, digits, _
 DISK_RANK = {"ok": 0, "unknown": 1, "warn": 2, "stop": 3}
 # An optional check whose root was not given reports unknown but never moves the overall state or the line.
 NOT_CONFIGURED = frozenset({"analysis_not_configured", "console_export_not_configured"})
@@ -156,7 +160,7 @@ def _recent_reports(target_dir, limits, *, now):
     A report that finished after ``now`` is not evidence of completed processing and is never returned."""
     directory = target_dir / "reports"
     try:
-        names = sorted(name for name in os.listdir(directory) if re.match(r"^run_[0-9TZ]{16}_[0-9a-f]{8}\.json$", name))
+        names = sorted(name for name in os.listdir(directory) if REPORT_NAME_RE.match(name))
     except OSError:
         return [], 0
     valid, bad = [], 0
@@ -207,6 +211,54 @@ def _run_failures(target_dir, latest, limits, now):
     if series[-1]["overall_status"] == "fail":
         return _check("run_failures", "warn", "latest_run_failed", _finished(series[-1]))
     return _check("run_failures", "ok", "runs_succeeding")
+
+
+def _newest_valid_reports(target_dir, count, now):
+    """The newest ``count`` valid, non-future reports (oldest first), or fewer when the history runs out.
+
+    Unlike ``_recent_reports`` this walks the filenames newest first until it has enough: a damaged or future file is
+    neither a run nor a streak break, and the ``run-report.json`` pointer is never an extra entry."""
+    directory = target_dir / "reports"
+    try:
+        names = sorted((name for name in os.listdir(directory) if REPORT_NAME_RE.match(name)), reverse=True)
+    except OSError:
+        return []
+    found = []
+    for name in names:
+        try:
+            data = _read_json(directory / name)
+        except (ValueError, OSError):
+            continue
+        if data is not None and _valid_report(data) and not _future(data, now):
+            found.append(data)
+            if len(found) == count:
+                break
+    return found[::-1]
+
+
+def _outputs_codes(report):
+    """Bounded ``OUTPUTS_*`` codes of one report: the outputs stage's error_code and its needs_g items. Nothing else."""
+    codes = set()
+    for stage in report["stages"]:
+        if stage["name"] == "outputs":
+            codes.add(stage["error_code"])
+    for item in report["needs_g"]:
+        if item["stage"] == "outputs":
+            codes.add(item["code"])
+    return {code for code in codes if isinstance(code, str) and OUTPUTS_CODE_RE.match(code)}
+
+
+def _outputs(target_dir, limits, now):
+    """Warn when the newest N valid reports all carry the same outputs failure code (a warn-level stage is otherwise
+    fine to every other check). Fewer than N valid reports is unknown, never ok."""
+    streak = limits.get("outputs_streak", LIMITS["outputs_streak"])
+    series = _newest_valid_reports(target_dir, streak, now)
+    if len(series) < streak:
+        return _check("outputs", "unknown", "outputs_history_short")
+    common = set.intersection(*(_outputs_codes(item) for item in series))
+    if not common:
+        return _check("outputs", "ok", "outputs_ok")
+    return _check("outputs", "warn", "outputs_degraded", _finished(series[0]), code=min(common), streak=streak)
 
 
 def _notify(target_dir, limits, now):
@@ -353,7 +405,7 @@ def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limi
     backlog, waiting, age = _arrival_backlog(runtime_dir, now, limits)
     last_run, latest = _last_run(target_dir, now, limits, spec)
     checks = [backlog, _mail_poll(mail_store, now, limits), last_run, _run_failures(target_dir, latest, limits, now),
-              _notify(target_dir, limits, now), _schedule(records_root, now, spec, schedule_snapshot_path), _analysis(analysis_root, now, limits),
+              _outputs(target_dir, limits, now), _notify(target_dir, limits, now), _schedule(records_root, now, spec, schedule_snapshot_path), _analysis(analysis_root, now, limits),
               _console_export(console_export_root, latest, now, limits, pinned_run_id=pinned_export_run_id)]
     if check_disk:
         checks.append(_disk(runtime_dir, records_root, limits))
@@ -374,8 +426,12 @@ def status_line(report):
         ago = _ago(now - datetime.strptime(finished, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)) if finished else "?"
         text = f"Run health: ok - last run {ago} ago, {report['waiting']} waiting"
     else:
-        reasons = []
+        reasons, outputs = [], None
         for item in report["checks"]:
+            if item["check"] == "outputs" and item["reason_code"] == "outputs_degraded":
+                # Named whatever the overall state, and given its room below, so a competing stop never hides it.
+                outputs = f"outputs_degraded ({item['code']}, {item['streak']} runs)"
+                continue
             if item["state"] != state or item["reason_code"] in NOT_CONFIGURED:
                 continue
             reason = item["reason_code"]
@@ -385,6 +441,9 @@ def status_line(report):
                 reason += f" ({item['path_role']}, {item['free_gib']} GiB free)"
             reasons.append(reason)
         text = f"Run health: {WORD[state]} - " + "; ".join(reasons)
+        if outputs:
+            tail = (("; " if reasons else "") + outputs)
+            text = text[:LINE_MAX - len(tail)] + tail
     return text[:LINE_MAX]
 
 
@@ -469,9 +528,12 @@ def write_alerts(report, alerts_dir):
         prior = existing.get(name, (None, None, None))[2]
         first = prior.get("first_seen", stamp) if prior else stamp
         count = (prior.get("count", 0) if prior else 0) + 1
-        _put(alerts_dir, name, {"schema": ALERT_SCHEMA, "check": item["check"], "state": item["state"],
-                                "reason_code": item["reason_code"], "first_seen": first, "last_seen": stamp,
-                                "count": count})
+        payload = {"schema": ALERT_SCHEMA, "check": item["check"], "state": item["state"],
+                   "reason_code": item["reason_code"], "first_seen": first, "last_seen": stamp, "count": count}
+        if item["reason_code"] == "outputs_degraded":  # a bounded code and a count; never report text
+            if OUTPUTS_CODE_RE.match(str(item.get("code"))) and isinstance(item.get("streak"), int):
+                payload.update(code=item["code"], streak=item["streak"])
+        _put(alerts_dir, name, payload)
         written += 1
     for name, (check, reason, data) in existing.items():
         current = states.get(check)
@@ -506,12 +568,16 @@ def main(argv=None):
                         help="warn when a volume has less free space than this (GiB)")
     parser.add_argument("--disk-stop-gib", type=int, default=LIMITS["disk_stop_gib"],
                         help="stop when a volume has less free space than this (GiB; below warn)")
+    parser.add_argument("--outputs-streak", type=int, default=LIMITS["outputs_streak"],
+                        help="warn when this many newest valid runs (2 to 10) all carry the same OUTPUTS_* code")
     schedule._add_calendar_flags(parser)
     args = parser.parse_args(argv)
     spec = schedule._spec_from(parser, args)
     low, high = DISK_GIB_RANGE
     if not (low <= args.disk_stop_gib < args.disk_warn_gib <= high):
         parser.error(f"--disk-warn-gib and --disk-stop-gib: expected {low} <= stop < warn <= {high}")
+    if not OUTPUTS_STREAK_RANGE[0] <= args.outputs_streak <= OUTPUTS_STREAK_RANGE[1]:
+        parser.error("--outputs-streak: expected a whole number from %d to %d" % OUTPUTS_STREAK_RANGE)
     if args.analysis_max_minutes < 1:
         parser.error("--analysis-max-minutes: expected a positive number of minutes")
     if not 0 < args.mail_poll_warn_hours < args.mail_poll_stop_hours:
@@ -524,7 +590,8 @@ def main(argv=None):
                         limits=dict(LIMITS, analysis_max_minutes=args.analysis_max_minutes,
                                     mail_poll_warn_hours=args.mail_poll_warn_hours,
                                     mail_poll_stop_hours=args.mail_poll_stop_hours,
-                                    disk_warn_gib=args.disk_warn_gib, disk_stop_gib=args.disk_stop_gib))
+                                    disk_warn_gib=args.disk_warn_gib, disk_stop_gib=args.disk_stop_gib,
+                                    outputs_streak=args.outputs_streak))
         if args.record_alerts:
             try:
                 report["alerts_written"] = write_alerts(report, _target_dir(args.runtime_dir, args.target) / "alerts")
