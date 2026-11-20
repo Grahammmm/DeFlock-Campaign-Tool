@@ -15,6 +15,8 @@ import os
 import re
 import stat
 
+from . import gap_proposals, received_items, textstate
+
 SCHEMA = "records-analysis-ready-v1"
 MAX_BYTES = 64 * 1024 * 1024
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
@@ -113,12 +115,19 @@ def _load_inputs(project, run_id):
         run_fd = fds[1] if len(fds) > 1 else None
         out_fd = fds[2] if len(fds) > 2 else None
         inputs, loaded = {}, {}
-        for name, base in (("received-items.json", out_fd), ("gap-proposals.json", out_fd), ("text-state.json", run_fd)):
+        for name, base, schema in (
+            ("received-items.json", out_fd, received_items.SCHEMA),
+            ("gap-proposals.json", out_fd, gap_proposals.SCHEMA),
+            ("text-state.json", run_fd, textstate.SCHEMA),
+        ):
             data, digest = _read(base, name)
-            if data is not None:
-                if not isinstance(data, dict) or data.get("run_id") != run_id:
-                    raise OSError("analysis_ready_input_stale")
-                inputs[name], loaded[name] = digest, data
+            if digest is None:
+                continue
+            if not isinstance(data, dict) or data.get("run_id") != run_id:
+                raise OSError("analysis_ready_input_stale")
+            if data.get("schema") != schema:
+                raise OSError(f"analysis_ready_input_schema: {name}")
+            inputs[name], loaded[name] = digest, data
         return inputs, loaded
     finally:
         for fd in (*fds, root):
