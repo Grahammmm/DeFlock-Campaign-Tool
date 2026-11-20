@@ -14,6 +14,7 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -122,16 +123,19 @@ def derive(register, received, names, folded, rows):
     for row in register["requests"]:
         arrival = row.get("answer_arrived") if isinstance(row, dict) else None
         if isinstance(arrival, dict) and arrival.get("state") == "arrived_unrecorded" and row.get("ledger_request_id"):
-            eligible[(row["agency_key"], row["ledger_request_id"])] = (row, set(arrival.get("occurrence_ids") or ()))
+            eligible.setdefault((row["agency_key"], row["ledger_request_id"]), []).append((row, set(arrival.get("occurrence_ids") or ())))
     conflicts, cells = [], {}
     for item in received["items"]:
         if not isinstance(item, dict) or item.get("kind") not in READ_KINDS or not isinstance(item.get("item_id"), str):
             continue
         oids = set(item.get("occurrence_ids") or ())
-        hit = [k for k, (_, ids) in sorted(eligible.items()) if oids & ids]
+        hit = [k for k, bound in sorted(eligible.items()) if any(oids & ids for _, ids in bound)]
         key = (item.get("agency_id"), item.get("request_id"))
+        if key in hit and len(eligible[key]) > 1:  # two rows share one binding: never pick one by input order
+            conflicts.append({"code": "tracker_binding_ambiguous", "item_ids": [item["item_id"]]})
+            continue
         if key in hit:
-            row, _ = eligible[key]
+            row, _ = eligible[key][0]
             sources = [s for s in row.get("sources") or [] if isinstance(s, dict) and "row" in s]
             number = sources[0]["row"] if len(sources) == 1 else None
             record = rows[number - 2] if type(number) is int and 2 <= number < len(rows) + 2 else None
@@ -207,38 +211,74 @@ def _publish(out, project, files):
         real, root = Path(os.path.realpath(parent)), Path(os.path.realpath(project))
         if real != parent or not parent.is_dir() or real == root or root in real.parents:
             raise ProposalError("output_location_refused")
-        staging = parent / (".tmp-proposals-%d-%s" % (os.getpid(), re.sub(r"\W", "_", out.name)))
-        os.mkdir(staging, 0o700)
+        name = ".tmp-proposals-%d-%s" % (os.getpid(), re.sub(r"\W", "_", out.name))
+        staging = parent / name
+        pfd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     except OSError:
         raise ProposalError("output_parent_unsafe") from None
-    written = []
+    sfd, ident, written = None, None, []
+
+    def same(path_fd=None):
+        """The staging name in the parent still is the directory we made (fail closed on replacement)."""
+        try:
+            now = os.stat(name, dir_fd=pfd, follow_symlinks=False)
+            held = os.fstat(sfd)
+        except OSError:
+            return False
+        return (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino) == ident and stat.S_ISDIR(now.st_mode)
+
     try:
-        for name, data in files:
-            fd = os.open(staging / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-            written.append(staging / name)
+        try:
+            if os.fstat(pfd).st_ino != os.stat(parent).st_ino or os.fstat(pfd).st_dev != os.stat(parent).st_dev:
+                raise ProposalError("output_parent_unsafe")
+            os.mkdir(name, 0o700, dir_fd=pfd)
+            sfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
+            held = os.fstat(sfd)
+            ident = (held.st_dev, held.st_ino)
+        except OSError:
+            raise ProposalError("output_parent_unsafe") from None
+        for fname, data in files:
+            if not same():
+                raise ProposalError("output_staging_replaced")
+            fd = os.open(fname, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=sfd)
+            written.append(fname)
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
+        if not same():
+            raise ProposalError("output_staging_replaced")
         _, problems = tracker_proposal.check_proposal(staging / CSV_NAME)
         if problems:
             raise ProposalError("checker_problems:%d" % len(problems))
-        if os.path.lexists(out):
+        if not same():
+            raise ProposalError("output_staging_replaced")
+        try:
+            os.stat(out.name, dir_fd=pfd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
             raise ProposalError("output_exists")
-        os.rename(staging, out)
+        os.rename(name, out.name, src_dir_fd=pfd, dst_dir_fd=pfd)
+        staging = None
     except BaseException as exc:
-        for path in written:
+        if sfd is not None and staging is not None and same():
+            for fname in written:
+                try:
+                    os.unlink(fname, dir_fd=sfd)
+                except OSError:
+                    pass
             try:
-                os.unlink(path)
+                os.rmdir(name, dir_fd=pfd)
             except OSError:
                 pass
-        try:
-            os.rmdir(staging)
-        except OSError:
-            pass
         if isinstance(exc, OSError):
             raise ProposalError("output_write_failed") from None
         raise
+    finally:
+        if sfd is not None:
+            os.close(sfd)
+        os.close(pfd)
 
 
 def main(argv=None):

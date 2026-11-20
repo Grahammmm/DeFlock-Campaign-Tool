@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from campaign_tool.records import tracker_proposal as tp
@@ -201,6 +202,48 @@ class TrackerProposalProducerTests(unittest.TestCase):
         self.assertEqual(up.main(["--project", str(self.project), "--run-id", "R", "--out", str(self.out / "nope" / "x")]), 1)
         self.assertEqual(live.read_bytes(), before)
         self.assertFalse((self.project / "new").exists())
+
+    def test_duplicate_binding_is_a_conflict_and_fills_neither_row(self):
+        self.assertEqual(self.run_it([item(2, "denial"), item(4, "extension")]), 0)
+        reg = self.project / "run-outputs" / "R" / "CURRENT-REQUEST-REGISTER.json"
+        doc = json.loads(reg.read_text(encoding="utf-8"))
+        twin = json.loads(json.dumps(next(r for r in doc["requests"] if r["request_id"] == "26-2")))
+        twin["request_id"], twin["sources"] = "26-3", [{"file": "t.csv", "row": 3}]
+        for order in (doc["requests"] + [twin], [twin] + doc["requests"]):
+            reg.write_text(json.dumps({**doc, "requests": order}), encoding="utf-8")
+            self.dest = self.out / ("dup%d" % len(os.listdir(self.out)))
+            self.assertEqual(up.main(["--project", str(self.project), "--run-id", "R", "--out", str(self.dest)]), 0)
+            result, rows, _ = self.bundle()
+            by = {r["request_id"]: r for r in rows}
+            self.assertIn("tracker_binding_ambiguous", [c["code"] for c in result["conflicts"]])
+            self.assertEqual((by["26-2"]["determination_at"], by["26-3"]["determination_at"]), ("", ""))
+
+    def test_publish_fails_closed_when_staging_is_replaced_by_a_symlink(self):
+        files = ((up.CSV_NAME, b"private"), (up.JSON_NAME, b"{}"))
+        victim = self.out.parent / "victim"
+        victim.mkdir()
+        real_open, fired = os.open, []
+
+        def swap(path, flags, *a, **kw):
+            if str(path) == up.CSV_NAME and not fired and kw.get("dir_fd") is not None:
+                fired.append(1)
+                staging = next(self.out.glob(".tmp-proposals-*"))
+                os.rename(staging, self.out / "moved")
+                os.symlink(victim, staging)
+            return real_open(path, flags, *a, **kw)
+
+        with mock.patch.object(up.os, "open", side_effect=swap), mock.patch.object(up.tracker_proposal, "check_proposal", return_value=([], [])):
+            with self.assertRaises(up.ProposalError):
+                up._publish(self.dest, self.project, files)
+        self.assertEqual(os.listdir(victim), [])
+        self.assertFalse(os.path.lexists(self.dest))
+        self.assertTrue(fired)
+
+    def test_publish_normal_control_writes_files_and_leaves_no_staging(self):
+        with mock.patch.object(up.tracker_proposal, "check_proposal", return_value=([], [])):
+            up._publish(self.dest, self.project, ((up.CSV_NAME, b"a"), (up.JSON_NAME, b"{}")))
+        self.assertEqual(sorted(os.listdir(self.dest)), sorted((up.CSV_NAME, up.JSON_NAME)))
+        self.assertEqual(os.listdir(self.out), ["bundle"])
 
 
 if __name__ == "__main__":
