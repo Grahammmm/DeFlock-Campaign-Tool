@@ -466,6 +466,29 @@
         }
       ],
       "review": "needs_attorney_review"
+    },
+    {
+      "rule_id": "ca-gov-34090.6-routine-recordings-destruction",
+      "citation": "Gov. Code § 34090.6",
+      "actor": "Head of a department of a city or city and county (the words of subdivision (a); whether an ordinary county agency is reached is an open review question)",
+      "activity": "destroy recordings of routine video monitoring, or recordings of telephone and radio communications, maintained by the department",
+      "duty": "Quoted from § 34090.6(a): \"Notwithstanding the provisions of Section 34090, the head of a department of a city or city and county, after one year, may destroy recordings of routine video monitoring, and after 100 days may destroy recordings of telephone and radio communications maintained by the department. This destruction shall be approved by the legislative body and the written consent of the agency attorney shall be obtained. In the event that the recordings are evidence in any claim filed or any pending litigation, they shall be preserved until pending litigation is resolved.\" Subdivisions (b)-(d) define \"recordings of telephone and radio communications\", \"routine video monitoring\" and \"department\"; read them at the source. The text says \"may\"; this entry encodes no retention period or duty. Encoded from the leginfo text fetched on 2026-11-19; application to a specific ALPR record is not a legal conclusion and requires qualified human legal review.",
+      "exceptions": [
+        "Open review question (applicability, unresolved): subdivision (a) reads \"a city or city and county\"; whether that language reaches an ordinary county agency such as a sheriff's office is not answered by the source and is left to a qualified attorney.",
+        "Open review question (scope, unresolved): subdivision (c) defines \"routine video monitoring\" as video recording by a video or electronic imaging system designed to record the regular and ongoing operations of the departments described in subdivision (a); whether any particular ALPR data falls within that definition is not decided here.",
+        "Evidence-preservation sentence of subdivision (a) and the approval and written-consent requirements are carried in the quoted text above; their application to a specific record needs qualified human legal review."
+      ],
+      "remedy": "None stated in the section text; no remedy and no retention duty is inferred here. Remedies and their application need qualified human legal review.",
+      "effective_from": "2010-01-01",
+      "effective_to": null,
+      "sources": [
+        {
+          "title": "Gov. Code § 34090.6 (Amended by Stats. 2009, Ch. 88, Sec. 50 (AB 176), effective January 1, 2010; routine video monitoring and telephone/radio recordings)",
+          "url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=34090.6",
+          "accessed": "2026-11-19"
+        }
+      ],
+      "review": "needs_attorney_review"
     }
   ],
   "request_scopes": [
