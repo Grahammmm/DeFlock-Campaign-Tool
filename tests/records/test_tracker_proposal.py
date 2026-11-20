@@ -109,7 +109,7 @@ class TrackerProposalProducerTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, base, True)
         self.project, self.out = base / "project", base / "out"
         (self.project / "run-outputs" / "R" / "outcomes").mkdir(parents=True)
-        self.out.mkdir()
+        self.out.mkdir(mode=0o700)  # the publish threat model requires an owner-only parent
         self.dest = self.out / "bundle"
 
     def run_it(self, items, state="arrived_unrecorded", start="2026-11-01", run="R", blank4=True):
@@ -243,6 +243,55 @@ class TrackerProposalProducerTests(unittest.TestCase):
         with mock.patch.object(up.tracker_proposal, "check_proposal", return_value=([], [])):
             up._publish(self.dest, self.project, ((up.CSV_NAME, b"a"), (up.JSON_NAME, b"{}")))
         self.assertEqual(sorted(os.listdir(self.dest)), sorted((up.CSV_NAME, up.JSON_NAME)))
+        self.assertEqual(os.listdir(self.out), ["bundle"])
+
+    def test_publish_final_rename_race_never_reports_a_swapped_object(self):
+        # The staging name is swapped for a symlink to a victim between the last check and the rename.
+        victim = self.out.parent / "victim"
+        victim.mkdir()
+        (victim / "keep").write_bytes(b"victim")
+        real_rename, fired = os.rename, []
+
+        def swap(src, dst, *a, **kw):
+            if not fired and str(src).startswith(".tmp-proposals-") and kw.get("src_dir_fd") is not None:
+                fired.append(src)
+                real_rename(self.out / src, self.out / "moved")
+                os.symlink(victim, self.out / src)
+            return real_rename(src, dst, *a, **kw)
+
+        with mock.patch.object(up.os, "rename", side_effect=swap), mock.patch.object(up.tracker_proposal, "check_proposal", return_value=([], [])):
+            with self.assertRaises(up.ProposalError) as caught:
+                up._publish(self.dest, self.project, ((up.CSV_NAME, b"a"), (up.JSON_NAME, b"{}")))
+        self.assertTrue(fired)
+        self.assertEqual(str(caught.exception), "output_unverified_quarantined")
+        self.assertFalse(os.path.lexists(self.dest))  # the final name is not a symlink into the victim
+        aside = [n for n in os.listdir(self.out) if n.startswith(".unverified-proposals-")]
+        self.assertEqual(len(aside), 1)
+        self.assertEqual(os.readlink(self.out / aside[0]), str(victim))  # moved aside, nothing deleted
+        self.assertEqual(os.listdir(victim), ["keep"])
+        self.assertEqual(sorted(os.listdir(self.out / "moved")), sorted((up.CSV_NAME, up.JSON_NAME)))
+
+    def test_publish_refuses_a_parent_others_could_write_or_we_do_not_own(self):
+        files = ((up.CSV_NAME, b"a"), (up.JSON_NAME, b"{}"))
+        os.chmod(self.out, 0o775)
+        with mock.patch.object(up.tracker_proposal, "check_proposal", return_value=([], [])) as checker:
+            with self.assertRaises(up.ProposalError) as caught:
+                up._publish(self.dest, self.project, files)
+            self.assertEqual(str(caught.exception), "output_parent_not_private")
+            os.chmod(self.out, 0o700)
+            with mock.patch.object(up.os, "geteuid", return_value=os.geteuid() + 1):
+                with self.assertRaises(up.ProposalError) as caught:
+                    up._publish(self.dest, self.project, files)
+            self.assertEqual(str(caught.exception), "output_parent_not_private")
+        checker.assert_not_called()
+        self.assertEqual(os.listdir(self.out), [])
+
+    def test_publish_control_real_checker_bundle_bytes_unchanged(self):
+        self.assertEqual(self.run_it([item(2, "denial"), item(4, "extension")]), 0)
+        csv_bytes, json_bytes, _ = up.build(str(self.project), "R")
+        self.assertEqual((self.dest / up.CSV_NAME).read_bytes(), csv_bytes)
+        self.assertEqual((self.dest / up.JSON_NAME).read_bytes(), json_bytes)
+        self.assertFalse(os.path.islink(self.dest))
         self.assertEqual(os.listdir(self.out), ["bundle"])
 
 

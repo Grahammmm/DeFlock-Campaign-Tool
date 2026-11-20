@@ -7,6 +7,11 @@ outcomes/received-items.json and the project's MASTER-REQUEST-TRACKER.csv. Write
 holding MASTER-REQUEST-TRACKER.proposed.csv (the tracker with only empty cells filled) and proposals.json
 (per cell: item id, kind, page, quote of at most 200 characters; plus every conflict, never applied).
 Installing the proposal is an attended custodian step. The live tracker, ledger and stores are never written.
+
+Threat model: OUT's parent directory must be owned by this user and not group/world-writable, so no other
+user can swap names in it; otherwise nothing is published. After that parent is opened, staging, the
+checker read and the final rename all go through directory fds, and success is reported only when the
+final name is a real directory with the staging directory's (dev, inode); anything else is moved aside.
 """
 import argparse
 import csv
@@ -201,6 +206,10 @@ def build(project, run_id):
     return buffer.getvalue().encode("utf-8"), (json.dumps(doc, sort_keys=True, indent=2) + "\n").encode("utf-8"), doc
 
 
+def _identity(st):
+    return (st.st_dev, st.st_ino)
+
+
 def _publish(out, project, files):
     """New 0700 directory beside OUT, outside the project; checked before the single rename into place."""
     out = Path(os.path.abspath(out))
@@ -212,43 +221,52 @@ def _publish(out, project, files):
         if real != parent or not parent.is_dir() or real == root or root in real.parents:
             raise ProposalError("output_location_refused")
         name = ".tmp-proposals-%d-%s" % (os.getpid(), re.sub(r"\W", "_", out.name))
-        staging = parent / name
-        pfd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        pfd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError:
         raise ProposalError("output_parent_unsafe") from None
-    sfd, ident, written = None, None, []
+    sfd, ident, written, published = None, None, [], False
 
-    def same(path_fd=None):
+    def same():
         """The staging name in the parent still is the directory we made (fail closed on replacement)."""
         try:
             now = os.stat(name, dir_fd=pfd, follow_symlinks=False)
             held = os.fstat(sfd)
         except OSError:
             return False
-        return (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino) == ident and stat.S_ISDIR(now.st_mode)
+        return _identity(now) == _identity(held) == ident and stat.S_ISDIR(now.st_mode)
 
     try:
         try:
-            if os.fstat(pfd).st_ino != os.stat(parent).st_ino or os.fstat(pfd).st_dev != os.stat(parent).st_dev:
+            held = os.fstat(pfd)
+            if _identity(held) != _identity(os.stat(parent)):
                 raise ProposalError("output_parent_unsafe")
+            if held.st_uid != os.geteuid() or held.st_mode & 0o022:
+                raise ProposalError("output_parent_not_private")  # owner-only parent: nobody else can swap names
             os.mkdir(name, 0o700, dir_fd=pfd)
-            sfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
-            held = os.fstat(sfd)
-            ident = (held.st_dev, held.st_ino)
+            sfd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=pfd)
+            ident = _identity(os.fstat(sfd))
         except OSError:
             raise ProposalError("output_parent_unsafe") from None
+        if not same():
+            raise ProposalError("output_staging_replaced")
         for fname, data in files:
-            if not same():
-                raise ProposalError("output_staging_replaced")
-            fd = os.open(fname, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=sfd)
+            fd = os.open(fname, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=sfd)
             written.append(fname)
             with os.fdopen(fd, "wb") as handle:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-        if not same():
-            raise ProposalError("output_staging_replaced")
-        _, problems = tracker_proposal.check_proposal(staging / CSV_NAME)
+        # The checker reads the CSV through an fd opened inside the held staging fd: no pathname is resolved.
+        cfd = os.open(CSV_NAME, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=sfd)
+        try:
+            if not stat.S_ISREG(os.fstat(cfd).st_mode):
+                raise ProposalError("output_staging_replaced")
+            anchored = "/proc/self/fd/%d" % cfd
+            if not os.path.exists(anchored):
+                raise ProposalError("output_fd_paths_unavailable")
+            _, problems = tracker_proposal.check_proposal(anchored)
+        finally:
+            os.close(cfd)
         if problems:
             raise ProposalError("checker_problems:%d" % len(problems))
         if not same():
@@ -260,9 +278,28 @@ def _publish(out, project, files):
         else:
             raise ProposalError("output_exists")
         os.rename(name, out.name, src_dir_fd=pfd, dst_dir_fd=pfd)
-        staging = None
+        published = True
+        try:
+            final = os.stat(out.name, dir_fd=pfd, follow_symlinks=False)
+            verified = stat.S_ISDIR(final.st_mode) and _identity(final) == ident == _identity(os.fstat(sfd))
+        except OSError:
+            verified = False
+        if not verified:  # never report success for an object we did not make; move it aside, delete nothing
+            aside = ".unverified-proposals-%d-%s" % (os.getpid(), re.sub(r"\W", "_", out.name))
+            try:
+                os.stat(aside, dir_fd=pfd, follow_symlinks=False)
+            except FileNotFoundError:
+                try:
+                    os.rename(out.name, aside, src_dir_fd=pfd, dst_dir_fd=pfd)
+                except OSError:
+                    pass
+                else:
+                    raise ProposalError("output_unverified_quarantined") from None
+            except OSError:
+                pass
+            raise ProposalError("output_unverified_left_in_place")
     except BaseException as exc:
-        if sfd is not None and staging is not None and same():
+        if sfd is not None and not published and same():
             for fname in written:
                 try:
                     os.unlink(fname, dir_fd=sfd)
