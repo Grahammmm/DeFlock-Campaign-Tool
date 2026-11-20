@@ -90,7 +90,11 @@ class RetainedConfigTest(unittest.TestCase):
         self.target.unlink()
         sock = socket.socket(socket.AF_UNIX)
         self.addCleanup(sock.close)
-        self.refused_untouched(lambda: sock.bind(str(self.target)))
+        try:
+            sock.bind(str(self.target))
+        except OSError:
+            self.skipTest("unix sockets unavailable or path too long")
+        self.refused_untouched(lambda: None)
 
     @contextlib.contextmanager
     def watch(self, open_exc=None, read=None):
