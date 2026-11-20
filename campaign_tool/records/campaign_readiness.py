@@ -12,6 +12,7 @@ import sys
 
 from .. import content, law
 from . import agency_retention, analysis_config, campaign_config, followup_clock
+from .outcomes import comparison
 
 SCHEMA = "records-campaign-readiness-v1"
 FIELDS = ("schema_version", "campaign_id", "display_name", "law_package", "public_base_url",
@@ -273,6 +274,25 @@ def _method(profile, agency, issues):
     return "present"
 
 
+_COMPARISON_CODES = {"comparison_unsafe_path", "comparison_wrong_file_type", "comparison_input_bound",
+                     "comparison_input_invalid"}
+
+
+def _comparison_input(project):
+    """Informational only: project the comparison loader's verdict; never a second parser, never written."""
+    try:
+        value, status = comparison._load(project)
+    except OSError as error:
+        code = error.args[0] if len(error.args) == 1 and error.args[0] in _COMPARISON_CODES else "comparison_input_invalid"
+        return {"state": "invalid", "code": code}
+    if status == "fact_sheets_missing":
+        return {"state": "absent", "message": "every policy comparison row will be unknown"}
+    agencies = value["agencies"]
+    confirmed = sum(1 for a in agencies for f in a.get("facts", {}).values()
+                    if type(f) is dict and f.get("applicability_confirmed") is True)
+    return {"state": "present_valid", "agency_count": len(agencies), "confirmed_field_count": confirmed}
+
+
 def collect(project, *, analysis_root=None, portal_approval_file=None):
     project = os.path.abspath(project)
     if _probe(project, "dir") != "present":
@@ -342,7 +362,8 @@ def collect(project, *, analysis_root=None, portal_approval_file=None):
         _issue(issues, "READINESS_OUTPUTS_UNWRITABLE", "writable", "human",
                "An operator must create or correct the affected directory so it is owned by the records runner user and has mode 0700.")
     return {"schema": SCHEMA, "campaign_fields": fields, "starter_files": starters, "writable": writable,
-            "law_package": law_status, "portal_approval": approval, "agencies": rows, "issues": issues}
+            "law_package": law_status, "portal_approval": approval, "agencies": rows, "issues": issues,
+            "comparison_input": _comparison_input(project)}
 
 
 def render(report):
@@ -356,6 +377,7 @@ def render(report):
         lines.append("agency %s" % row["agency"] + "".join(" %s=%s" % (k, v) for k, v in row.items() if k != "agency"))
     for item in report["issues"]:
         lines.append("%s %s%s: %s %s" % (item["code"], item.get("agency", "-") + " ", item["field"], item["kind"] + ":", item["remediation"]))
+    lines.append("comparison_input: " + "; ".join("%s=%s" % kv for kv in report["comparison_input"].items()))
     return "\n".join(lines) + "\n"
 
 
