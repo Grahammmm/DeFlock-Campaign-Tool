@@ -18,6 +18,7 @@ from campaign_tool.records.runner.canonical_documents import CanonicalDocumentsB
 from campaign_tool.records.runner.canonical_mail import CanonicalMailBackend
 from campaign_tool.records.runner.contracts import Folder
 from tests.records.ocr_fixtures import mixed_pdf
+from tests.records.private_fixture import private_fixture_parent
 
 
 def xlsx_bytes():
@@ -32,8 +33,8 @@ def xlsx_bytes():
 
 
 def fixture_parent():
-    """Known owner home only; reject unsafe ancestors/symlinks without fallback."""
-    parent = Path.home()
+    """Use a trusted fixture parent and require it to be owned by this user."""
+    parent = private_fixture_parent()
     with drop.PrivateDir(str(parent), private=False) as directory:
         drop.require(os.fstat(directory.fd).st_uid == os.getuid())
     return parent
