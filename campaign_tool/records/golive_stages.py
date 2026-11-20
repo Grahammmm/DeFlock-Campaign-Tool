@@ -18,7 +18,7 @@ from .console_runs_model import _read_at
 EXTERNAL = "external: not provable from run reports"
 NO_RECEIPT = "unproven: v1 reports carry no receipt for this engine step"
 HISTORICAL_OCR = "historical only: OCR pages in ledger snapshot, not per-run proof"
-# stage_outputs keeps the first additive warning, in this producer order.
+# Legacy reports carry only the first additive warning, in this producer order.
 # DIGEST_UNRESOLVED is special: it overwrites any earlier additive warning.
 OUTPUT_WARNINGS = (
     "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE",
@@ -38,6 +38,15 @@ OUTPUT_WARNINGS = (
 )
 OVERWRITE = ("OUTPUTS_DIGEST_UNRESOLVED",)
 DOCUMENT_WARNINGS = ("EXTRACT_DOCUMENT_FAILURES", "EXTRACT_BACKLOG_DEFERRED")
+REGISTER = "OUTPUTS_REGISTER_UNAVAILABLE"
+# Facts and comparison fail the whole outputs stage; they have no additive codes.
+OUTPUT_FAILURES = {
+    "11": ("OUTPUTS_GAP_PROPOSALS_UNAVAILABLE",),
+    "12": (REGISTER, "OUTPUTS_RESPONSE_ITEMS_UNAVAILABLE", "OUTPUTS_TIMELINE_UNAVAILABLE"),
+    "13": ("OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE",),
+    "14": ("OUTPUTS_FOLLOWUP_SETTINGS_INVALID", "OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE", REGISTER),
+    "15": ("OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE",),
+}
 
 
 def before(code):
@@ -126,11 +135,29 @@ def load_reports(directory):
     return sorted(reports.values(), key=lambda report: (report["finished_at"], report["run_id"]))
 
 
-def _observation(number, rule, stage, report, codes):
+def _full_outputs_codes(stage, items):
+    # An aborted run can also echo error_code in needs_g, as a blocking item on a failed stage.
+    if stage is not None and stage["status"] == "warn":
+        codes = {item["code"] for item in items if item["stage"] == "outputs" and item["severity"] == "action"}
+        if stage["error_code"] in codes:
+            return codes
+    return None
+
+
+def _observation(number, rule, stage, report, codes, outputs_codes):
     if stage is None:
         return "not reported", None, None
     status = stage["status"]
     warning = stage["error_code"] if status == "warn" else None
+    if rule.source == "outputs" and outputs_codes is not None:
+        # The digest overwrite still prevents positive proof, but cannot hide a known own failure.
+        for code in OUTPUT_FAILURES.get(number, ()) + OVERWRITE:
+            if code in outputs_codes:
+                return "not proven", code, None
+        # An unrecognized code (a future or unknown failure) is never nonblocking; stay conservative.
+        for code in sorted(outputs_codes - set(OUTPUT_WARNINGS) - set(OVERWRITE)):
+            return "not proven", code, None
+        return "proven" if rule.receipt else NO_RECEIPT, None, None
     if warning in rule.masks:
         return "masked", warning, warning
     qualifies = status == "ok" or warning in rule.nonblocking
@@ -157,15 +184,22 @@ def summarize(reports, since):
     for index, report in enumerate(reports):
         codes = {item["code"] for item in report["needs_g"]}
         if report["mode"] != "test" and "STUB_STAGE_BACKEND" not in codes:
-            live_runs.append((index, report, {stage["name"]: stage for stage in report["stages"]}, codes))
+            stages = {stage["name"]: stage for stage in report["stages"]}
+            outputs_codes = _full_outputs_codes(stages.get("outputs"), report["needs_g"])
+            live_runs.append((index, report, stages, codes, outputs_codes))
 
+    # Tag the latest live report's provenance, not that of a historical last proof.
+    basis = None
+    if live_runs:
+        basis = "full-list" if live_runs[-1][-1] is not None else "first-warning (inferred)"
     rows = []
     for number, rule in STAGES.items():
         state = EXTERNAL if rule.source is None else "not reported"
         masked_by = proof = first_warning = last_warning = runs_after = None
         if rule.source is not None:
-            for index, report, stages, codes in live_runs:
-                state, warning, masked_by = _observation(number, rule, stages.get(rule.source), report, codes)
+            for index, report, stages, codes, outputs_codes in live_runs:
+                state, warning, masked_by = _observation(number, rule, stages.get(rule.source),
+                                                         report, codes, outputs_codes)
                 if state == "proven":
                     proof, runs_after = report["run_id"], 0
                 elif runs_after is not None:
@@ -175,7 +209,7 @@ def summarize(reports, since):
                     last_warning = warning
         rows.append(dict(stage=number, name=rule.label, state=state, last_proven_run=proof,
                          first_warning=first_warning, last_warning=last_warning,
-                         runs_since_last_proof=runs_after, masked_by=masked_by))
+                         runs_since_last_proof=runs_after, masked_by=masked_by, basis=basis))
     return dict(since=since, latest_run=live_runs[-1][1]["run_id"] if live_runs else None, stages=rows)
 
 
@@ -184,7 +218,7 @@ def format_table(summary):
         return " | ".join("-" if value is None else str(value) for value in row)
 
     lines = [f"Latest eligible run: {summary['latest_run'] or '-'}; warnings after: {summary['since'] or '(all)'}",
-             "Stage | Name | Latest evidence | Last proven run | First warning | Last warning | Runs since proof | Masked by"]
+             "Stage | Name | Latest evidence | Last proven run | First warning | Last warning | Runs since proof | Masked by | Basis"]
     lines.extend(cells(row.values()) for row in summary["stages"])
     return "\n".join(lines)
 

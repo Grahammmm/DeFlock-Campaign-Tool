@@ -16,6 +16,8 @@ from campaign_tool.records import golive_stages, run_report
 FIXTURE = Path("examples/run-report/records-run-report-v1.synthetic.json")
 APPROVAL = "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"
 CLOCK = "OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE"
+REGISTER = "OUTPUTS_REGISTER_UNAVAILABLE"
+DIGEST = "OUTPUTS_DIGEST_UNRESOLVED"
 
 
 class GOLiveStagesTests(unittest.TestCase):
@@ -26,13 +28,17 @@ class GOLiveStagesTests(unittest.TestCase):
         self.reports.mkdir()
 
     def report(self, hour, warning=None, *, mode="scheduled", name=None, ocr=None, stub=False,
-               extracted=None):
+               extracted=None, needs=(), outputs_status="warn"):
         report = json.loads(FIXTURE.read_text(encoding="utf-8"))
         report.update(run_id=f"run_20260101T{hour:02}0000Z_0a1b2c3d", mode=mode,
                       started_at=f"2026-01-01T{hour:02}:00:00Z", finished_at=f"2026-01-01T{hour:02}:07:30Z")
         if warning:
             next(stage for stage in report["stages"] if stage["name"] == "outputs").update(
-                status="warn", error_code=warning)
+                status=outputs_status, error_code=warning)
+            if outputs_status == "fail":
+                report["overall_status"] = "fail"
+        report["needs_g"].extend(dict(code=code, stage=stage, severity=severity, count=1)
+                                 for code, stage, severity in needs)
         if extracted is not None:
             next(stage for stage in report["stages"] if stage["name"] == "extract")["counts"].update(
                 input=extracted, output=extracted)
@@ -95,6 +101,54 @@ class GOLiveStagesTests(unittest.TestCase):
         self.assertEqual((row["last_proven_run"], row["runs_since_last_proof"]), (proof, 2))
         self.assertEqual((row["first_warning"], row["last_warning"], row["masked_by"]), (CLOCK, CLOCK, None))
 
+    def test_full_list_distinguishes_later_success_from_own_failure(self):
+        # First-warning inference both hides a successful clock and misattributes a failed one.
+        approval = (APPROVAL, "outputs", "action")
+        success = self.report(6, APPROVAL, needs=(approval, (CLOCK, "extract", "action")))
+        rows = self.rows()
+        self.assertEqual((rows["14"]["state"], rows["14"]["last_proven_run"], rows["14"]["masked_by"]),
+                         ("proven", success, None))
+        self.assertEqual(rows["14"]["basis"], "full-list")
+        self.assertEqual((rows["13"]["state"], rows["13"]["last_warning"], rows["13"]["masked_by"]),
+                         ("not proven", APPROVAL, None))
+        self.assertEqual(rows["15"]["state"], golive_stages.NO_RECEIPT)
+        self.assertIn(" | Basis\n", self.invoke()[1])
+        self.assertIn(" | full-list\n", self.invoke()[1])
+        self.report(7, APPROVAL, needs=(approval, (CLOCK, "outputs", "action")))
+        for number, code in (("13", APPROVAL), ("14", CLOCK)):
+            row = self.rows()[number]
+            self.assertEqual((row["state"], row["last_warning"], row["masked_by"]), ("not proven", code, None))
+        self.assertEqual(self.rows()["14"]["last_proven_run"], success)
+
+    def test_full_list_upstream_blockers_do_not_become_success(self):
+        # No clock failure is emitted when register fails; digest overwrite still blocks positive proof.
+        approval = (APPROVAL, "outputs", "action")
+        self.report(6, APPROVAL, needs=(approval, (REGISTER, "outputs", "action")))
+        for number in ("12", "14"):
+            row = self.rows()[number]
+            self.assertEqual((row["state"], row["last_warning"], row["masked_by"]), ("not proven", REGISTER, None))
+        self.report(7, DIGEST, needs=(approval, (DIGEST, "outputs", "action")))
+        rows = self.rows()
+        for number in map(str, range(9, 16)):
+            row = rows[number]
+            self.assertEqual((row["state"], row["last_warning"], row["masked_by"], row["basis"]),
+                             ("not proven", APPROVAL if number == "13" else DIGEST, None, "full-list"))
+
+    def test_full_list_requires_matching_outputs_action_on_warn(self):
+        # A blocking abort item or an action from another stage cannot qualify later outputs.
+        for hour, status, item, state in (
+            (6, "warn", (APPROVAL, "extract", "action"), "masked"),
+            (7, "warn", (APPROVAL, "outputs", "blocking"), "masked"),
+            (8, "warn", (CLOCK, "outputs", "action"), "masked"),
+            (9, "fail", (APPROVAL, "outputs", "blocking"), "not proven"),
+            (10, "fail", (APPROVAL, "outputs", "action"), "not proven"),
+        ):
+            with self.subTest(status=status, item=item):
+                self.report(hour, APPROVAL, needs=(item,), outputs_status=status)
+                row = self.rows()["14"]
+                self.assertEqual((row["basis"], row["state"], row["last_proven_run"], row["masked_by"]),
+                                 ("first-warning (inferred)", state, None, APPROVAL if state == "masked" else None))
+
     def test_unknown_and_overwriting_output_warnings_do_not_assume_success(self):
         # A new warning isn't silently allowlisted. Digest's overwrite can hide even the reply warning.
         for hour, warning, mask in ((6, "OUTPUTS_NEW_WARNING", None),
@@ -104,6 +158,21 @@ class GOLiveStagesTests(unittest.TestCase):
                 rows = self.rows()
                 self.assertIsNone(rows["13"]["last_proven_run"])
                 self.assertEqual(rows["13"]["masked_by"], mask)
+
+    def test_full_list_unknown_outputs_code_is_never_proven(self):
+        # Contract: an unrecognized outputs action code stays conservative on the full-list path, as on the legacy
+        # path. Bug: treating it as "no own failure" proved stages 9-14 despite a future/unknown failure.
+        unknown = "OUTPUTS_NEW_WARNING"
+        for hour, first, needs in ((6, unknown, ((unknown, "outputs", "action"),)),
+                                   (7, APPROVAL, ((APPROVAL, "outputs", "action"), (unknown, "outputs", "action")))):
+            with self.subTest(first=first):
+                self.report(hour, first, needs=needs)
+                rows = self.rows()
+                for number in map(str, range(9, 16)):
+                    row = rows[number]
+                    self.assertEqual((row["basis"], row["last_proven_run"]), ("full-list", None), number)
+                    self.assertNotEqual(row["state"], "proven", number)
+                    self.assertIsNone(row["masked_by"], number)
 
     def test_external_and_missing_evidence_are_never_proven(self):
         # An umbrella ok cannot promote external stages, OCR from a ledger snapshot, the engine step or the findings lane.
