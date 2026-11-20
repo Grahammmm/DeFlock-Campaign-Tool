@@ -75,6 +75,16 @@ pending determination on/before due stays unknown; after due it is a documentary
 timing gap. Production/acknowledgment is not determination. Any unresolved date,
 calendar coverage, receipt, exception or counterevidence stays unknown.
 
+The comparison worksheet (records comparison-worksheet) prefills a requests section from the
+same run directory's CURRENT-REQUEST-REGISTER.json only (missing/unsafe = refusal, no output).
+Requests join by exact (agency_id, ledger id) pair; a request on one side only, or a register
+duplicate, is listed under requests.mismatches and never merged or proposed. received_on is
+proposed only when the register basis is recorded_receipt; a submission_proxy date appears as
+submitted_on ("submitted, receipt not recorded"). determination made needs a valid recorded
+determination date; otherwise pending. extension_claimed/14 days only from a recorded extension.
+Invalid dates are dropped, never echoed. receipt_confirmed, calendar_confirmed and
+extension_notice_qualified stay null; calendar_start/end and holidays stay blank for the custodian.
+
 The cited legal baseline is jurisdictions/us-ca/package.json, labelled per row with the status
 and sha256 prefix read at run time (`package unavailable` if unreadable)
 and its official Legislative Information URLs, including Civil Code 1798.90.5
