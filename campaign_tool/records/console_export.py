@@ -325,9 +325,19 @@ def _model_followups(project, now, run_id=None):
 
 
 FOLLOWUPS = "followup-reading.json"
+CITED, CITED_SCHEMA = "cited-pages.json", "records-console-cited-pages-v1"  # DF2307-07: its own schema and compact serialization
+
+
+def _model_cited(project, now, run_id=None, out_dir=None):
+    from . import console_cited_pages  # cited pages of the selected run: citations from the staged copy, evidence read live
+    if run_id is None:
+        return {"state": "unavailable", "code": "no_run_id"}
+    return console_cited_pages.read(project, run_id, out_dir)
+
+
 MODEL = {"queue.json": _model_queue, "packets.json": _model_packets, "public-updates.json": _model_public_updates,
          "mail-drafts.json": _model_mail_drafts, "sends.json": _model_sends, "ocr-pages.json": _model_ocr_pages,
-         console_holds.NAME: _model_holds, FOLLOWUPS: _model_followups}
+         console_holds.NAME: _model_holds, FOLLOWUPS: _model_followups, CITED: _model_cited}
 PLAIN = {"campaign-summary.json"}  # the count projection (campaign_summary): its own schema, written last
 MODEL_SCHEMA = "records-console-model-v1"
 MODEL_DIR = "console-model"
@@ -341,12 +351,12 @@ def write_model(project, out_dir, now, models=None, *, run_id=None):
     pid = approval_queue._project_id(project)
     os.makedirs(os.path.join(out_dir, MODEL_DIR), mode=0o700, exist_ok=True)
     for name, make in (MODEL if models is None else models).items():
-        head = {"schema": MODEL_SCHEMA, "source_project_id": pid}
+        head = {"schema": CITED_SCHEMA if name == CITED else MODEL_SCHEMA, "source_project_id": pid}
         try:
             if name in PLAIN:
                 body = make(project, now)
             else:
-                body = {**head, "state": "ok", **(make(project, now, run_id) if name == FOLLOWUPS else make(project, now))}
+                body = {**head, "state": "ok", **make(project, now, *{FOLLOWUPS: (run_id,), CITED: (run_id, out_dir)}.get(name, ()))}
             if body.get("state") != "ok" and name not in PLAIN:  # a source that reports its own unavailable state
                 body = {**head, "state": "unavailable", "code": body.get("code") or "model_unreadable"}
         except (approval_queue.ApprovalQueueError, public_packets.PacketError, public_updates.PublicUpdatesError,
@@ -354,10 +364,15 @@ def write_model(project, out_dir, now, models=None, *, run_id=None):
             body = {**head, "state": "unavailable", "code": error.code}
         except (OSError, ValueError, KeyError, TypeError):
             body = {**head, "state": "unavailable", "code": "model_unreadable"}
+        if name == CITED:
+            from . import console_cited_pages
+            data = console_cited_pages.encode(body)
+        else:
+            data = (json.dumps(body, indent=1, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
         path = os.path.join(out_dir, MODEL_DIR, name)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as out:
-            out.write(json.dumps(body, indent=1, sort_keys=True, allow_nan=False) + "\n")
+        with os.fdopen(fd, "wb") as out:
+            out.write(data)
     return {"schema": MODEL_SCHEMA, "source_project_id": pid, "generated_at": _iso(now)}
 
 
