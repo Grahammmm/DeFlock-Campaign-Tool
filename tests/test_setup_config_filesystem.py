@@ -99,7 +99,10 @@ class FilesystemTypeTests(unittest.TestCase):
             self.skipTest("no unix sockets")
         sock = socket.socket(socket.AF_UNIX)
         self.addCleanup(sock.close)
-        sock.bind(str(self.entry))
+        try:
+            sock.bind(str(self.entry))
+        except OSError:
+            self.skipTest("unix sockets unavailable or path too long")
         self.refuse()
 
     def test_entry_inspection_errors_use_fixed_private_safe_refusal(self):

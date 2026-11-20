@@ -63,9 +63,13 @@ def _need(condition, code):
         raise ValueError(code)
 
 
+def _clean(raw):
+    return html.unescape(raw).rstrip(".,;:!?)]>")
+
+
 def classify_url(raw):
     """-> (platform, host, path, query_present, normalised) or None. No network."""
-    raw = html.unescape(raw).rstrip(".,;:!?)]>")
+    raw = _clean(raw)
     try:
         parts = urlsplit(raw)
         host = (parts.hostname or "").lower()
@@ -166,11 +170,11 @@ def _expiry_matches(text, received_at):
 
 def scan_text(text, received_at):
     """-> [{url info..., expiry (or None), expiry_state, quote}] for one unit's text, in order."""
-    spans = [(m.start(), classify_url(m.group(0))) for m in URL.finditer(text)]
-    spans = [(pos, info) for pos, info in spans if info is not None]
+    spans = [(m.start(), classify_url(m.group(0)), sha(_clean(m.group(0)).encode())) for m in URL.finditer(text)]
+    spans = [(pos, info, exact) for pos, info, exact in spans if info is not None]
     out = []
     matches = _expiry_matches(text, received_at)
-    for upos, info in spans:
+    for upos, info, exact in spans:
         near = sorted((abs(epos - upos), epos, expiry) for epos, expiry in matches if abs(epos - upos) <= WINDOW)
         expiry, state = None, "none_stated"
         if len(near) > 1 and near[1][0] - near[0][0] <= TIE and near[1][2]["date"] != near[0][2]["date"]:
@@ -186,7 +190,7 @@ def scan_text(text, received_at):
                 hi += 1
             expiry = dict(expiry, quote=" ".join(redact_text(text[lo:hi]).split())[:400])
         out.append({"platform": info[0], "host": info[1], "path": info[2], "query_present": info[3],
-                    "normalised": info[4], "expiry": expiry, "expiry_state": state})
+                    "normalised": info[4], "expiry": expiry, "expiry_state": state, "exact": exact})
     return out
 
 
@@ -194,8 +198,94 @@ def link_id(url_sha256):
     return ri._digest(["records-release-link-v1", url_sha256])
 
 
-def collect(db, processing, *, run_id):
-    """Pure read-only register. Same admission and hash-bound text as received_items."""
+def _portal_facts(portal_dir):
+    """Read-only facts from the portal store, or None when it is absent or not provably safe/v1.
+
+    Never opens portal.store.Queue (it creates, locks and migrates). Owner-private directory and
+    leaf, no symlink, one link, portal_meta version 1; a dirty or changing snapshot is refused."""
+    from ..run_stages import LedgerBusy, snapshot_ro
+    try:
+        directory = ri._safe_dir(portal_dir)
+        info = directory.lstat()
+        _need(info.st_uid == os.geteuid() and not info.st_mode & 0o077, "portal_dir_private")
+        leaf = directory / "portal.sqlite"
+        fd = os.open(leaf, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            held = os.fstat(fd)
+            _need(stat.S_ISREG(held.st_mode) and held.st_uid == os.geteuid() and not held.st_mode & 0o077
+                  and held.st_nlink == 1, "portal_file_private")
+            with snapshot_ro(leaf) as db:
+                rows = lambda q: [tuple(r) for r in ri._rows(db, q)]
+                version = rows("SELECT version FROM portal_meta")
+                _need(len(version) == 1 and type(version[0][0]) is int and version[0][0] == 1, "portal_version")
+                facts = {
+                    "links": rows("SELECT url_sha256,item FROM portal_notice_links UNION "
+                                  "SELECT url_sha256,item FROM portal_link_revisions"),
+                    "refusals": rows("SELECT url_sha256,reason FROM portal_refusals"),
+                    "fetched": rows("SELECT DISTINCT a.item,r.url_sha256 FROM portal_versions v "
+                                    "JOIN portal_attempts a ON a.id=v.attempt AND a.item=v.item "
+                                    "JOIN portal_link_revisions r ON r.item=a.item AND r.generation=a.generation"),
+                    "versioned": {r[0] for r in rows("SELECT DISTINCT item FROM portal_versions")},
+                    "current": {r[0] for r in rows("SELECT id FROM portal_items WHERE current_sha256 IS NOT NULL "
+                                                   "AND current_sha256<>''")},
+                    "sources": {r[0] for r in rows("SELECT source_sha256 FROM portal_notices UNION SELECT "
+                                                   "source_sha256 FROM portal_notice_links UNION SELECT "
+                                                   "source_sha256 FROM portal_refusals")}}
+            again = leaf.lstat()
+            _need((again.st_dev, again.st_ino) == (held.st_dev, held.st_ino), "portal_file_changed")
+        finally:
+            os.close(fd)
+        _need(all(re.fullmatch(r"[a-z_]{1,80}", r[1]) for r in facts["refusals"]), "portal_refusal_code")
+        return facts
+    except (ValueError, OSError, sqlite3.Error, LedgerBusy, TypeError):
+        return None
+
+
+def _retrieval(exacts, sources, facts):
+    """-> {state, reason} from exact URL hashes only; first matching rule wins (see the docs)."""
+    if facts is None:
+        return {"state": "unknown", "reason": "store_unavailable"}
+    items = {h: {i for u, i in facts["links"] if u == h} for h in exacts}
+    refused = {h: sorted({c for u, c in facts["refusals"] if u == h}) for h in exacts}
+    every = set().union(*items.values())
+    if len(every) > 1 or (every and any(refused.values())):
+        return {"state": "unknown", "reason": "link_identity_conflict"}
+    seen = bool(sources & facts["sources"])
+    outcomes = set()
+    for h in exacts:
+        if refused[h]:
+            outcomes.add(("refused", tuple(refused[h])))
+        elif not items[h]:
+            outcomes.add(("unproven", ()) if seen else ("not_in_portal", ()))
+        else:
+            item = next(iter(items[h]))
+            via = {u for i, u in facts["fetched"] if i == item}
+            if h in via and item in facts["current"]:
+                outcomes.add(("retrieved", ()))
+            elif via and h not in via:
+                outcomes.add(("other", ()))
+            elif item in facts["versioned"]:
+                outcomes.add(("unproven", ()))  # versions exist but no trustworthy binding to this link
+            else:
+                outcomes.add(("pending", ()))
+    kinds = {o[0] for o in outcomes}
+    if len(kinds) > 1:  # mixed spellings in one legacy bucket: a proven one never certifies an unproven one
+        kinds = {"unproven"}
+    kind = next(iter(kinds))
+    if kind == "refused":
+        codes = sorted({c for o in outcomes for c in o[1]})
+        return {"state": "refused", "reason": codes[0] if len(codes) == 1 else codes}
+    if kind == "other":
+        return {"state": "unknown", "reason": "item_retrieved_via_other_link"}
+    if kind == "unproven":
+        return {"state": "unknown", "reason": "link_identity_unproven"}
+    return {"state": kind, "reason": kind}
+
+
+def collect(db, processing, *, run_id, project=None):
+    """Pure read-only register. Same admission and hash-bound text as received_items.
+
+    The portal store is read from paths(project)[2]; project defaults to processing's parent."""
     db.row_factory = sqlite3.Row
     tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     report = {"schema": SCHEMA, "run_id": run_id, "review_required": True, "legal_conclusion": False,
@@ -259,7 +349,9 @@ def collect(db, processing, *, run_id):
                     "link_id": link_id(digest), "url_sha256": digest, "platform": found["platform"],
                     "kind": link_kind(found["platform"], found["path"]), "host": found["host"],
                     "url_redacted": "https://%s%s" % (found["host"], redact_path(found["path"])),
-                    "query_present": found["query_present"], "sources": [], "_expiries": [], "diagnostics": []})
+                    "query_present": found["query_present"], "sources": [], "_expiries": [], "_exact": set(),
+                    "diagnostics": []})
+                entry["_exact"].add(found["exact"])
                 source = {"item_id": ri.item_id(subject), "original_sha256": subject, "agency_id": agency_id,
                           "request_id": request_id, "page": unit["page"], "unit_id": unit["unit_id"],
                           "received_at": received_at.isoformat().replace("+00:00", "Z") if received_at else None}
@@ -268,7 +360,13 @@ def collect(db, processing, *, run_id):
                 entry["_expiries"].append((found["expiry_state"], found["expiry"], source))
         report["diagnostics"] += [d for d in diagnostics if d != "page_locator_unavailable"]
     _need(len(merged) <= MAX_LINKS, "release_links_bound")
+    facts = None
+    if merged:
+        from ..run_stages import paths
+        facts = _portal_facts(paths(project if project is not None else processing.parent)[2])
     for entry in merged.values():
+        exacts = sorted(entry.pop("_exact"))  # in memory only: never written to the artifact
+        entry["retrieval"] = _retrieval(exacts, {s["original_sha256"] for s in entry["sources"]}, facts)
         states = entry.pop("_expiries")
         dated = [(e["date"], e, s) for st, e, s in states if st == "stated"]
         entry["sources"].sort(key=lambda s: (s["received_at"] or "", s["original_sha256"], s["unit_id"]))
@@ -315,7 +413,7 @@ def write_run_release_links(project, run_id):
         run_dir = ri._safe_dir(project / "run-outputs" / run_id)
         _need(not (processing / "ledger.sqlite").is_symlink(), "release_links_symlink_path")
         with snapshot_ro(processing / "ledger.sqlite") as db:
-            report = collect(db, processing, run_id=run_id)
+            report = collect(db, processing, run_id=run_id, project=project)
         encoded = (ri._canon(report) + "\n").encode()
         _need(len(encoded) <= MAX_OUTPUT_BYTES, "release_links_output_bound")
         outcomes = ri._safe_dir(run_dir / "outcomes")
@@ -372,6 +470,7 @@ def render(report, now, warn_days):
         when = link["expiry"]["date"] if link["expiry"] else link["expiry_state"]
         warn = {"expired": "EXPIRED %dd ago" % -days if days is not None else "EXPIRED",
                 "expiring_soon": "EXPIRES in %dd" % days if days is not None else "EXPIRES soon"}.get(state, state)
+        when = "%s retrieval=%s" % (when, (link.get("retrieval") or {}).get("state", "unknown"))
         lines.append("%-22s %-11s %s  %s  agency=%s  sources=%d  [%s]" % (
             warn, link["platform"], when, link["url_redacted"], ",".join(link["agency_ids"]) or "unattributed",
             len(link["sources"]), link["link_id"][:12]))

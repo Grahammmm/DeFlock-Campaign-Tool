@@ -25,6 +25,19 @@ network library.
   the stage is byte-identical. The status is computed when you list.
 - Unpaginated mail bodies are read too (page `null`); this uses
   `received_items._current_units(..., paged=False)`, with the default unchanged.
+- **Retrieval (DF2307-09):** each link carries an optional `retrieval: {state, reason}`
+  (`retrieved`, `pending`, `refused`, `not_in_portal`, `unknown`), read offline from the
+  portal store (`portal-queue-v1/portal.sqlite`, opened `mode=ro` only if it is an owner-private
+  regular file with `portal_meta` version 1; never through `portal.store.Queue`). Identity is the
+  exact URL string as matched in the mail (the string the portal hashes); those hashes stay in
+  memory and are never written, and a same-path link with a different query, host case or `:443`
+  is a different link. Rules, first match wins: store unusable `unknown/store_unavailable`;
+  exact hashes reaching different items, or both a refusal and an item, `unknown/link_identity_conflict`;
+  exact refusal `refused` (reason code(s)); exact URL of a fetched generation with a current version
+  `retrieved`; exact URL on an item fetched through another URL `unknown/item_retrieved_via_other_link`,
+  on an item with no version `pending`; no exact match but the portal saw the same message
+  `unknown/link_identity_unproven`; otherwise `not_in_portal`. Older v1 files without the key list as
+  `unknown`. Nothing is fetched and no portal run is made.
 
 ```
 records release-links --project PROJECT --run-id RUN [--warn-days 7] [--now ISO] [--json]

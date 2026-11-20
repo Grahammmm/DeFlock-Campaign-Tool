@@ -8,7 +8,6 @@ come from the operator's mapping.
 source_attachment_sha256 is the SHA-256 of the exact raw --md file bytes. It hashes the draft markdown source only;
 it is not an agency attachment digest and not proof of original evidence. Citations are passed through unchanged.
 """
-import argparse
 import hashlib
 import json
 import os
@@ -17,6 +16,8 @@ import stat
 import sys
 
 from . import approval_queue as aq, draft_import as di
+from .agency_run import lint_receipt as lr
+from .agency_run.lint_out import QuietParser
 
 MAPPING_SCHEMA = "records-agency-draft-mapping-v1"
 MAX_MD = 256 * 1024
@@ -29,9 +30,10 @@ MARKER = re.compile(r"\[EDIT ME[^\]\n]*\]")
 
 
 class Refuse(Exception):
-    def __init__(self, code):
+    def __init__(self, code, reason=None):
         super().__init__(code)
         self.code = code
+        self.reason = reason
 
 
 def _read(path, cap, code):
@@ -134,8 +136,8 @@ def _identity(mapping):
     return ident, drafts
 
 
-def export(md_path, mapping_path, project, out):
-    """Report dict; never applies. Global refusals raise Refuse."""
+def export(md_path, mapping_path, project, out, lint=None):
+    """Report dict; never applies. Global refusals raise Refuse. lint = (receipt path, lint input options) or None."""
     raw = _read(md_path, MAX_MD, "md_invalid")
     try:
         markdown = raw.decode("utf-8")
@@ -146,6 +148,13 @@ def export(md_path, mapping_path, project, out):
     except aq.ApprovalQueueError:
         raise Refuse("mapping_invalid") from None
     ident, drafts = _identity(mapping)
+    receipt = shared = None
+    if lint:
+        try:  # the receipt, the rules and every current input are read once, before anything is written
+            receipt = lr.load(lint[0])
+            shared = {"config_sha256": lr.config_hash(lint[1]), "inputs": lr.input_hashes(lint[1])}
+        except lr.Unverifiable:
+            raise Refuse("LINT_RECEIPT_UNVERIFIABLE") from None
     out = os.path.abspath(out)
     real_out, real_project = os.path.realpath(out), os.path.realpath(project)
     if real_out == real_project or real_out.startswith(real_project + os.sep):
@@ -162,6 +171,14 @@ def export(md_path, mapping_path, project, out):
             if keys.count(key) > 1:
                 raise Refuse("draft_key_duplicate")
             doc = build(entry, ident, markdown, digest)
+            if receipt:
+                try:
+                    reason = lr.stale_reason(receipt, {"body_sha256": hashlib.sha256(doc["body"].encode("utf-8")).hexdigest(), **shared})
+                except lr.Unverifiable:
+                    raise Refuse("LINT_RECEIPT_UNVERIFIABLE") from None
+                if reason:
+                    raise Refuse("LINT_RECEIPT_STALE", reason)
+            doc["why"] = lr.why_prefix(receipt) + " | " + doc["why"]
             if "/" in key:
                 raise Refuse("draft_key_filename_invalid")
             path = os.path.join(out, key + ".json")
@@ -182,18 +199,22 @@ def export(md_path, mapping_path, project, out):
         except Refuse as error:
             if path is not None and os.path.lexists(path):
                 os.unlink(path)
-            refused.append({"draft_key": key if isinstance(key, str) else None, "code": error.code})
+            refused.append({"draft_key": key if isinstance(key, str) else None, "code": error.code,
+                            **({"reason": error.reason} if error.reason else {})})
     return {"ok": not refused, "files": files, "refused": refused, "source_digest_note": NOTE,
             "source_attachment_sha256": digest}
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="records agency-draft-export", description=__doc__)
+    parser = QuietParser(prog="records agency-draft-export", description=__doc__, refusal="refused agency_draft_export_input")
     for name in ("--md", "--mapping", "--project", "--out"):
         parser.add_argument(name, required=True)
+    parser.add_argument("--lint-receipt", help="records-agency-lint-receipt-v1 from records agency-lint --receipt; "
+                        "verified against the exact body, rules and the lint input options below before export")
+    lr.add_options(parser, False)
     args = parser.parse_args(argv)
     try:
-        report = export(args.md, args.mapping, args.project, args.out)
+        report = export(args.md, args.mapping, args.project, args.out, (args.lint_receipt, args) if args.lint_receipt else None)
     except Refuse as error:
         report = {"ok": False, "files": [], "refused": [{"draft_key": None, "code": error.code}],
                   "source_digest_note": NOTE}

@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from .. import playbook
+from . import lint_receipt
 from .lint_out import QuietParser
 
 MAX_DRAFT = 2 * 1024 * 1024
@@ -129,15 +130,8 @@ def _banned(text):
 def main(argv=None):
     parser = QuietParser(prog="records agency-lint", description=__doc__, refusal="refused agency_lint_input")
     parser.add_argument("draft")
-    parser.add_argument("--agency-dir", required=True)
-    parser.add_argument("--package")
-    parser.add_argument("--team-list")
-    parser.add_argument("--allow")
-    parser.add_argument("--agencies")
-    parser.add_argument("--agency")
-    parser.add_argument("--quote-ledger", help="quote-verify.tsv; with --inventory and --original-root adds quote rule Q3")
-    parser.add_argument("--inventory", help="agency-pages inventory.tsv (Q3)")
-    parser.add_argument("--original-root", help="the root given to agency-pages (Q3)")
+    lint_receipt.add_options(parser, True)
+    parser.add_argument("--receipt", help="write records-agency-lint-receipt-v1 here (new file, hashes and fixed codes only)")
     args = parser.parse_args(argv)
     draft, agency = Path(args.draft), Path(args.agency_dir)
     group = (args.quote_ledger, args.inventory, args.original_root)
@@ -146,8 +140,10 @@ def main(argv=None):
             raise OSError
         if not agency.is_dir() or draft.stat().st_size > MAX_DRAFT:
             raise OSError
-        text = draft.read_bytes().decode("utf-8-sig")
-    except (OSError, ValueError):
+        raw = draft.read_bytes()
+        text = raw.decode("utf-8-sig")
+        before = lint_receipt.snapshot(args, raw) if args.receipt else None
+    except (OSError, ValueError, lint_receipt.Unverifiable):
         print("refused agency_lint_input")
         return 2
     results = []
@@ -161,11 +157,26 @@ def main(argv=None):
     for name, status in results:
         print("%s: %s" % (name, status))
     statuses = [s for _, s in results]
+    coded_skips = 0
+    if args.receipt:
+        try:  # an operational error, or any draft/rule/input change during the run, writes no receipt
+            if lint_receipt.snapshot(args, draft.read_bytes()) != before:
+                raise lint_receipt.Unverifiable
+            coded = {n: lint_receipt.structured(s) for n, s in results}
+            lint_receipt.write(args.receipt, before, coded)
+            print("agency-lint receipt: written")
+            coded_skips = sum(r["status"] == "skipped" for r in coded.values())  # receipt mode: coverage gaps are skips
+        except (OSError, lint_receipt.Unverifiable):
+            print("agency-lint receipt: refused")
+            return 2
     if any(s.startswith(("FAIL", "error")) for s in statuses):
         print("agency-lint: FAIL")
         return 1
     skipped = sum(s.startswith("skipped") for s in statuses)
     incomplete = sum(s.startswith("incomplete") for s in statuses)
+    if coded_skips and not skipped + incomplete:
+        print("agency-lint: INCOMPLETE (%d skipped)" % coded_skips)
+        return 3
     if skipped or incomplete:
         parts = []
         if skipped:
