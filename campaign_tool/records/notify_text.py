@@ -6,6 +6,7 @@ never from record content.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from campaign_tool.records import run_coverage
@@ -28,6 +29,62 @@ PREFLIGHT_MESSAGES = {
     "DISK_SPACE_UNKNOWN": "{label}: records run {run_id} refused to start (runtime disk space "
                           "could not be measured). No records work was attempted.",
 }
+
+# Plain-words sentence per outputs failure code (local wording; not the console copy).
+OUTPUTS_SENTENCES = {
+    "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE": "Reply drafts could not be queued this run.",
+    "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE": "Reply drafts could not be queued this run.",
+    "OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE": "No-response follow-ups were not checked this run.",
+    "OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE": "Reply follow-ups were not drafted this run.",
+    "OUTPUTS_DIGEST_REFUSED": "The usage digest was refused this run.",
+    "OUTPUTS_DIGEST_WRITE_FAILED": "The usage digest could not be written this run.",
+    "OUTPUTS_DIGEST_UNRESOLVED": "The usage digest was left unresolved this run.",
+    "OUTPUTS_LEDGER_BUSY": "The records ledger was busy this run.",
+    "OUTPUTS_LEDGER_UNREADABLE": "The records ledger could not be read this run.",
+    "OUTPUTS_WRITE_FAILED": "Run outputs could not be written this run.",
+    "OUTPUTS_UNMATCHED_UNAVAILABLE": "Unmatched messages were not checked this run.",
+    "OUTPUTS_MODEL_ADVICE_UNAVAILABLE": "Model advice was not produced this run.",
+    "OUTPUTS_REGISTER_UNAVAILABLE": "The request register was not updated this run.",
+    "OUTPUTS_FOLLOWUP_SETTINGS_INVALID": "Follow-up settings are invalid, so no follow-ups were checked.",
+    "OUTPUTS_GAP_PROPOSALS_UNAVAILABLE": "Gap proposals were not produced this run.",
+    "OUTPUTS_NEXT_STEPS_UNAVAILABLE": "Next-step drafts were not queued this run.",
+    "OUTPUTS_TEXTSTATE_UNAVAILABLE": "Per-record text state was not updated this run.",
+    "OUTPUTS_RESPONSE_ITEMS_UNAVAILABLE": "Response ratings were not produced this run.",
+    "OUTPUTS_TIMELINE_UNAVAILABLE": "The request timeline was not produced this run.",
+    "OUTPUTS_ANALYSIS_READY_UNAVAILABLE": "The analysis-ready manifest was not written this run.",
+}
+OUTPUTS_CODE = re.compile(r"OUTPUTS_[A-Z0-9_]{1,57}")  # Report schema syntax; at most 64 characters.
+OUTPUTS_SHOWN = 4
+DRAFT_PRODUCERS = ("received_items", "message_links", "followup_clock", "followup_engine", "next_steps")
+
+
+def outputs_codes(report: dict[str, Any]) -> list[str]:
+    """Distinct outputs failure codes: stage error_code first, then the outputs needs_g items in order."""
+    found = [stage["error_code"] for stage in report["stages"]
+             if stage["name"] == "outputs" and stage["status"] in ("warn", "fail")]
+    found += [item["code"] for item in report["needs_g"] if item["stage"] == "outputs"]
+    safe = [code for code in found if isinstance(code, str) and OUTPUTS_CODE.fullmatch(code)]
+    return list(dict.fromkeys(safe))
+
+
+def outputs_lines(report: dict[str, Any]) -> list[str]:
+    """Optional 'Outputs:' and 'Drafts queued:' lines; empty for a report with neither signal."""
+    codes = outputs_codes(report)
+    counts = report.get("draft_queue_counts")
+    if not codes and counts is None:
+        return []
+    lines = []
+    if codes:
+        text = " ".join(OUTPUTS_SENTENCES.get(code, code) for code in codes[:OUTPUTS_SHOWN])
+        if len(codes) > OUTPUTS_SHOWN:
+            text += f" +{len(codes) - OUTPUTS_SHOWN} more"
+        lines.append("Outputs: " + text)
+    values = [counts.get(key) for key in DRAFT_PRODUCERS] if isinstance(counts, dict) else []
+    if len(values) == len(DRAFT_PRODUCERS) and all(type(v) is int and v >= 0 for v in values):
+        lines.append(f"Drafts queued: {sum(values)} new")
+    else:
+        lines.append("Drafts queued: unknown")
+    return lines
 
 
 def kind_line(summary: dict[str, Any] | None) -> str:
@@ -73,7 +130,7 @@ def compose_arrival(report: dict[str, Any], exit_code: int) -> str:
                                               if first_failed is not None else "")
     coverage = run_coverage.format_coverage(run_coverage.coverage_counts(report))
     return "\n".join([head, kind_line(summary), "Done: " + ", ".join(done) + ".",
-                      f"{NEEDS_G_ARRIVAL_LABEL}: {drafts}; {holds}.", coverage])
+                      *outputs_lines(report), f"{NEEDS_G_ARRIVAL_LABEL}: {drafts}; {holds}.", coverage])
 
 
 def compose(report: dict[str, Any], label: str, exit_code: int) -> str:
@@ -92,6 +149,10 @@ def compose(report: dict[str, Any], label: str, exit_code: int) -> str:
     warned = [stage for stage in work if stage["status"] == "warn"]
     needs = len(report["needs_g"])
     tail = f" Needs G: {needs} item(s)." if needs else ""
+    extra = outputs_lines(report)
+    body_tail = tail
+    if extra:  # Own lines, then Needs G on its own line; coverage stays last.
+        body_tail = "".join("\n" + line for line in extra) + (f"\nNeeds G: {needs} item(s)." if needs else "")
     coverage = "\n" + run_coverage.format_coverage(run_coverage.coverage_counts(report))
     if failed:
         first = failed[0]
@@ -99,10 +160,10 @@ def compose(report: dict[str, Any], label: str, exit_code: int) -> str:
             return PREFLIGHT_MESSAGES[first["error_code"]].format(label=label, run_id=run_id) + tail
         return (f"{label}: records run {run_id} failed at stage {first['name']} "
                 f"({first['error_code']}, exit {exit_code}). The runtime needs attention. "
-                f"No replies were sent.{tail}{coverage}")
+                f"No replies were sent.{body_tail}{coverage}")
     if warned:
         codes = ", ".join(f"{stage['name']} {stage['error_code']}" for stage in warned)
         return (f"{label}: records run {run_id} completed with warnings ({codes}). "
-                f"Details are in the private run report.{tail}{coverage}")
+                f"Details are in the private run report.{body_tail}{coverage}")
     return (f"{label}: records run {run_id} completed. "
-            f"Details are in the private run report.{tail}{coverage}")
+            f"Details are in the private run report.{body_tail}{coverage}")

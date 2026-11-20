@@ -130,3 +130,8 @@ reads (types and one-line hints from `comparison.WORKSHEET_FIELDS`), and reviewe
 disputed and unreviewed facts are counted, never listed. Candidates are not citations, attestations or applicability, and
 the tool fills no predicate, value, role or flag, so an unfilled worksheet compiles to all unknown. The custodian completes it,
 attests it and installs agency-fact-sheets.json as a separate attended step; compilation and installation are not part of this command.
+
+Compiler contract: `records comparison-input` compiles a custodian-filled records-comparison-worksheet-v1 into this schema through
+the typed `comparison.WORKSHEET_FIELDS` table. It emits a field only when attested, applicability-confirmed, cited by a fact checked in
+the store at build time and every required key is filled; a field with a null required key is omitted (unknown). It never derives a
+value and writes only a new --out file; installing it as agency-fact-sheets.json stays a separate attended custodian step.
