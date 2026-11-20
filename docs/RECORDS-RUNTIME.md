@@ -43,6 +43,18 @@ campaign or reuse development/production services. The runner container is a
 separate scheduler runtime; building it alone is not validation of full records
 intake.
 
+## Coded adoption gap breakdown (`stages[].outcomes` on delta and adoption)
+
+`delta` and `adoption` record which coded adoption gaps hold messages back, not only how many, in the existing run report v1
+`stages[].outcomes` field (and `outcomes` in the stage result); no schema version changed. Each `{code, count}` row is a wire code:
+`GA_<CODE>` (a gap code in `mail_adoption.ACCEPTED_GAP_CODES`, reported but not blocking), `GB_<CODE>` (blocking) with `<CODE>` the
+upper-cased adopter gap code, and `GAP_NONE` for the receipts with no coded gap (a count of receipts, not a success count). At most 32
+named codes are kept per stage (highest count, then code); the rest are summed into `GA_OTHER` and `GB_OTHER`. Positive counts only, so
+the rows sum to `counts.input`; the gap rows sum to the `ADOPTION_CODED_GAPS` item and the `GB_` rows to the `ADOPTION_UNACCEPTED_GAP`
+item. `run_report.adoption_gap_breakdown(stage)` returns `[{code, count, accepted}]`; `run_coverage`'s coded-gap count is its sum.
+`[]` is a measured stage with no input; a missing field means unavailable (older report or a gap payload that did not add up).
+Older validators accept the shape; an older standalone `run_report_check` can flag these codes as unknown outcomes until updated.
+
 ## Pipeline health watch
 
 `records pipeline-health --runtime-dir ABS --target NAME --root RECORDS_ROOT [--mail-store DIR] [--analysis-root DIR [--analysis-max-minutes 60]] [--console-export-root DIR] [--disk-warn-gib 100] [--disk-stop-gib 30] [--now ISO] [--json] [--record-alerts]`

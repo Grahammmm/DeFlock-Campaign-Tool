@@ -8,6 +8,7 @@ semantic acceptance of the run.
 
 import json
 import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +36,103 @@ def check_outcomes(outcomes, counts, where="outcomes"):
     total = sum(item["count"] for item in outcomes)
     if total != counts["input"]:
         raise ValueError(f"{where}: outcome counts sum to {total}, counts.input is {counts['input']}")
+
+
+# DF1117L-05: delta/adoption stages record which coded adoption gaps held messages back in
+# ``outcomes`` (report v1 shape unchanged). Rows are GA_<CODE> (accepted gap), GB_<CODE>
+# (blocking gap), GA_OTHER/GB_OTHER (overflow beyond MAX_GAP_CODES) and GAP_NONE (receipts
+# without a coded gap). A recorded [] is a measured zero-input stage; absent means unavailable.
+GAP_STAGES = ("delta", "adoption")
+GAP_NONE, GAP_OTHER, MAX_GAP_CODES = "GAP_NONE", "OTHER", 32
+_WIRE = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
+_SOURCE = re.compile(r"[a-z][a-z0-9_]*")
+_SUFFIX = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def _count(value):
+    return type(value) is int and value >= 0
+
+
+def gap_partition(report, accepted):
+    """Encode an adopt-mail report's coded gaps as a stage outcomes partition, or None.
+
+    None (nothing recorded) when the gap data is missing, malformed, negative, or its sums
+    disagree with the report's own totals; rejected text is never echoed.
+    """
+    if not isinstance(report, dict):
+        return None
+    gaps, total = report.get("coded_gaps"), report.get("coded_gap_messages")
+    blocked, receipts = report.get("unaccepted_coded_gaps") or {}, report.get("receipts")
+    if not (isinstance(gaps, dict) and isinstance(blocked, dict) and _count(total) and _count(receipts)):
+        return None
+    if not all(type(key) is str and _SOURCE.fullmatch(key) and _count(value) for key, value in gaps.items()):
+        return None
+    if sum(gaps.values()) != total or total > receipts or any(not _count(v) for v in blocked.values()):
+        return None
+    if sum(blocked.values()) != sum(v for k, v in gaps.items() if k not in accepted):
+        return None
+    named, other = [], {"GA": 0, "GB": 0}
+    for key, value in gaps.items():
+        prefix = "GA" if key in accepted else "GB"
+        wire = f"{prefix}_{key.upper()}"
+        if value and (key.upper() == GAP_OTHER or not _WIRE.fullmatch(wire)):
+            other[prefix] += value
+        elif value:
+            named.append((wire, value))
+    named.sort(key=lambda row: (-row[1], row[0]))
+    for wire, value in named[MAX_GAP_CODES:]:
+        other[wire[:2]] += value
+    rows = [{"code": wire, "count": value} for wire, value in named[:MAX_GAP_CODES]]
+    rows += [{"code": f"{prefix}_{GAP_OTHER}", "count": value} for prefix, value in other.items() if value]
+    if receipts > total:
+        rows.append({"code": GAP_NONE, "count": receipts - total})
+    return rows
+
+
+def _gap_rows(outcomes):
+    """Decode a partition into ``{code, count, accepted}`` rows; ValueError when malformed."""
+    rows, named = [], set()
+    for item in outcomes:
+        code, count = item["code"], item["count"]
+        if not (type(count) is int and count >= 1):
+            raise ValueError("gap partition: count must be a positive integer")
+        if code == GAP_NONE:
+            continue
+        if code[:3] not in ("GA_", "GB_") or not _SUFFIX.fullmatch(code[3:]) or not _WIRE.fullmatch(code):
+            raise ValueError("gap partition: not a gap code")
+        suffix = code[3:]
+        if suffix != GAP_OTHER:
+            if suffix in named:
+                raise ValueError("gap partition: code recorded as both accepted and blocking")
+            named.add(suffix)
+        rows.append({"code": suffix, "count": count, "accepted": code[:2] == "GA"})
+    if len(named) > MAX_GAP_CODES:
+        raise ValueError("gap partition: more than 32 named codes")
+    return rows
+
+
+def adoption_gap_breakdown(stage):
+    """``[{code, count, accepted}]`` recorded by a delta/adoption stage; None when not recorded.
+
+    ``code`` is the upper-case gap code (``OTHER`` for the overflow bucket); a stage that
+    recorded no gap returns ``[]`` and one without the field (older report) returns None.
+    """
+    if not isinstance(stage, dict) or stage.get("name") not in GAP_STAGES or "outcomes" not in stage:
+        return None
+    try:
+        return _gap_rows(stage["outcomes"])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def check_gap_partition(stage, needs_g, where):
+    """Delta/adoption outcomes must be a gap partition agreeing with the stage's needs-G totals."""
+    rows = _gap_rows(stage["outcomes"])
+    totals = {item["code"]: item["count"] for item in needs_g if item["stage"] == stage["name"]}
+    blocking = sum(row["count"] for row in rows if not row["accepted"])
+    if (sum(row["count"] for row in rows) != totals.get("ADOPTION_CODED_GAPS", 0)
+            or blocking != totals.get("ADOPTION_UNACCEPTED_GAP", 0)):
+        raise ValueError(f"{where}: gap partition disagrees with the stage's coded-gap totals")
 
 
 def check_finite_durations(report):
@@ -123,6 +221,8 @@ def validate_run_report(report, schema=None):
             raise ValueError(f"{where}.duration_seconds: null only allowed for skipped stages")
         if "outcomes" in stage:
             check_outcomes(stage["outcomes"], stage["counts"], f"{where}.outcomes")
+            if stage["name"] in GAP_STAGES:
+                check_gap_partition(stage, report["needs_g"], f"{where}.outcomes")
 
     statuses = {stage["status"] for stage in report["stages"]}
     expected = "fail" if "fail" in statuses else "warn" if "warn" in statuses else "ok"
