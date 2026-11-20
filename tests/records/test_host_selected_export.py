@@ -23,7 +23,7 @@ class HostSelectedExportTests(HostFixture):
         from campaign_tool.records.intake.export_snapshot import snapshot
         value = json.loads(self.profile.read_text())
         del value["mail_config"]
-        value.update(input_mode="exports", exports=str(self.export) if bind else "/synthetic/exports",
+        value.update(input_mode="exports", exports="/synthetic/exports",
                      export_receipts=[str(self.path.relative_to(self.export))])
         value["export_manifest_sha256"] = snapshot(self.export, tuple(value["export_receipts"]))["sha256"]
         value["mounts"] = [m for m in value["mounts"] if m["target"] != "/synthetic/mail.json"]
@@ -44,9 +44,9 @@ class HostSelectedExportTests(HostFixture):
                 self.assertNotIn("--collection-host", argv)
             if argv[1] == "create":
                 self.assertEqual(argv[argv.index("--network") + 1], "none")
-        paths = dict(value, python="/synthetic/python", role="worker", job_id="a" * 32)
+        paths = dict(value, exports=str(self.export), python="/synthetic/python", role="worker", job_id="a" * 32)
         _, argv, _ = self.entry_command(paths)
-        self.assertEqual(argv[argv.index("--export-root") + 1], value["exports"])
+        self.assertEqual(argv[argv.index("--export-root") + 1], str(self.export))
         self.assertNotIn("--collection-host", argv)
 
     def test_volume_and_profile_refusals(self):
@@ -80,7 +80,8 @@ class HostSelectedExportTests(HostFixture):
 
     def test_probe_requires_readonly_and_manifest_command_is_redacted(self):
         value = self.selected(bind=True)
-        paths = dict(value)
+        # The in-process probe reads the fixture directly, without a container mount.
+        paths = dict(value, exports=str(self.export))
         for key in ("root", "tmp_dir", "worker_state_parent", "board_dir", "release_root", "parser_path"):
             path = self.root / ("probe-" + key)
             path.mkdir(mode=0o700)

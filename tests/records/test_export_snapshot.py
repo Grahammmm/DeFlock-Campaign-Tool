@@ -8,13 +8,13 @@ import unittest
 from unittest.mock import patch
 from campaign_tool.records import unattended
 from campaign_tool.records.container_host import Rejected
+from tests.records.private_fixture import private_fixture_parent
 from tests.records.test_export_bridge import legacy_export, synthetic_message
 
 
 class ExportSnapshotTests(unittest.TestCase):
     def setUp(self):
-        parent = os.environ.get("TMPDIR", str(Path.home()))
-        self.tmp = tempfile.TemporaryDirectory(dir=str(Path.home()) if parent in ("/tmp", "/var/tmp") else parent)
+        self.tmp = tempfile.TemporaryDirectory(dir=private_fixture_parent())
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
         self.export = self.base / "exports"
@@ -190,7 +190,7 @@ class ExportSnapshotTests(unittest.TestCase):
         fixture = fixtures.HostOfflineInboxTests()
         fixture.setUp()
         self.addCleanup(fixture.tearDown)
-        value = fixture.offline(bind=True)
+        fixture.offline(bind=True)
         with patch.object(unattended.UnattendedPipeline, "advance_all", return_value=[]), patch.dict(os.environ, {"MODEL_BASE_URL": "", "CHALLENGE_MODEL_BASE_URL": ""}), patch("sys.stdout", io.StringIO()) as output:
-            unattended.main(["--root", str(fixture.root / "canonical"), "--inbox", value["inbox"], "--unattended", "--json"])
+            unattended.main(["--root", str(fixture.root / "canonical"), "--inbox", str(fixture.inbox), "--unattended", "--json"])
         self.assertEqual(json.loads(output.getvalue())["intake"]["messages"], 1)

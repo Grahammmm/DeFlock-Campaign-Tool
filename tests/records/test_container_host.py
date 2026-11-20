@@ -15,6 +15,7 @@ import unittest
 from unittest import mock
 
 from campaign_tool.records import container_host as host
+from tests.records.private_fixture import private_fixture_parent
 
 
 def sha(value):
@@ -178,10 +179,7 @@ class FakeDocker:
 
 class HostFixture(unittest.TestCase):
     def setUp(self):
-        parent = os.environ.get("TMPDIR",str(Path.home()))
-        if parent in ("/tmp","/var/tmp"):
-            parent = str(Path.home())
-        self.temp = tempfile.TemporaryDirectory(prefix="container-host-synthetic-",dir=parent)
+        self.temp = tempfile.TemporaryDirectory(prefix="container-host-synthetic-", dir=private_fixture_parent())
         self.root = Path(self.temp.name)
         self.receipts = self.root / "host-receipts"
         self.receipts.mkdir(mode=0o700)

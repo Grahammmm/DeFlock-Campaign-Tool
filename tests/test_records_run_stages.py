@@ -29,7 +29,7 @@ from datetime import timedelta
 from pathlib import Path
 from unittest import mock
 
-from campaign_tool.records import native_extract, run_orchestrator, run_stages
+from campaign_tool.records import native_extract, run_orchestrator, run_report, run_stages
 from campaign_tool.records import run as records_run
 from campaign_tool.records.ledger import store
 from campaign_tool.records.portal.policy import PortalError, parse_approval
@@ -182,12 +182,17 @@ class AdoptionStageTests(StageTestCase):
         return child, calls
 
     def test_delta_dry_run(self):
-        child, calls = self.fake_child(0, {**ADOPT_REPORT, "coded_gap_messages": 0})
+        child, calls = self.fake_child(0, {**ADOPT_REPORT, "coded_gap_messages": 0, "coded_gaps": {}})
         with mock.patch.object(run_stages, "run_child", child):
             code, parsed, raw = self.stage("delta")
         self.assertContract(code, parsed, raw)
         self.assertNotIn("--apply", calls[0])
         self.assertEqual(parsed["counts"], {"input": 154, "output": 36, "skipped": 3, "failed": 0})
+        self.assertEqual(parsed["outcomes"], [{"code": "GAP_NONE", "count": 154}])
+        # A payload without per-code gaps (older adopter) records nothing rather than a guess.
+        child, _ = self.fake_child(0, {**ADOPT_REPORT, "coded_gap_messages": 0})
+        with mock.patch.object(run_stages, "run_child", child):
+            self.assertNotIn("outcomes", self.stage("delta")[1])
 
     def test_delta_conflicts_warn_with_blocking_item(self):
         report = {**ADOPT_REPORT, "identity_conflicts": {"identity_verification_path_changed": 3}}
@@ -215,7 +220,10 @@ class AdoptionStageTests(StageTestCase):
         self.assertEqual((parsed["status"], parsed["error_code"]), ("skipped", "ADOPTION_NOT_CONFIGURED"))
 
     def test_adoption_apply_counts_coded_gaps(self):
-        child, calls = self.adopt_child(ADOPT_DRY_REPORT, ADOPT_REPORT)
+        # The recorded partition comes from the apply payload, not the pre-backup dry-run.
+        dry = {**ADOPT_DRY_REPORT, "coded_gaps": {"unsupported_rfc822_part": 115}}
+        apply = {**ADOPT_REPORT, "coded_gaps": {"original_scope_unresolved": 100, "unsupported_rfc822_part": 15}}
+        child, calls = self.adopt_child(dry, apply)
         with mock.patch.object(run_stages, "backup_adoption_dbs", return_value=4096), \
                 mock.patch.object(run_stages, "run_child", child):
             code, parsed, raw = self.stage("adoption", "--config", "/cfg.json")
@@ -228,6 +236,10 @@ class AdoptionStageTests(StageTestCase):
         self.assertEqual(parsed["new_data"], {"documents": 36, "backup_bytes": 4096})
         self.assertEqual(parsed["counts"], {"input": 154, "output": 36, "skipped": 118, "failed": 0})
         self.assertIn({"code": "ADOPTION_CODED_GAPS", "severity": "info", "count": 115}, parsed["needs_g"])
+        self.assertEqual(parsed["outcomes"], [{"code": "GA_ORIGINAL_SCOPE_UNRESOLVED", "count": 100},
+                                              {"code": "GA_UNSUPPORTED_RFC822_PART", "count": 15},
+                                              {"code": "GAP_NONE", "count": 39}])
+        self.assertEqual([i["code"] for i in parsed["needs_g"]], ["ADOPTION_CODED_GAPS"])
 
     def test_adoption_rerun_adopts_zero(self):
         dry = {**ADOPT_DRY_REPORT, "pending_messages": 0, "eligible_new_messages": 0}
@@ -241,7 +253,8 @@ class AdoptionStageTests(StageTestCase):
         self.assertIn({"code": "ADOPT_BACKUP_SKIPPED", "severity": "info", "count": 1}, parsed["needs_g"])
 
     def test_adoption_blocked_fails(self):
-        report = {**ADOPT_REPORT, "unaccepted_coded_gaps": {"other_code": 2}}
+        report = {**ADOPT_REPORT, "unaccepted_coded_gaps": {"other_code": 2},
+                  "coded_gaps": {"original_scope_unresolved": 113, "other_code": 2}}
         child, _ = self.adopt_child(ADOPT_DRY_REPORT, report, apply_code=3)
         with mock.patch.object(run_stages, "backup_adoption_dbs", return_value=4096), \
                 mock.patch.object(run_stages, "run_child", child):
@@ -249,6 +262,75 @@ class AdoptionStageTests(StageTestCase):
         self.assertContract(code, parsed, raw)
         self.assertEqual(parsed["error_code"], "ADOPTION_BLOCKED")
         self.assertIn({"code": "ADOPTION_UNACCEPTED_GAP", "severity": "blocking", "count": 2}, parsed["needs_g"])
+        self.assertEqual(parsed["outcomes"], [{"code": "GA_ORIGINAL_SCOPE_UNRESOLVED", "count": 113},
+                                              {"code": "GB_OTHER_CODE", "count": 2},
+                                              {"code": "GAP_NONE", "count": 39}])
+        self.assertEqual((parsed["counts"]["failed"], code), (2, 1))
+
+    def test_delta_failed_and_warn_forward_their_own_gaps(self):
+        gaps = {"original_scope_unresolved": 113, "other_code": 2}
+        report = {**ADOPT_REPORT, "unaccepted_coded_gaps": {"other_code": 2}, "coded_gaps": gaps}
+        for rc, error in ((1, "DELTA_FAILED"), (3, "DELTA_BLOCKING_CONFLICTS")):
+            child, _ = self.fake_child(rc, report)
+            with self.subTest(error=error), mock.patch.object(run_stages, "run_child", child):
+                code, parsed, raw = self.stage("delta")
+                self.assertContract(code, parsed, raw)
+                self.assertEqual(parsed["error_code"], error)
+                self.assertEqual({r["code"]: r["count"] for r in parsed["outcomes"]},
+                                 {"GA_ORIGINAL_SCOPE_UNRESOLVED": 113, "GB_OTHER_CODE": 2, "GAP_NONE": 39})
+
+    def test_unsafe_gap_code_is_not_echoed_into_the_result(self):
+        report = {**ADOPT_REPORT, "coded_gaps": {"Bad Code/private": 115}}
+        child, _ = self.fake_child(0, report)
+        with mock.patch.object(run_stages, "run_child", child):
+            code, parsed, raw = self.stage("delta")
+        self.assertContract(code, parsed, raw)
+        self.assertNotIn("outcomes", parsed)
+        self.assertNotIn("private", raw)
+
+    def test_zero_input_adoption_partition_survives_report(self):
+        # Believable bug: an empty measured partition is dropped by a truthiness filter before the report.
+        empty = {**ADOPT_REPORT, "receipts": 0, "eligible_new_messages": 0, "already_adopted": 0,
+                 "coded_gap_messages": 0, "coded_gaps": {}, "adopted_messages": 0}
+        mixed = {**ADOPT_REPORT, "unaccepted_coded_gaps": {"other_code": 2},
+                 "coded_gaps": {"original_scope_unresolved": 113, "other_code": 2}}
+        for label, payload in (("zero input", empty), ("mixed", mixed)):
+            child, _ = self.fake_child(0, payload)
+            with self.subTest(label), mock.patch.object(run_stages, "run_child", child):
+                code, delta, raw = self.stage("delta")
+                self.assertContract(code, delta, raw)
+            skipped = self.stage("adoption")[1]  # no --config: skipped, no classified payload
+            self.assertNotIn("outcomes", skipped)
+            report = self.run_report_for({"delta": delta, "adoption": delta})
+            stages = {s["name"]: s for s in report["stages"]}
+            self.assertEqual(stages["delta"]["outcomes"], delta["outcomes"])
+            self.assertEqual(stages["adoption"]["outcomes"], delta["outcomes"])
+            self.assertEqual(stages["sync"].get("outcomes"), None)
+            self.assertEqual(label == "zero input", delta["outcomes"] == [])
+
+    def run_report_for(self, results):
+        """Run the real orchestrator parser and report writer over canned stage result lines."""
+        stages = [{"name": name, "argv": [sys.executable, "-B", "-m", "campaign_tool.records.run_orchestrator",
+                                          "stub-stage", "--stage", name, "--fixture", "/unused"],
+                   "timeout_seconds": 60, "on_fail": "stop"} for name in run_orchestrator.WORK_STAGES]
+        config = run_orchestrator.validate_target_config(
+            {"target_config_version": 1, "target": "TEST", "mode": "test", "stages": stages})
+
+        def fake_run_stage(argv, timeout, schema, work_dir, env):
+            name = argv[argv.index("--stage") + 1]
+            line = results.get(name) or run_stages.result("ok", {})
+            parsed = run_orchestrator.parse_stage_result(json.dumps(line).encode(), schema)
+            self.assertIsNotNone(parsed)
+            return parsed["status"], dict(parsed["counts"]), parsed.get("error_code"), parsed, 1.0
+
+        with tempfile.TemporaryDirectory() as work, \
+                mock.patch.object(run_orchestrator, "run_stage", side_effect=fake_run_stage):
+            path = Path(work) / "report.json"
+            run_orchestrator.execute(config, "run_20261019T120000Z_0123abcd", "test",
+                                     run_orchestrator.utc_now(), time.time() + 600, path, work)
+            report = json.loads(path.read_text(encoding="utf-8"))
+        run_report.validate_run_report(report)
+        return report
 
     def test_receipt_gap_block_has_a_visible_reason(self):
         report = {**ADOPT_REPORT, "adopted_messages": 0, "gaps": {"duplicate_receipt_identity": 1}}

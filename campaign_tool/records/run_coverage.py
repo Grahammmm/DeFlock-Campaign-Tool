@@ -9,7 +9,8 @@ Contract v1 (see deploy/records-runtime/README.md, "Coverage line"):
 
 - adopted = S(adoption).counts.output + S(adoption).counts.skipped
   - n(adoption, ADOPTION_CODED_GAPS); adopted_this_run = S(adoption).counts.output
-- coded_gap = n(adoption, ADOPTION_CODED_GAPS)
+- coded_gap = n(adoption, ADOPTION_CODED_GAPS), or the sum of the stage's recorded
+  gap breakdown (run_report.adoption_gap_breakdown) when present, even if adoption failed
 - awaiting_ocr = n(extract, AWAITING_OCR)
 - portal_held = n(portal, PORTAL_FETCH_DRY_RUN_ONLY) + n(portal, PORTAL_HTTP_404)
   + n(portal, PORTAL_FETCH_BLOCKED)
@@ -27,6 +28,8 @@ import argparse
 import json
 import sys
 from pathlib import Path
+
+from campaign_tool.records import run_report
 
 AVAILABLE = ("ok", "warn")
 CODED_GAPS = "ADOPTION_CODED_GAPS"
@@ -57,9 +60,14 @@ def _n(report, stage, code):
 def coverage_counts(report):
     """Return the coverage counts (int or None), ``stub`` and ``mode`` for a v1 report."""
     adopted = adopted_this_run = coded_gap = awaiting_ocr = portal_held = None
-    adoption = _available(report, "adoption")
-    if adoption is not None:
-        coded_gap = _n(report, "adoption", CODED_GAPS)
+    adoption = _stage(report, "adoption")
+    breakdown = run_report.adoption_gap_breakdown(adoption)
+    if breakdown is not None:
+        # DF1117L-05: a recorded per-code breakdown is the coded-gap evidence, even for a failed stage.
+        coded_gap = sum(row["count"] for row in breakdown)
+    if _available(report, "adoption") is not None:
+        if breakdown is None:
+            coded_gap = _n(report, "adoption", CODED_GAPS)
         adopted_this_run = adoption["counts"]["output"]
         total = adoption["counts"]["output"] + adoption["counts"]["skipped"] - coded_gap
         adopted = total if total >= 0 else None

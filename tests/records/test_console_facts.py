@@ -10,7 +10,7 @@ from campaign_tool.records.outcomes import factsheets as fs
 from tests.records.test_console_runs import fetch
 from tests.records.test_console_snapshot import RUN, Panel
 
-DOC = ["a1b2c3d4e5f6" + "0" * 52, "b2c3d4e5f6a1" + "1" * 52, "c3d4e5f6a1b2" + "2" * 52]
+DOC = ["a1b2c3d4e5f6" + "0" * 52, "b2c3d4e5f6a1" + "1" * 52, "c3d4e5f6a1b2" + "2" * 52]  # pragma: allowlist secret (synthetic document ids, not credentials)
 UNIT, PRIVATE = "f" * 64, "/home/user/private/processing/ledger.sqlite"
 AGENCIES = ("synthetic-mesa-pd", "synthetic-harbor-pd", "synthetic-cedar-pd")
 

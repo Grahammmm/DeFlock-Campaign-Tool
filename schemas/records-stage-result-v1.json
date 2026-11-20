@@ -78,7 +78,7 @@
     "review_required": {"$ref": "#/$defs/count"},
     "outcomes": {
       "type": "array",
-      "description": "Optional per-document outcome codes for the units in counts.input: each document has exactly one code, so the counts sum to counts.input. Codes are unique. Used by the extract stage (EXTRACTED, AWAITING_OCR, CORRUPT_DOCUMENT, ...).",
+      "description": "Optional per-document outcome codes for the units in counts.input: each document has exactly one code, so the counts sum to counts.input. Codes are unique. Used by the extract stage (EXTRACTED, AWAITING_OCR, CORRUPT_DOCUMENT, ...). The delta and adoption stages record the coded-gap partition (GA_<CODE> accepted, GB_<CODE> blocking, GA_OTHER/GB_OTHER overflow beyond 32 codes, GAP_NONE for receipts without a gap); an empty list is a measured zero-input stage.",
       "items": {"$ref": "#/$defs/outcome"}
     },
     "needs_g": {
