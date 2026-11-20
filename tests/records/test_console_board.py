@@ -1,4 +1,5 @@
 """Screens A (Board) and B (Agency timeline), on synthetic run outputs (two invented agencies)."""
+import hashlib
 import http.client
 import json
 import tempfile
@@ -442,6 +443,104 @@ class AgencySections(unittest.TestCase):
         self.retention_path.unlink()
         (home_project / "agency-retention.csv").unlink()
         render_all()  # without the file
+
+
+TRACKER = "tracker:beta sheriff / coroner"
+
+
+def served_agency(project, agency):
+    server = ap.build_server(project, RUN, actor="op", system=False)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with closing(http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)) as conn:
+            conn.request("GET", "/agency?agency=" + urllib.parse.quote(agency, safe=""))
+            r = conn.getresponse()
+            return r.status, r.read().decode()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def cmp_row(agency, status, request=None):
+    return {"agency_id": agency, "field": "cpra_response_deadline", "status": status, "expected": "x", "reason": "r",
+            "request_id": request, "citation": {"label": "l", "url": "u"}, "observed": None, "evidence": []}
+
+
+def cmp_doc(rows, input_status="fact_sheets_supplied", run=RUN):
+    return {"schema": "records-agency-comparison-v1", "run_id": run, "disclaimer": "d", "input_status": input_status,
+            "as_of": "2026-04-30", "inventory_gaps": [], "rows": rows}
+
+
+class FactsAndPolicy(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.project = Path(self.tmp.name)
+        build(self.project)
+
+    def put_facts(self, agencies, run=RUN):
+        from tests.records import test_console_facts as tf
+        put(self.project / "run-outputs" / RUN / "agency-factsheets.json", tf.doc(run=run, agencies=agencies))
+
+    def put_cmp(self, rows, **kw):
+        put(self.project / "run-outputs" / RUN / "comparison.json", cmp_doc(rows, **kw))
+
+    def section(self, agency="alpha-pd"):
+        status, body = served_agency(self.project, agency)
+        self.assertEqual(status, 200)
+        start = body.index('<section aria-label="Facts and policy">')
+        return body[start:body.index("</section>", start) + len("</section>")]
+
+    def links(self, agency):
+        q = urllib.parse.quote(agency, safe="")
+        return ('<p><a href="/facts?agency=%s">Fact sheets</a> <a href="/comparison?agency=%s">Policy comparison</a></p></section>' % (q, q))
+
+    def test_facts_and_policy_golden_both_files(self):
+        from tests.records import test_console_facts as tf
+        quotes = [tf.statement("Annual fee: $1."), tf.statement("Cost: $2.")]
+        self.put_facts([tf.sheet("alpha-pd", {"cost": quotes, "retention": [tf.statement("Retained 30 days.")]})])
+        self.put_cmp([cmp_row("alpha-pd", "meets"), cmp_row("alpha-pd", "gap"), cmp_row("alpha-pd", "unknown"),
+                      cmp_row("alpha-pd", "unknown", request="R-1"), cmp_row(TRACKER, "gap")], input_status="fact_sheets_missing")
+        self.assertEqual(self.section(), '<section aria-label="Facts and policy"><h2>Facts and policy</h2>'
+                         "<p>Fact sheets: 2 of 10 fields have supported statements</p><p>Policy comparison: meets 1, gap 1, unknown 2</p>"
+                         "<p>No reviewed comparison input is installed; every row is unknown</p>" + self.links("alpha-pd"))
+
+    def test_facts_and_policy_golden_agency_in_one_file(self):
+        from tests.records import test_console_facts as tf
+        self.put_facts([tf.sheet("alpha-pd")])  # present, nothing supported: a real zero
+        self.put_cmp([cmp_row(TRACKER, "gap")], input_status="fact_sheets_missing")
+        self.assertEqual(self.section(), '<section aria-label="Facts and policy"><h2>Facts and policy</h2>'
+                         "<p>Fact sheets: 0 of 10 fields have supported statements</p><p>Policy comparison: not in this run&#x27;s file</p>"
+                         "<p>No reviewed comparison input is installed; every row is unknown</p>" + self.links("alpha-pd"))
+        self.put_facts([tf.sheet(TRACKER, {"cost": [tf.statement("Cost: $2.")]})])
+        self.put_cmp([cmp_row(TRACKER, "gap"), cmp_row("alpha-pd-extra", "meets")])
+        self.assertEqual(self.section(TRACKER), '<section aria-label="Facts and policy"><h2>Facts and policy</h2>'
+                         "<p>Fact sheets: 1 of 10 fields have supported statements</p><p>Policy comparison: meets 0, gap 1, unknown 0</p>"
+                         + self.links(TRACKER))
+        self.assertIn("/facts?agency=tracker%3Abeta%20sheriff%20%2F%20coroner", self.links(TRACKER))
+        self.assertIn("not in this run&#x27;s file", self.section())  # alpha-pd is in neither: exact match, no aliasing
+
+    def test_facts_and_policy_golden_comparison_unavailable(self):
+        from tests.records import test_console_facts as tf
+        self.put_facts([tf.sheet("alpha-pd", {"cost": [tf.statement("Cost: $2.")]})])
+        self.put_cmp([cmp_row("alpha-pd", "gap")], run="other-run")  # refused: wrong run
+        self.assertEqual(self.section(), '<section aria-label="Facts and policy"><h2>Facts and policy</h2>'
+                         "<p>Fact sheets: 1 of 10 fields have supported statements</p><p>Policy comparison: unknown</p>" + self.links("alpha-pd"))
+        self.put_facts([tf.sheet("alpha-pd")], run="other-run")  # swapped: facts refused, comparison fine
+        self.put_cmp([cmp_row("alpha-pd", "gap")])
+        self.assertEqual(self.section(), '<section aria-label="Facts and policy"><h2>Facts and policy</h2>'
+                         "<p>Fact sheets: unknown</p><p>Policy comparison: meets 0, gap 1, unknown 0</p>" + self.links("alpha-pd"))
+        (self.project / "run-outputs" / RUN / "comparison.json").unlink()  # both missing
+        (self.project / "run-outputs" / RUN / "agency-factsheets.json").unlink()
+        self.assertIn("<p>Fact sheets: unknown</p><p>Policy comparison: unknown</p>", self.section())
+
+    def test_agency_bytes_unchanged_outside_summary(self):
+        digests = {"alpha-pd": "1ae4284dec1845507a97cbea11cf991b394aea5aada9896bf4ae079ab8762e2a", TRACKER: "f33ee152fe9929f4db142fa3078a47db67cff2fb760ef24b1481c5cf0953f5d5"}  # pragma: allowlist secret -- SHA-256 of synthetic agency pages before DF1117L-03, not credentials
+        for agency, digest in digests.items():
+            _, body = served_agency(self.project, agency)
+            start = body.index('<section aria-label="Facts and policy">')
+            end = body.index("</section>\n", start) + len("</section>\n")
+            self.assertEqual(hashlib.sha256((body[:start] + body[end:]).encode()).hexdigest(), digest)
 
 
 if __name__ == "__main__":
