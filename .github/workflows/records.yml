@@ -40,9 +40,10 @@ jobs:
           TMPDIR: /var/tmp
         run: python -B -W error::ResourceWarning tools/ci_affected.py --tier pr --shard ${{ matrix.shard }} --shards 5 --jobs 2
   full:
-    # R12.2 / HOSTED-DIET-DFPY (t_afa433cb): both full shards run on 3.12 on PRs, and on 3.11–3.13 otherwise.
+    # R12.2 / HOSTED-DIET-DFPY (t_afa433cb): all full shards run on 3.12 on PRs, and on 3.11–3.13 otherwise.
     # One 4-CPU job ran 20-35 min and hit the old 35-minute offline timeout on slow runners
     # (main runs 43768448222, 43769348646, 43772136816: 'cancelled').
+    # Run 44824557926: shard 1 hit 35:00 with ran == expected because stale weights unbalanced the shards.
     if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -51,7 +52,7 @@ jobs:
       max-parallel: 6
       matrix:
         python: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || '["3.11","3.12","3.13"]') }}
-        shard: [0, 1]
+        shard: [0, 1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -63,7 +64,7 @@ jobs:
       - name: Full source coverage minus explicitly owned integration suites (disjoint shards)
         env:
           TMPDIR: /var/tmp
-        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier full --shard ${{ matrix.shard }} --shards 2 --jobs 2
+        run: python -B -W error::ResourceWarning tools/ci_affected.py --tier full --shard ${{ matrix.shard }} --shards 3 --jobs 2
   offline:
     # Preserve the required check name, and fail closed on any failed shard.
     needs: [affected, full]

@@ -79,6 +79,9 @@ class ParallelShardTest(unittest.TestCase):
         self.assertEqual((code, summary), (0, {'shard': 2, 'jobs': 3, 'cpu_count': os.cpu_count(),
                                                'expected': 6, 'ran': 6, 'chunks': 3}))
         self.assertEqual(len(re.findall(r'CI_CHUNK_RESULT .*"ok": true', text)), 3)
+        for i in range(3):
+            name = f'{self.package}.test_{i}_green'
+            self.assertRegex(text, rf'CI_MODULE_END {re.escape(name)} phase=run started=\S+ elapsed_seconds=\d+\.\d+')
         self.assertNotIn('::error::', text)
 
     def test_child_exiting_zero_without_running_is_red(self):
