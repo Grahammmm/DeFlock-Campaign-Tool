@@ -37,6 +37,20 @@ class RunReportSchemaTests(unittest.TestCase):
     def test_synthetic_example_validates(self):
         self.assertIs(run_report.validate_run_report(self.report, self.schema), self.report)
 
+    def test_draft_queue_counts_optional_closed_counts_or_unknown(self):
+        keys = ("received_items", "message_links", "followup_clock", "followup_engine", "next_steps")
+        self.assertNotIn("draft_queue_counts", self.report)  # a report written by main still validates
+        report = copy.deepcopy(self.report)
+        report["draft_queue_counts"] = dict(zip(keys, (3, 0, None, 1, None)))
+        run_report.validate_run_report(report, self.schema)
+        good = dict.fromkeys(keys, 0)
+        bad = [dict(good, extra=1), {k: 0 for k in keys[1:]}, dict(good, received_items=-1),
+               dict(good, received_items=True), dict(good, received_items=1.5), dict(good, received_items="1"), [], None]
+        for block in bad:
+            with self.subTest(block=block):
+                report["draft_queue_counts"] = block
+                self.assertInvalid(report, "$.draft_queue_counts")
+
     def test_example_is_metadata_only(self):
         text = EXAMPLE.read_text(encoding="utf-8")
         for pattern in (r"https?://", r"@", r"[\\/]", r"\.(pdf|docx?|xlsx?|msg|eml|png|jpe?g)\b"):
