@@ -24,6 +24,10 @@ OTHER = "\ue000"  # stands in for a matched other agency while cues are searched
 QUOTE = re.compile(r"^\s*(?:>\s?)+")
 ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])\s")
 BOUNDARY = re.compile(r"[.?!]+[\"')\]]*(?=\s|$)")
+BLOCK = re.compile(r"\s{0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:[-*_]\s*){3,}$)")  # a line that cannot lazily continue a quote
+ABBREV = re.compile(r"(?:^|[\s(\[\"'])(?:vs|cf|mr|mrs|ms|dr|[a-z]{1,2}(?:\.[a-z]{1,2})+)$", re.I)  # never ends a sentence
+ABBREV_MID = re.compile(r"(?:^|[\s(\[\"'])(?:inc|ltd|llc|co|corp|dept|depts|dist|st|jr|sr|approx)$", re.I)  # ends one only before a capital
+LOWER = re.compile(r"\s+[a-z]")
 ASK = re.compile(r"(?:access\s+by|sharing\s+with|searches\s+run\s+by)\s+(?:the\s+)?$", re.I)
 RELEASE = re.compile(
     r"\b(?:released|produced|provided|disclosed|precedents?)\b|\bmade\s+public\b|\bhas\s+shared\s+its\s+logs\b"
@@ -78,6 +82,8 @@ def runs(text):
         if not body.strip():
             cur = None
             continue
+        if not quoted and cur is not None and cur[0] and not ITEM.match(body) and not BLOCK.match(body):
+            quoted = True  # Markdown lazy continuation: an unmarked line directly after a quote line stays in the quote
         if cur is None or cur[0] != quoted or ITEM.match(body):
             cur = [quoted, [], [], 0]
             out.append(cur)
@@ -85,6 +91,14 @@ def runs(text):
         cur[1].append(body + " ")
         cur[3] += len(body) + 1
     return [(q, "".join(parts), starts) for q, parts, starts, _ in out]
+
+
+def abbreviation(body, m):
+    """True when a period after "e.g.", "Dr." or (before a lowercase word) "Inc." continues the sentence."""
+    if m.group() != ".":
+        return False
+    head = body[:m.start()]
+    return bool(ABBREV.search(head) or (ABBREV_MID.search(head) and LOWER.match(body, m.end())))
 
 
 def scan(text, names, me):
@@ -95,9 +109,9 @@ def scan(text, names, me):
         spans = [(m.start(), m.end(), owner.get(_norm(m.group())) != me) for m in rx.finditer(body)]
         begins = [s for s, _, _ in spans]
         cuts = [0]
-        for m in BOUNDARY.finditer(body):  # never split inside a recognized name ("Dept." in an alias)
+        for m in BOUNDARY.finditer(body):  # never split inside a recognized name ("Dept." in an alias) or after an abbreviation ("Inc.", "e.g.")
             i = bisect.bisect_left(begins, m.end()) - 1
-            if i < 0 or spans[i][1] <= m.start():
+            if (i < 0 or spans[i][1] <= m.start()) and not abbreviation(body, m):
                 cuts.append(m.end())
         cuts.append(len(body))
         for lo, hi in zip(cuts, cuts[1:]):

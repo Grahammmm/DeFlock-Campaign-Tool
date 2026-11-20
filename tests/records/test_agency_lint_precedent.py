@@ -65,6 +65,29 @@ class AgencyLintPrecedentTests(unittest.TestCase):
         self.assertEqual(self.run_lint("Records\nthat Agency B\nreleased last year.\n\nAgency C is named.\n"), (1, "2 refusal L9_RELEASE_PRECEDENT\n", ""))
         self.assertEqual(self.run_lint("Please share access by Agency B; Agency B also produced logs.\n")[1], "1 refusal L9_RELEASE_PRECEDENT\n")
 
+    # Contract: an abbreviation period inside a sentence is not a sentence end, so the release cue still binds to the named agency.
+    # Bug caught: splitting at "Inc." / "e.g." left the name and "released" in different sentences and the refusal vanished.
+    def test_abbreviation_periods_do_not_split_sentences(self):
+        refusal = (1, "1 refusal L9_RELEASE_PRECEDENT\n", "")
+        for text in ("Agency B Inc. released logs.", "Agency B, e.g. released logs.", "Agency B (i.e. B PD) released logs.",
+                     "Agency B Corp. and Agency C Ltd. produced logs."):
+            with self.subTest(text=text):
+                self.assertEqual(self.run_lint(text), refusal)
+        # a real sentence end still separates cues, and an abbreviation does not hide a following sentence
+        self.assertEqual(self.run_lint("Please share searches run by Agency B Inc. Others released logs."), (0, "", ""))
+        self.assertEqual(self.run_lint("Intro Inc. here. Agency B released logs."), refusal)
+
+    # Contract: a Markdown lazy continuation line (no ">" directly after a quote line) stays inside the quote: a note, never a refusal.
+    # Bug caught: splitting it into an unquoted run lost the quote's name/cue pairing (no finding) or raised a refusal for quoted text.
+    def test_lazy_blockquote_continuation(self):
+        note = (0, "1 note L9_QUOTED_PRECEDENT\n", "")
+        self.assertEqual(self.run_lint("> Agency B\nreleased logs.\n"), note)
+        self.assertEqual(self.run_lint("> Agency B\n> kept\nreleased logs.\n"), note)
+        # a blank line, a list item or a heading ends the quote, so the following text is the author's own
+        self.assertEqual(self.run_lint("> Agency B\n\nreleased logs.\n"), (0, "", ""))
+        self.assertEqual(self.run_lint("> Quote.\n# Agency B released logs.\n"), (1, "2 refusal L9_RELEASE_PRECEDENT\n", ""))
+        self.assertEqual(self.run_lint("> Quote.\n- Agency B released logs.\n"), (1, "2 refusal L9_RELEASE_PRECEDENT\n", ""))
+
     # Contract: bad input exits 2 with one fixed line and never echoes a value; a good run prints no name and writes nothing.
     def test_bad_input_never_echoes(self):
         fixed = (2, "", "refused agency_lint_precedent_input\n")
