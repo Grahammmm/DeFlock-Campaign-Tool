@@ -287,7 +287,7 @@ class WorkflowContract(unittest.TestCase):
         fast_event = "github.event_name == 'pull_request' || github.event_name == 'merge_group'"
         for name, condition, tier, shards, timeout in (
             ('affected', f'{self.DRAFT_GUARD} && ({fast_event})', 'pr', 5, 20),
-            ('full', self.DRAFT_GUARD, 'full', 2, 35),
+            ('full', self.DRAFT_GUARD, 'full', 3, 35),
         ):
             block = blocks[name]
             self.assertIn('    if: ' + condition, block.splitlines())
@@ -296,7 +296,7 @@ class WorkflowContract(unittest.TestCase):
             self.assertIn('        shard: ' + str(list(range(shards))), block)
             self.assertIn(f'tools/ci_affected.py --tier {tier} --shard ${{{{ matrix.shard }}}} --shards {shards} --jobs 2\n', block)
         offline = blocks['offline']
-        # PRs run both full shards on 3.12; dropping 3.11/3.13 from any other event is a regression.
+        # PRs run all full shards on 3.12; dropping 3.11/3.13 from any other event is a regression.
         python_matrix = (
             "        python: ${{ fromJSON(github.event_name == 'pull_request' && "
             "'[\"3.12\"]' || '[\"3.11\",\"3.12\",\"3.13\"]') }}"
