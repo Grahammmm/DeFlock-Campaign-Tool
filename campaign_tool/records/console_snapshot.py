@@ -14,7 +14,7 @@ import sys
 import threading
 from collections import namedtuple
 
-from . import approval_queue as aq, console_export as ce, console_holds, console_ocr, mail_drafts, mail_send, public_packets as pp, public_updates as pu
+from . import approval_queue as aq, console_cited_pages, console_export as ce, console_holds, console_ocr, mail_drafts, mail_send, public_packets as pp, public_updates as pu
 from .outcomes import unmatched
 
 MAX_MODEL = 64 * 1024 * 1024
@@ -93,7 +93,16 @@ class Pinner:
     def _pin(self):
         match = LINK.fullmatch(os.readlink(os.path.join(self.root, "current")))
         _need(match, "current_invalid")
-        name = match.group(1)
+        return self._named(match[1])
+
+    def historical(self, name):
+        """The Pin of one installed export chosen by name (never `current`). The same verification as a pin; it never
+        updates the good pin or last code and never falls back, so a broken export raises."""
+        _need(isinstance(name, str) and ce.NAME.fullmatch(name), "export_name_invalid")
+        with self.lock:
+            return self._named(name)
+
+    def _named(self, name):
         root_fd, fd = aq._open_chain(self.root), None
         try:
             _need(_private_dir(os.fstat(root_fd)), "export_root_unsafe")
@@ -199,6 +208,10 @@ class LiveSource:
         from . import console_followups
         return console_followups.read(self.project, run_id)
 
+    def cited_pages(self, run_id):
+        """The selected run's cited page text, computed live and read-only (DF2307-07)."""
+        return console_cited_pages.read(self.project, run_id)
+
 
 class SnapshotSource:
     """The same methods over <pin.path>/console-model/*.json; one instance serves one request."""
@@ -207,7 +220,7 @@ class SnapshotSource:
     def __init__(self, pin):
         self.pin, self._docs = pin, {}
 
-    def _load(self, name):
+    def _load(self, name, schema=ce.MODEL_SCHEMA):
         """The parsed ok model file, or the code it is unavailable with."""
         root = model = None
         try:
@@ -223,7 +236,7 @@ class SnapshotSource:
             for fd in (root, model):
                 if fd is not None:
                     os.close(fd)
-        if type(doc) is not dict or doc.get("schema") != ce.MODEL_SCHEMA or doc.get("state") not in ("ok", "unavailable"):
+        if type(doc) is not dict or doc.get("schema") != schema or doc.get("state") not in ("ok", "unavailable"):
             return "console_model_invalid"
         if doc.get("source_project_id") != self.pin.source_project_id:
             return "console_model_mismatch"
@@ -356,3 +369,15 @@ class SnapshotSource:
         if isinstance(doc, str):
             return console_followups.unavailable(run_id)
         return doc if console_followups.validate(doc, run_id) is not None else console_followups.unavailable(run_id)
+
+    def cited_pages(self, run_id):
+        """Only the pinned cited-pages.json: the checked ok model or {'state': 'unavailable', 'code'} (an older export:
+        console_model_missing); never a live read."""
+        if run_id != self.pin.run_id:
+            return console_cited_pages.unavailable("console_model_mismatch")
+        if console_cited_pages.NAME not in self._docs:
+            self._docs[console_cited_pages.NAME] = self._load(console_cited_pages.NAME, console_cited_pages.SCHEMA)
+        doc = self._docs[console_cited_pages.NAME]
+        if isinstance(doc, str):
+            return console_cited_pages.unavailable(doc)
+        return console_cited_pages.validate(doc, run_id) or console_cited_pages.unavailable("console_model_invalid")

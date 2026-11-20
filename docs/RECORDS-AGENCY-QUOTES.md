@@ -50,3 +50,21 @@ The three options go together; without them only Q1/Q2 run (and `records agency-
 failing quote, first applicable of `source_unsupported` (message or missing pinpoint), `ledger_missing`,
 `pinpoint_mismatch`, `original_mismatch`, `method_invalid`, `claim_unverified`. Exit 1 on hits, 2 for a refused
 or malformed input.
+
+## Lint receipt (DF2222-11)
+
+`records agency-lint DRAFT --agency-dir DIR ... --receipt OUT` also writes a new 0600 `records-agency-lint-receipt-v1` JSON: the
+SHA-256 of the exact draft bytes (pass the extracted letter body, not the markdown), a configuration fingerprint (each
+lint name with its module `RULES_VERSION`, plus the `--agency` option), one SHA-256 or `not given` per fixed input role
+(`team_list`, `allow`, `agencies`, `quote_ledger`, `inventory`, `ask_inventory`, `asks`, `events`, `package`, `pages`,
+`originals`, `playbook`), each lint result (`pass`, `fail` with a hit count, or `skipped` with a fixed reason; a text-only
+quote run is `skipped q3_not_run`) and `created_at`. Never a path, name or matched text. Bump a lint module's `RULES_VERSION`
+whenever its rules change. In receipt mode an incomplete run exits 3; an operational error, an existing OUT, or an input
+that changes during the run writes nothing and exits 2. Inputs must stay stable while the lints run.
+
+`records agency-draft-export --lint-receipt FILE` takes the same input options, recomputes the body hash, the configuration
+fingerprint and every role hash from the current files, and refuses with `LINT_RECEIPT_STALE` (reason `body_changed`,
+`config_changed`, `input_changed:ROLE`, `input_added:ROLE` or `input_missing:ROLE`) or `LINT_RECEIPT_UNVERIFIABLE` (unreadable
+input, unknown schema/lint/role, malformed hash). A verified receipt puts `agency lints: passed|failed|incomplete (at export;
+checked TIME; ...)` in front of the draft's `why`, so `/review` shows it (no schema change); without a receipt the draft says
+`agency lints: not run`. A receipt is a mechanical record, not an approval or a signature.

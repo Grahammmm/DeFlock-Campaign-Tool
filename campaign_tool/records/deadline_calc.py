@@ -1,7 +1,9 @@
 """Private, read-only, cited register dates; arithmetic is not legal acceptance."""
 import argparse
+from datetime import date, timedelta
 import hashlib
 import json
+import re
 import sys
 
 from .. import law
@@ -11,6 +13,34 @@ from .outcomes.register import _day, _roll_weekend
 RULE = "ca-gov-7922.535-determination-and-extension-2026"
 CAVEAT = ("Provisional reminder date: receipt, holiday last-day rules and extension-notice "
           "requirements are not checked. Not a legal finding.")
+# Register with a custodian holiday list: the list is the custodian's, not the law package's.
+CUSTODIAN_CAVEAT = ("Provisional reminder date: receipt and extension-notice requirements are not checked; "
+                    "holidays come from the custodian's list, not the law package, and dates stay "
+                    "provisional. Not a legal finding.")
+INVALID_CAVEAT = ("Provisional reminder date: the custodian's holiday list was invalid and not used (weekends "
+                  "only); receipt and extension-notice requirements are not checked. Not a legal finding.")
+
+
+def _caveat(state):
+    return CAVEAT if state == "absent" else INVALID_CAVEAT if state == "invalid" else CUSTODIAN_CAVEAT
+
+
+def _holidays(register, row):
+    """(state, dates) from this run's embedded list snapshot; dates is None when 'used' data is unusable."""
+    snap, state = register.get("holiday_list"), row.get("holiday_list", "absent")
+    if snap is None and state == "absent":
+        return "absent", frozenset()
+    if isinstance(snap, dict) and snap.get("state") == state == "invalid":
+        return "invalid", frozenset()
+    try:
+        dates, prefix = snap["dates"], snap["sha256_prefix"]
+        days = [date.fromisoformat(d) for d in dates if re.fullmatch(r"\d{4}-\d{2}-\d{2}", d)]
+        if (snap["state"] == state == "used" and len(days) == len(dates) <= 1000 and dates == sorted(set(dates))
+                and re.fullmatch(r"[0-9a-f]{12}", prefix) and row.get("holiday_list_sha256_prefix") == prefix):
+            return "used", frozenset(days)
+    except (KeyError, TypeError, ValueError):
+        pass
+    return "used", None
 
 
 def deadlines(register, package, package_sha256):
@@ -24,6 +54,7 @@ def deadlines(register, package, package_sha256):
                   encoded["day_type"]) == (10, 14, "calendar")
     out = []
     for row in register["requests"]:
+        state, holidays = _holidays(register, row)
         clock = row.get("deadline") or {}
         # Current register exports the chosen normalized start, not the raw receipt/send fields.
         start = _day(row.get("request_date"))
@@ -47,15 +78,17 @@ def deadlines(register, package, package_sha256):
                 label = "UNVERIFIED"
             elif start:
                 expected = law.deadline(package, start, extension=extension)
-                if value != _roll_weekend(expected).isoformat():
+                rolled = _roll_weekend(expected, holidays or ())
+                if holidays is None or value != rolled.isoformat():
                     issues.append("computed_mismatch")
                     label = "UNVERIFIED"
                 elif value != expected.isoformat():
-                    note += "; weekend-rolled"
+                    crossed = any(expected + timedelta(days=n) in holidays for n in range((rolled - expected).days))
+                    note += "; holiday-rolled (custodian list)" if crossed else "; weekend-rolled"
             elif value:
                 issues.append("computed_mismatch")
                 label = "UNVERIFIED"
-            dates[name] = {"date": value, "label": label, "note": note, **provenance}
+            dates[name] = {"date": value, "label": label, "note": note, **provenance, "caveat": _caveat(state)}
         promise = (row.get("promised") or {}).get("date")
         out.append({"agency": row["agency"], "agency_key": row["agency_key"], "request_id": row["request_id"],
                     "received": received, **dates,
@@ -84,7 +117,9 @@ def main():
     if args.as_json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
     else:
-        print("Private; REVIEW REQUIRED. " + CAVEAT)
+        snap = register.get("holiday_list")
+        print("Private; REVIEW REQUIRED. " + _caveat("absent" if snap is None else
+                                                      snap.get("state") if isinstance(snap, dict) else "used"))
         print("Date\tLabel\tWhat\tAgency\tRequest\tNotes / source")
         for row in rows:
             for what in ("received", "determination_due", "extension_limit", "promised"):

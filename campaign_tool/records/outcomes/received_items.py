@@ -208,11 +208,12 @@ def deadlines(units, received_at):
     return unique
 
 
-def _current_units(db, processing, subject, paged=True):
+def _current_units(db, processing, subject, paged=True, *, page_rows=False):
     """Current extraction units, hash-bound like factsheets.collect.
 
     -> (units, diagnostics, review_status). A missing extraction is a diagnostic;
-    a corrupt binding raises ValueError (stable refusal).
+    a corrupt binding raises ValueError (stable refusal). `page_rows` (DF2307-07) adds the already-checked
+    manifest row of the unit's page as `page_row`; the default result is unchanged.
     """
     current = db.execute("SELECT i.id,i.manifest_json,i.manifest_sha256 FROM extraction_adapter_current c "
                          "JOIN extraction_adapter_imports i ON i.id=c.import_id AND i.original_sha256=c.original_sha256 "
@@ -259,10 +260,11 @@ def _current_units(db, processing, subject, paged=True):
             if "page_locator_unavailable" not in diagnostics and payload["kind"] != "email_headers":
                 diagnostics.append("page_locator_unavailable")
             continue
-        _need(any(p.get("page_no") == pages[0] for p in manifest.get("pages", []) if isinstance(p, dict)),
-              "received_items_page_not_in_manifest")
+        row = next((p for p in manifest.get("pages", []) if isinstance(p, dict) and p.get("page_no") == pages[0]), None)
+        _need(row is not None, "received_items_page_not_in_manifest")
         units.append({"page": pages[0], "ordinal": ordinal, "unit_id": unit["id"], "text": payload["text"],
-                      "text_sha256": unit["text_sha256"], "payload_sha256": digest})
+                      "text_sha256": unit["text_sha256"], "payload_sha256": digest,
+                      **({"page_row": row} if page_rows else {})})
     review = manifest.get("review_status") if isinstance(manifest.get("review_status"), str) else "not_reviewed"
     return units, diagnostics, review
 
