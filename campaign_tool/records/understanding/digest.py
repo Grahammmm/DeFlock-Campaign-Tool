@@ -323,9 +323,9 @@ def project(*, run_id, detector_results, requests, request_provenance, source_bi
             candidates[name] = value
         anchor = reminder.get("anchor") or {}
         anchor_cite = anchor.get("citation", {}) if type(anchor) is dict else {}
-        if any(candidates.values()) and not any(
+        if any(candidates.values()) and (type(anchor_cite) is not dict or not any(
                 c["message_sha256"] == anchor_cite.get("message_sha256") and
-                c["message_id_sha256"] == digest(anchor_cite.get("message_id")) for c in cited):
+                c["message_id_sha256"] == digest(anchor_cite.get("message_id")) for c in cited)):
             reasons.append("reminder_citation_unresolved")
         if reasons:
             candidates = {name: None for name in candidates}
