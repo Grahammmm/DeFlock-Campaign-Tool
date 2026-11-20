@@ -92,6 +92,7 @@ COMMANDS = {
     "comparison-worksheet": ("comparison_worksheet", "main"),
     "quiescence-audit": ("quiescence_audit", "main"),
     "units-diff": ("units_diff", "main"),
+    "outcomes-diff": ("outcomes.changes", "main"),
 }
 
 
