@@ -946,7 +946,7 @@ _MODULES = {
     "records pipeline: ledger, objects, review queues, runner state; listed unknown at runtime": """
         records.schedule_snapshot records.site_prs records.draft_promote records.agency_draft_export
         records.admin_panel records.agency_reconciliation records.agency_run.events_ingest records.agency_run.evidence_index records.agency_run.pages records.analysis_bridge records.analysis_config records.analysis_packets records.approval_queue records.arrival records.arrival_summary records.bounded_resume records.catalog records.catalog_links records.finding_review records.finding_review_apply
-        records.catalog_stage records.console_calendar records.console_documents records.console_export records.contained_resume records.e2e_proof records.container_host records.export_clearance
+        records.catalog_stage records.comparison_worksheet records.console_calendar records.console_documents records.console_export records.contained_resume records.e2e_proof records.container_host records.export_clearance
         records.extract.ocr records.extract.vision records.extraction_ledger records.extraction_routes records.first_request records.agency_policy_matrix records.agency_response_sheet
         records.gates.batch_report records.gates.collect_reviews records.gates.reconcile_coverage
         records.gates.safe_output records.gates.validate_findings records.intake.document_drop
@@ -1110,6 +1110,7 @@ MODULE_FUNCTIONS = {
     'records.ledger.store': ('capture_database', 'initialize',),
     'records.ledger_catalog': ('_write_new', 'export',),
     'records.console_calendar': ('main', 'serve',),  # main --ics writes one owner-chosen 0600 file; serve answers GET only
+    'records.comparison_worksheet': ('_write', 'main',),  # one new 0600 worksheet in a safe existing directory outside the checkout, store and project; candidates are reviewed facts, no store write, sends nothing
     'records.console_documents': ('main',),  # --html writes one new owner-chosen review file (open mode x); read-only otherwise, sends nothing
     'records.console_export': (
         '_backup_ledger', '_copy_file', '_unpack', '_write_fd', 'build', 'export_main', 'install', 'write_model', 'write_tar',
