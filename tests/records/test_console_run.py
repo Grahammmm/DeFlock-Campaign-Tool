@@ -32,6 +32,10 @@ def make(i, kind):
         data.update(overall_status="warn", review_required_count=1)
     if kind == "pending":
         data["stages"][7].update(status="skipped", error_code="NOTIFY_PENDING", duration_seconds=None)
+    if kind == "unwritable":
+        data["stages"][6].update(status="warn", error_code="OUTPUTS_APPROVAL_QUEUE_UNWRITABLE")
+        data["needs_g"] = [{"code": "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE", "stage": "outputs", "severity": "action", "count": 1}]
+        data.update(overall_status="warn", review_required_count=1)
     return data
 
 
@@ -127,6 +131,15 @@ class RunDetail(unittest.TestCase):
                       "for information, 1 | ZZZ_NEW_GAP_CODE: no description yet: needs action, 2", got)
         self.assertEqual(console_codes.explain("<script>x</script>"), "Unrecognised code: no description yet")
         self.assertEqual(console_codes.explain(None), "Unrecognised code: no description yet")
+
+    # Owner: the outputs queue code. Fails if the new stage code is hidden or shown without its operator sentence.
+    def test_unwritable_queue_code_shows_the_operator_sentence(self):
+        self.put("unwritable")
+        sentence = ("The records runner cannot write the approval queue folder; an operator must create it with the "
+                    "runner as owner.")
+        got = self.lines(0)[7]
+        self.assertIn("7. outputs: warn | %s (OUTPUTS_APPROVAL_QUEUE_UNWRITABLE)" % sentence, got)
+        self.assertIn("%s (OUTPUTS_APPROVAL_QUEUE_UNWRITABLE): needs action, 1" % sentence, got)
 
     # Owner: notify wording. Fails if a pending or skipped notification is described as sent.
     def test_pending_notification_is_not_called_sent(self):
