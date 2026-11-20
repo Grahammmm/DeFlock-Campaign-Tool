@@ -1,5 +1,6 @@
 """FLK-CMP-1: records campaign-readiness is a read-only, private inventory with fixed codes."""
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -16,6 +17,9 @@ from campaign_tool.records import campaign_readiness, cli
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "examples" / "fictional-campaign" / "content"
 SENTINEL = "SENTINEL-PRIVATE-7731"
+ABSENT = "every policy comparison row will be unknown"
+BASE_TEXT_SHA = "9e358965fa4e00b07804534b6c7693a12c1b13f5842dd526c2af97eb62ce71a7"
+BASE_JSON_SHA = "c60a6f2d57de1543c8895363acc57b6da3516710f614096a1b378093d4589077"
 HEADER = ("agency,system,vendor,data_layer,stated_period,period_days,bound,source_kind,quote,doc_sha256,page,"
           "confidence,checked")
 
@@ -268,8 +272,10 @@ class SloShapedTests(Base):
         self.assertEqual((city["analysis_profile"], town["analysis_profile"]), ("proposed", "missing"))
         self.assertEqual((report["law_package"], report["portal_approval"]), ("draft", "present"))
         self.assertTrue(all(v == "present" for v in report["campaign_fields"].values()))
-        self.assertEqual(sorted(report), ["agencies", "campaign_fields", "issues", "law_package", "portal_approval", "schema",
-                                          "starter_files", "writable"])
+        self.assertEqual(sorted(report), ["agencies", "campaign_fields", "comparison_input", "issues", "law_package",
+                                          "portal_approval", "schema", "starter_files", "writable"])
+        self.assertEqual(report["comparison_input"], {"state": "absent", "message": ABSENT})
+        self.assertTrue(text.stdout.endswith("comparison_input: state=absent; message=" + ABSENT + "\n"))
         self.assertEqual(report["writable"], {"run-outputs": "present_writable", "approvals": "missing_creatable"})
         self.assertNotIn("READINESS_OUTPUTS_UNWRITABLE", self.codes(report))
         self.assertIn("writable: run-outputs=present_writable approvals=missing_creatable\nlaw_package:", text.stdout)
@@ -348,6 +354,66 @@ class SloShapedTests(Base):
         self.assertEqual({r["analysis_profile"] for r in report["agencies"]}, {"not_configured"})
         self.assertNotIn("READINESS_PROFILE_MISSING", self.codes(report))
         self.assertIn("READINESS_ANALYSIS_ROOT_UNSPECIFIED", self.codes(report))
+
+
+    def sheets(self, text):
+        write(self.project / "agency-fact-sheets.json", text)
+
+    def block(self):
+        report, code = self.report()
+        text = self.run_cli()
+        self.assertEqual((code, text.returncode, text.stderr), (0 if "READINESS_OUTPUTS_UNWRITABLE" not in self.codes(report) else 1,) * 2 + ("",))
+        line = text.stdout.splitlines()[-1]
+        self.assertEqual(line, "comparison_input: " + "; ".join("%s=%s" % kv for kv in report["comparison_input"].items()))
+        return report["comparison_input"]
+
+    def test_comparison_input_absent_reports_unknown_rows(self):
+        self.slo()
+        before = snapshot(self.project)
+        self.assertEqual(self.block(), {"state": "absent", "message": ABSENT})
+        self.assertEqual(before, snapshot(self.project))
+        self.assertFalse((self.project / "agency-fact-sheets.json").exists())
+
+    def test_comparison_input_present_valid_counts_only_literal_confirmations(self):
+        self.slo()
+        self.sheets(json.dumps({"schema": "records-agency-fact-sheets-v1", "agencies": [
+            {"agency_id": "ca-slo-county", "private_note": SENTINEL, "facts": {
+                "a": {"applicability_confirmed": True}, "b": {"applicability_confirmed": False},
+                "c": {"applicability_confirmed": "yes"}, "d": "text"}},
+            {"agency_id": "ca-slo-city", "facts": {}, "requests": [{"request_id": "r1", "applicability_confirmed": True}]}]}))
+        before = snapshot(self.project)
+        self.assertEqual(self.block(), {"state": "present_valid", "agency_count": 2, "confirmed_field_count": 1})
+        self.assertNotIn(SENTINEL, self.run_cli().stdout)
+        self.assertEqual(before, snapshot(self.project))
+
+    def test_comparison_input_duplicate_key_is_invalid(self):
+        self.slo()
+        self.sheets('{"schema": "records-agency-fact-sheets-v1", "agencies": [], "agencies": [], "note": "%s"}' % SENTINEL)
+        self.assertEqual(self.block(), {"state": "invalid", "code": "comparison_input_invalid"})
+        self.assertNotIn(SENTINEL, self.run_cli().stdout)
+
+    def test_comparison_input_symlink_is_invalid(self):
+        self.slo()
+        target = self.tmp / "target.json"
+        write(target, json.dumps({"schema": "records-agency-fact-sheets-v1", "agencies": []}))
+        os.symlink(target, self.project / "agency-fact-sheets.json")
+        before = snapshot(self.project, self.tmp / "target.json")
+        self.assertEqual(self.block(), {"state": "invalid", "code": "comparison_unsafe_path"})
+        self.assertEqual(before, snapshot(self.project, self.tmp / "target.json"))
+        with mock.patch.object(campaign_readiness.comparison, "_load", side_effect=OSError(13, SENTINEL, str(self.tmp))):
+            self.assertEqual(campaign_readiness._comparison_input(self.project),
+                             {"state": "invalid", "code": "comparison_input_invalid"})
+
+    def test_comparison_input_leaves_existing_report_unchanged(self):
+        self.slo(ids=("ca-test-alpha", "ca-test-beta", "ca-test-gamma"))
+        report, code = self.report()
+        text = self.run_cli()
+        self.assertEqual((code, text.returncode, text.stderr), (0, 0, ""))
+        report.pop("comparison_input")
+        lines = text.stdout.splitlines(keepends=True)
+        self.assertTrue(lines.pop().startswith("comparison_input: "))
+        self.assertEqual(hashlib.sha256("".join(lines).encode()).hexdigest(), BASE_TEXT_SHA)
+        self.assertEqual(hashlib.sha256(json.dumps(report, sort_keys=True).encode()).hexdigest(), BASE_JSON_SHA)
 
 
 class CedarProjectInitTests(Base):
