@@ -153,6 +153,9 @@ def _observation(number, rule, stage, report, codes, outputs_codes):
         for code in OUTPUT_FAILURES.get(number, ()) + OVERWRITE:
             if code in outputs_codes:
                 return "not proven", code, None
+        # An unrecognized code (a future or unknown failure) is never nonblocking; stay conservative.
+        for code in sorted(outputs_codes - set(OUTPUT_WARNINGS) - set(OVERWRITE)):
+            return "not proven", code, None
         return "proven" if rule.receipt else NO_RECEIPT, None, None
     if warning in rule.masks:
         return "masked", warning, warning

@@ -148,6 +148,21 @@ class GOLiveStagesTests(unittest.TestCase):
                 self.assertIsNone(rows["13"]["last_proven_run"])
                 self.assertEqual(rows["13"]["masked_by"], mask)
 
+    def test_full_list_unknown_outputs_code_is_never_proven(self):
+        # Contract: an unrecognized outputs action code stays conservative on the full-list path, as on the legacy
+        # path. Bug: treating it as "no own failure" proved stages 9-14 despite a future/unknown failure.
+        unknown = "OUTPUTS_NEW_WARNING"
+        for hour, first, needs in ((6, unknown, ((unknown, "outputs", "action"),)),
+                                   (7, APPROVAL, ((APPROVAL, "outputs", "action"), (unknown, "outputs", "action")))):
+            with self.subTest(first=first):
+                self.report(hour, first, needs=needs)
+                rows = self.rows()
+                for number in map(str, range(9, 16)):
+                    row = rows[number]
+                    self.assertEqual((row["basis"], row["last_proven_run"]), ("full-list", None), number)
+                    self.assertNotEqual(row["state"], "proven", number)
+                    self.assertIsNone(row["masked_by"], number)
+
     def test_external_and_missing_evidence_are_never_proven(self):
         # An umbrella ok cannot promote external stages, OCR from a ledger snapshot, the engine step or the findings lane.
         self.report(6, ocr=0)
