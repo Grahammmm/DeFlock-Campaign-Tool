@@ -147,9 +147,9 @@ def derive(register, received, names, folded, rows):
             conflicts += [dict(c, request_id=row["request_id"], row=number) for c in bad]
             for field, value, source in found:
                 cells.setdefault((number, field), []).append((value, source))
-        elif hit and item.get("request_id") in (None, ""):
+        elif item.get("request_id") in (None, ""):
             conflicts.append({"code": "reply_without_request_id", "item_ids": [item["item_id"]]})
-        elif hit:
+        else:
             conflicts.append({"code": "reply_unmatched", "item_ids": [item["item_id"]]})
     out_rows, proposals = [list(r) for r in rows], []
     for (number, field), found in sorted(cells.items()):

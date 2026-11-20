@@ -172,6 +172,16 @@ class TrackerProposalProducerTests(unittest.TestCase):
         self.assertIn(("reply_unmatched", None), codes)
         self.assertEqual(by["26-4"]["extension"], "yes")
 
+    def test_replies_without_overlapping_occurrence_are_still_reported(self):
+        # Contract: a no-id or unmatched reply is a conflict even when its occurrence ids hit no eligible row.
+        self.assertEqual(self.run_it([
+            item(2, "denial", request=None, oid="zz-none"),
+            item(3, "denial", request="L-98", oid="zz-other", agency="ag1"), item(4, "extension")]), 0)
+        doc = self.bundle()[0]
+        codes = [c["code"] for c in doc["conflicts"]]
+        self.assertIn("reply_without_request_id", codes)
+        self.assertIn("reply_unmatched", codes)
+
     def test_only_unrecorded_arrivals_are_eligible_and_failures_leave_no_bundle(self):
         self.assertEqual(self.run_it([item(2, "denial")], state="none", blank4=False), 0)
         self.assertEqual(self.bundle()[0]["proposals"], [])
