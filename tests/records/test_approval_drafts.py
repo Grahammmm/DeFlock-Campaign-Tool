@@ -1,8 +1,10 @@
 """Cited reply drafts: selection, exact citations, no-send guarantee, CLI and the outputs-stage seam."""
 import contextlib
+import errno
 import io
 import json
 import os
+import shutil
 import socket
 import sqlite3
 import stat
@@ -256,6 +258,10 @@ class QueueTests(Base):
             aq.load_queue(self.root)
         self.assertEqual(caught.exception.code, "queue_invalid")
         self.assertEqual(journal.read_bytes(), before + b'{"schema"')  # preserved, not repaired
+        with self.assertRaises(aq.ApprovalQueueError) as writer:  # a writer refuses it too, as a bad format, not a denial
+            aq.queue_received_items(self.root, "run-2", self.write(received([item(2, "extension")], "run-2"), "run-2"))
+        self.assertEqual(writer.exception.code, "queue_invalid")
+        self.assertEqual(journal.read_bytes(), before + b'{"schema"')
 
     def test_unsafe_store_is_refused(self):
         aq.queue_received_items(self.root, "run-1", self.write(received([item(1, "extension")])))
@@ -273,6 +279,89 @@ class QueueTests(Base):
         symlinked.symlink_to(self.root)
         with self.assertRaises(aq.ApprovalQueueError):
             aq.load_queue(symlinked)
+
+    # Contract: a writer's permission or read-only denial is queue_unwritable (DF2222-02), other I/O stays queue_io, and a
+    # reader's mapping is unchanged. Fails if a denial still reads queue_invalid, the lock-create denial is swallowed
+    # as a lost race (it then surfaces as queue_io), or a reader starts reporting queue_unwritable.
+    def inject(self, name, number, call="open", when=lambda flags: True):
+        real = getattr(os, call)
+
+        def fake(path, *args, **kwargs):
+            if path == name and (call == "mkdir" or when(args[0])):
+                raise OSError(number, os.strerror(number))
+            return real(path, *args, **kwargs)
+        return mock.patch.object(os, call, fake)
+
+    def test_writer_denials_are_unwritable_and_other_io_is_not(self):
+        source = self.write(received([item(2, "extension")], "run-2"), "run-2")
+        first = self.write(received([item(1, "extension")]))
+        creating, rdonly = (lambda f: bool(f & os.O_CREAT)), (lambda f: f & os.O_ACCMODE == os.O_RDONLY)
+        cases = (("empty", "approvals", "mkdir", None), ("full", "approvals", "open", None),
+                 ("dir", ".lock", "open", creating), ("full", ".lock", "open", lambda f: not f & os.O_CREAT),
+                 ("full", "queue.jsonl", "open", rdonly), ("full", "queue.jsonl", "open", lambda f: f & os.O_WRONLY))
+        for n, (state, name, call, when) in enumerate(cases):
+            for number, code in ((errno.EACCES, "queue_unwritable"), (errno.EPERM, "queue_unwritable"),
+                                 (errno.EROFS, "queue_unwritable"), (errno.EIO, "queue_io")):
+                with self.subTest(case=n, errno=number):
+                    project = Path(self.tmp.name) / f"case{n}-{number}"
+                    project.mkdir(mode=0o700)
+                    if state == "dir":
+                        (project / "approvals").mkdir(mode=0o700)
+                    elif state == "full":
+                        aq.queue_received_items(project, "run-1", first)
+                    with self.inject(name, number, call, when or (lambda flags: True)):
+                        with self.assertRaises(aq.ApprovalQueueError) as caught:
+                            aq.queue_received_items(project, "run-2", source)
+                        self.assertEqual(caught.exception.code, code)
+        for n in (1, 3, 4):  # a reader keeps the old mapping for the same denial
+            project = Path(self.tmp.name) / f"case{n}-{errno.EACCES}"
+            name, when = cases[n][1], cases[n][3] or (lambda flags: True)
+            with self.subTest(reader=n), self.inject(name, errno.EACCES, "open", when):
+                with self.assertRaises(aq.ApprovalQueueError) as caught:
+                    aq.load_queue(project)
+                self.assertEqual(caught.exception.code, "queue_invalid")
+
+    def test_lost_lock_creation_race_is_still_recovered(self):
+        real, source = os.open, self.write(received([item(1, "extension")]))
+        (self.root / "approvals").mkdir(mode=0o700)
+
+        def racing(path, flags, *args, **kwargs):
+            if path == ".lock" and flags & os.O_CREAT:
+                real(path, flags, *args, **kwargs)  # the other writer's lock lands first
+                raise FileExistsError(errno.EEXIST, "exists")
+            return real(path, flags, *args, **kwargs)
+        with mock.patch.object(os, "open", racing):
+            self.assertEqual(aq.queue_received_items(self.root, "run-1", source)["created"], 1)
+
+    def test_unsafe_entry_stays_invalid_even_when_the_open_is_denied(self):
+        source = self.write(received([item(1, "extension")]))
+        second = self.write(received([item(2, "extension")], "run-2"), "run-2")
+        target = Path(self.tmp.name) / "target"
+        target.mkdir(mode=0o700)
+        (self.root / "approvals").symlink_to(target)
+        for denied in (False, True):
+            with self.subTest(symlink=True, denied=denied):
+                with self.inject("approvals", errno.EACCES) if denied else contextlib.nullcontext():
+                    with self.assertRaises(aq.ApprovalQueueError) as caught:
+                        aq.queue_received_items(self.root, "run-1", source)
+                self.assertEqual(caught.exception.code, "queue_invalid")
+                self.assertEqual(list(target.iterdir()), [])  # nothing was written through the link
+        (self.root / "approvals").unlink()
+        aq.queue_received_items(self.root, "run-1", source)
+        os.chmod(self.root / "approvals", 0o755)
+        for denied in (False, True):
+            with self.subTest(mode=0o755, denied=denied):
+                with self.inject("approvals", errno.EACCES) if denied else contextlib.nullcontext():
+                    with self.assertRaises(aq.ApprovalQueueError) as caught:
+                        aq.queue_received_items(self.root, "run-2", second)
+                self.assertEqual(caught.exception.code, "queue_invalid")
+        os.chmod(self.root / "approvals", 0o700)
+        for denied in (False, True):
+            with self.subTest(owner=True, denied=denied), mock.patch.object(os, "geteuid", lambda: os.getuid() + 1):
+                with self.inject("approvals", errno.EACCES) if denied else contextlib.nullcontext():
+                    with self.assertRaises(aq.ApprovalQueueError) as caught:
+                        aq.queue_received_items(self.root, "run-2", second)
+                self.assertEqual(caught.exception.code, "queue_invalid")
 
     def test_invalid_inputs_append_nothing(self):
         aq.queue_received_items(self.root, "run-1", self.write(received([item(1, "extension")])))
@@ -402,6 +491,44 @@ class OutputsSeamTests(StageTestCase):
         with mock.patch.object(aq, "queue_received_items", side_effect=run_stages.StageTimeout()):
             code, parsed, _ = self.seam(doc)
         self.assertEqual((code, parsed["error_code"]), (1, "STAGE_CONTAINER_TIMEOUT"))  # not swallowed as a warning
+
+    # Contract: only queue_unwritable gets the new stage code; every other failure keeps the old one. Fails if a
+    # format fault or a busy queue is reported as unwritable, or a denial stays the generic code or leaks its text.
+    def test_only_an_unwritable_queue_gets_the_unwritable_code(self):
+        doc = received([item(1, "extension")], run_id="run-1")
+        for queue_code, expected in (("queue_unwritable", "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE"),
+                                     ("queue_invalid", "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"),
+                                     ("queue_io", "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE")):
+            with self.subTest(queue_code=queue_code), \
+                    mock.patch.object(aq, "queue_received_items", side_effect=aq.ApprovalQueueError(queue_code)):
+                code, parsed, raw = self.seam(doc)
+            self.assertEqual((code, parsed["status"], parsed["error_code"]), (0, "warn", expected))
+            self.assertEqual([i["code"] for i in parsed["needs_g"]].count(expected), 1)
+            self.assertNotIn(queue_code, raw)
+
+    # Contract: a project the runner cannot write (the live root-owned project) reads as unwritable through the real
+    # queue and the real outputs stage, while the reader still sees an empty queue. Fails if the denial is reported
+    # as a format fault. Needs real permission checks, so it cannot run as root.
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_read_only_project_reports_unwritable_queue(self):
+        doc = received([item(1, "extension")], run_id="run-1")
+        self.seam(doc)  # fixture, output descendants and a current received-items file
+        shutil.rmtree(self.project / "approvals")
+        os.chmod(self.project, 0o500)
+        try:
+            with self.assertRaises(aq.ApprovalQueueError) as caught:
+                aq.queue_received_items(self.project, "run-1",
+                                        self.project / "run-outputs" / "run-1" / "outcomes" / "received-items.json")
+            self.assertEqual(caught.exception.code, "queue_unwritable")
+            self.assertEqual(aq.load_queue(self.project), [])
+            code, parsed, raw = self.seam(doc)
+        finally:
+            os.chmod(self.project, 0o700)
+        self.assertEqual((code, parsed["status"], parsed["error_code"]), (0, "warn", "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE"))
+        codes = [i["code"] for i in parsed["needs_g"]]
+        self.assertEqual(codes.count("OUTPUTS_APPROVAL_QUEUE_UNWRITABLE"), 1)
+        self.assertNotIn("OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE", codes)
+        self.assertFalse((self.project / "approvals").exists())
 
 
 if __name__ == "__main__":

@@ -55,6 +55,7 @@ UNAVAILABLE = {
     "queue_unavailable": "The approval queue could not be read.",
     "queue_invalid": "The approval queue is not in the expected format.",
     "queue_io": "The approval queue could not be read.",
+    "queue_unwritable": "The records runner cannot write the approval queue folder; an operator must create it with the runner as owner.",
     "sends_unreadable": "The sent-mail results could not be read.",
     "send_results_invalid": "The sent-mail results are not valid (send_results_invalid); export again after checking the journal.",
     "send_io": "The sent-mail results could not be read (send_io); export again after checking the journal.",

@@ -22,6 +22,7 @@ HISTORICAL_OCR = "historical only: OCR pages in ledger snapshot, not per-run pro
 # DIGEST_UNRESOLVED is special: it overwrites any earlier additive warning.
 OUTPUT_WARNINGS = (
     "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE",
+    "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE",
     "OUTPUTS_UNMATCHED_UNAVAILABLE",
     "OUTPUTS_MODEL_ADVICE_UNAVAILABLE",
     "OUTPUTS_REGISTER_UNAVAILABLE",
@@ -42,7 +43,7 @@ REGISTER = "OUTPUTS_REGISTER_UNAVAILABLE"
 OUTPUT_FAILURES = {
     "11": ("OUTPUTS_GAP_PROPOSALS_UNAVAILABLE",),
     "12": (REGISTER, "OUTPUTS_RESPONSE_ITEMS_UNAVAILABLE", "OUTPUTS_TIMELINE_UNAVAILABLE"),
-    "13": ("OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE",),
+    "13": ("OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE", "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE"),
     "14": ("OUTPUTS_FOLLOWUP_SETTINGS_INVALID", "OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE", REGISTER),
     "15": ("OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE",),
 }
@@ -82,7 +83,7 @@ STAGES = {
     "12": Stage("Received items, timeline, register", "outputs", after("OUTPUTS_TIMELINE_UNAVAILABLE"),
                 tuple(code for code in before("OUTPUTS_TIMELINE_UNAVAILABLE")
                       if code != "OUTPUTS_REGISTER_UNAVAILABLE") + OVERWRITE),
-    "13": Stage("Reply drafts to approval queue", "outputs", after("OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"), OVERWRITE),
+    "13": Stage("Reply drafts to approval queue", "outputs", after("OUTPUTS_APPROVAL_QUEUE_UNWRITABLE"), OVERWRITE),
     # A register failure skips the follow-up clock entirely; that's a blocker, not masking.
     "14": Stage("No-response follow-up drafts", "outputs", after("OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE"),
                 before("OUTPUTS_REGISTER_UNAVAILABLE") + OVERWRITE),
