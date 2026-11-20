@@ -80,6 +80,17 @@ sent and no model matches messages.
 A stale `comparison.json` (other run id), corrupt hashes, an unsafe path, or a conflicting existing
 `received-items.json` fail the stage with `OUTPUTS_WRITE_FAILED`; an identical replay is a no-op.
 
+## Offline outcomes diff (DF1117L-13)
+
+`records outcomes-diff --previous DIR --current DIR [--json]` compares two `run-outputs/<run_id>` folders (read-only,
+stdout only, nothing written) as `records-outcome-changes-v1`: fact statements added/removed (agency, field, document
+sha256 prefix, page), comparison rows whose status or reason changed, register requests whose state, due date or
+determination changed, received items added, gap proposals added/removed. Only ids, codes and 12-hex prefixes are
+printed, never a quote or name. A section whose file is missing, invalid or of another schema on either side prints
+`unavailable: <side>_<code>`, never `no changes`. The previous run must have started strictly earlier by its engine run
+id (not mtime); otherwise the command prints `refused: <code>` and exits 1. Statements are matched by source position, so an
+edited quote at the same page is not reported.
+
 ## Offline check
 
 ```sh
