@@ -227,17 +227,70 @@ class Comparison(unittest.TestCase):
 
 
 class WorkflowContract(unittest.TestCase):
+    DRAFT_GUARD = "(github.event_name != 'pull_request' || github.event.pull_request.draft == false)"
+
+    def test_pull_request_workflows_skip_drafts_and_keep_required_contexts(self):
+        import yaml  # Installed by detect-secrets in requirements-records-test.txt.
+
+        # A new unguarded job (even an always() roll-up) would run on every draft.
+        types = ['opened', 'synchronize', 'reopened', 'ready_for_review', 'converted_to_draft']
+        # Frozen branch-protection contexts; pin each producer, not just the union
+        # (the separate offline.yml workflow is not the offline roll-up).
+        required = {
+            'records.yml': {'affected': tuple(f'affected ({n})' for n in range(5)),
+                            'offline': ('offline (3.12)',), 'pin-guard': ('pin-guard',)},
+            'runner.yml': {'runner': ('runner',), 'image': ('image',)},
+            'campaign-install.yml': {'wheel': ('wheel',)},
+            'workers.yml': {'workers': ('workers',)},
+            'records-release.yml': {'package': ('package (3.12)',)},
+            'records-recovery.yml': {'recovery-composition': ('recovery-composition (3.12)',)},
+            'records-wp5.yml': {'wp5': ('wp5 (3.12)',)},
+        }
+        producers_seen = set()
+        workflow_dir = ci_affected.ROOT / '.github/workflows'
+        for path in sorted([*workflow_dir.glob('*.yml'), *workflow_dir.glob('*.yaml')]):
+            with self.subTest(workflow=path.name):
+                # BaseLoader preserves GitHub's literal 'on' key and version strings.
+                workflow = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
+                events = workflow['on']
+                if 'pull_request' not in ((events,) if isinstance(events, str) else events):
+                    continue
+                pr = events.get('pull_request') if isinstance(events, dict) else None
+                if not isinstance(pr, dict):
+                    self.fail('pull_request must declare its activity types')
+                self.assertEqual(pr.get('types'), types)
+                for job, spec in workflow['jobs'].items():
+                    with self.subTest(job=job):
+                        condition = spec.get('if', '').removeprefix('${{').removesuffix('}}').strip()
+                        self.assertRegex(condition, '^' + re.escape(self.DRAFT_GUARD) + r'(?: && \([^\n]+\))?$')
+                        contexts = required.get(path.name, {}).get(job)
+                        if contexts is None:
+                            continue
+                        producers_seen.add((path.name, job))
+                        matrix = spec.get('strategy', {}).get('matrix', {})
+                        names = {spec.get('name', job)}
+                        if (path.name, job) == ('records.yml', 'offline'):
+                            # The exact dynamic PR/non-PR axis is pinned below.
+                            self.assertEqual(set(matrix), {'python'})
+                            matrix = {'python': ['3.12']}
+                        if matrix and 'name' not in spec:
+                            self.assertEqual(len(matrix), 1, 'required matrix must have one axis')
+                            (values,) = matrix.values()
+                            self.assertIsInstance(values, list)
+                            names = {f'{job} ({value})' for value in values}
+                        self.assertLessEqual(set(contexts), names)
+        self.assertEqual(producers_seen, {(workflow, job) for workflow, jobs in required.items() for job in jobs})
+
     def test_bounded_matrices_coverage_and_gates(self):
         text = (ci_affected.ROOT / '.github/workflows/records.yml').read_text()
         blocks = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', text, re.M | re.S))
         fast_event = "github.event_name == 'pull_request' || github.event_name == 'merge_group'"
-        for name, event, tier, shards, timeout in (('affected', fast_event, 'pr', 5, 20),
-                                                 ('full', None, 'full', 2, 35)):
+        for name, condition, tier, shards, timeout in (
+            ('affected', f'{self.DRAFT_GUARD} && ({fast_event})', 'pr', 5, 20),
+            ('full', self.DRAFT_GUARD, 'full', 2, 35),
+        ):
             block = blocks[name]
-            if event:
-                self.assertIn('    if: ' + event, block)
-            else:
-                self.assertNotRegex(block, r'(?m)^    if:')
+            self.assertIn('    if: ' + condition, block.splitlines())
             self.assertIn(f'    timeout-minutes: {timeout}\n', block)
             self.assertIn(f'    strategy:\n      fail-fast: false\n      max-parallel: {shards if name == "affected" else 6}\n      matrix:', block)
             self.assertIn('        shard: ' + str(list(range(shards))), block)
@@ -251,7 +304,8 @@ class WorkflowContract(unittest.TestCase):
         for name in ('full', 'offline'):
             with self.subTest(matrix=name):
                 self.assertIn(python_matrix, blocks[name].splitlines())
-        for required in ('needs: [affected, full]', 'if: always()', '${{ needs.affected.result }}',
+        self.assertIn(f'    if: {self.DRAFT_GUARD} && (always())', offline.splitlines())
+        for required in ('needs: [affected, full]', '${{ needs.affected.result }}',
                          '${{ needs.full.result }}', 'tools/check_public_tree.py',
                          'tools/check_pin_guard.py --all', 'tools/ci_affected.py --self-test'):
             self.assertIn(required, offline)
