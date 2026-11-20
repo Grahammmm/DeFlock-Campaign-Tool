@@ -23,6 +23,7 @@ from .outcomes import release_links as _rl
 from .outcomes import timeline as _tl
 from .outcomes.reading import BANNER, esc
 from . import console_layout, console_followups
+from . import console_page_comparison as _pc, console_page_facts as _pf
 
 FILTERS = {"all": "All", "overdue": "Overdue", "waiting": "Waiting on agency", "ours": "Ball in our court",
            "closed": "Closed"}
@@ -417,7 +418,45 @@ def render_agency(model, agency):
         out.append("</section>")
     out.extend(_tie_section(model, agency))
     out.extend(_agency_sections(model, agency))
+    if "facts_policy" in model:
+        out.append(_facts_policy_section(model["facts_policy"], agency))
     return "\n".join(out + ["</main></body></html>"]) + "\n"
+
+
+def facts_policy(options):
+    """Both DF1117L readers over the pinned run; each half fails alone as None (shown 'unknown')."""
+    halves = []
+    for reader in (_pf.load_facts, _pc.load_comparison):
+        try:
+            loaded = reader(options["project"], options["run_id"])
+            halves.append(loaded["report"] if loaded.get("state") == "ok" else None)
+        except Exception:
+            halves.append(None)
+    return {"facts": halves[0], "comparison": halves[1]}
+
+
+def _facts_policy_section(summary, agency):
+    absent = "not in this run's file"
+    facts, comparison = summary["facts"], summary["comparison"]
+    if facts is None:
+        fact_line = "unknown"
+    else:
+        sheet = next((a for a in facts["agencies"] if a["agency_id"] == agency), None)
+        fact_line = absent if sheet is None else "%d of %d fields have supported statements" % (
+            sum(1 for f in sheet["fields"].values() if f["statements"]), len(sheet["fields"]))
+    lines = []
+    if comparison is None:
+        policy_line = "unknown"
+    else:
+        found = _pc.counts([r for r in comparison["rows"] if r["agency_id"] == agency]).get(agency)
+        policy_line = absent if found is None else ", ".join("%s %d" % (k, found[k]) for k in _pc.STATUSES)
+        if comparison["input_status"] == "fact_sheets_missing":
+            lines.append("<p>%s</p>" % esc(_pc.NO_INPUT))
+    link = urllib.parse.quote(agency, safe="")
+    return ('<section aria-label="Facts and policy"><h2>Facts and policy</h2><p>Fact sheets: %s</p><p>Policy comparison: %s</p>%s'
+            '<p><a href="%s">Fact sheets</a> <a href="%s">Policy comparison</a></p></section>' % (
+                esc(fact_line), esc(policy_line), "".join(lines),
+                esc("/facts?agency=" + link), esc("/comparison?agency=" + link)))
 
 
 def tie_links(handler):
@@ -568,5 +607,6 @@ def serve(handler):
             model["followups"] = options["source"].followup_reading(options["run_id"])
         except Exception:
             model["followups"] = None
+        model["facts_policy"] = facts_policy(options)
     handler._send(200, render_board(model, today, which) if parts.path == "/board" else render_agency(model, agency))
     return True
