@@ -1,8 +1,7 @@
-"""Run the ask, citation and quote lints and the banned-phrase check on one draft.
+"""Run the ask, citation, quote and outgoing-letter lints and the banned-phrase check on one draft.
 
 A mechanical check only: nothing is written, hit text is never printed, G still reads the draft.
 """
-import argparse
 import contextlib
 import importlib
 import io
@@ -11,13 +10,14 @@ import sys
 from pathlib import Path
 
 from .. import playbook
+from .lint_out import QuietParser
 
 MAX_DRAFT = 2 * 1024 * 1024
 # "12:4 Q1 ..." (quotes) or "draft line 12 ask 3: code" / "draft line 12: code" (asks, cites).
 _HIT = re.compile(r"^(?:draft line (\d+)|(\d+(?::\d+)?)\s)")
 
 
-def _asks(draft, agency, package):
+def _asks(draft, agency, opts):
     missing = [name for name in ("inventory", "asks", "events")
                if not (agency / (name + ".tsv")).exists()
                and not (agency / (name + ".tsv")).is_symlink()]
@@ -26,7 +26,8 @@ def _asks(draft, agency, package):
     return None, ["--draft", draft, "--agency-dir", str(agency)]
 
 
-def _cites(draft, agency, package):
+def _cites(draft, agency, opts):
+    package = opts.package
     if not package or (not Path(package).exists() and not Path(package).is_symlink()):
         return "no package", None
     path = Path(package)
@@ -37,11 +38,19 @@ def _cites(draft, agency, package):
     return None, ["--draft", draft, "--package", str(package)]
 
 
-def _quotes(draft, agency, package):
+def _quotes(draft, agency, opts):
     pages = agency / "pages"
     if not pages.is_dir() or not any(pages.glob("*_p[0-9][0-9][0-9]*.txt")):
         return "no pages", None
     return None, ["--draft", draft, "--pages", str(pages)]
+
+
+def _out(draft, agency, opts):
+    if not opts.team_list:
+        return "no team list", None
+    if not opts.allow:
+        return "no allow file", None
+    return None, ["--draft", draft, "--team-list", opts.team_list, "--allow", opts.allow]
 
 
 # Fixed order. Each entry: name, module, input check returning (skip reason, argv).
@@ -49,6 +58,7 @@ _LINTS = [
     ["asks", "lint_asks", _asks],
     ["cites", "lint_cites", _cites],
     ["quotes", "lint_quotes", _quotes],
+    ["out", "lint_out", _out],
 ]
 
 
@@ -94,10 +104,12 @@ def _banned(text):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="records agency-lint", description=__doc__)
+    parser = QuietParser(prog="records agency-lint", description=__doc__, refusal="refused agency_lint_input")
     parser.add_argument("draft")
     parser.add_argument("--agency-dir", required=True)
     parser.add_argument("--package")
+    parser.add_argument("--team-list")
+    parser.add_argument("--allow")
     args = parser.parse_args(argv)
     draft, agency = Path(args.draft), Path(args.agency_dir)
     try:
@@ -109,7 +121,7 @@ def main(argv=None):
         return 2
     results = []
     for name, module, check in _LINTS:
-        reason, lint_argv = check(str(draft), agency, args.package)
+        reason, lint_argv = check(str(draft), agency, args)
         results.append((name, "skipped: " + reason if reason else _run(module, lint_argv)))
     try:
         results.append(("banned phrases", _banned(text)))
