@@ -203,8 +203,8 @@ class RealAgencyLintAllTests(unittest.TestCase):
         self.draft = self.root / "draft.md"
         self.draft.write_text("1. Please send existing records.\n")
 
-    def run_real(self, package=None, team=False):
-        argv = [str(self.draft), "--agency-dir", str(self.agency), "--package", str(package or self.package)]
+    def run_real(self, package=None, team=False, extra=()):
+        argv = [str(self.draft), "--agency-dir", str(self.agency), "--package", str(package or self.package), *extra]
         if team:
             (self.root / "team.txt").write_text("Jordan Testname\n")
             (self.root / "allow.txt").write_text("records@agency.example.org\n")
@@ -269,6 +269,39 @@ class RealAgencyLintAllTests(unittest.TestCase):
         self.assertIn("message quotes not checked against pages", out)
         self.assertIn("no visual check", out)
         self.assertNotIn("fabricated message wording", out + err)
+
+    def test_q3_group_forwarding_and_coverage(self):
+        quote = "records are held for two years"
+        original = b"synthetic original bytes"
+        (self.root / "orig").mkdir()
+        (self.root / "orig" / "DOC1.pdf").write_bytes(original)
+        digest = hashlib.sha256(original).hexdigest()
+        inv = ["doc_id title received_date source pages sha256 text_layer tier request_ref notes".split(),
+               ["DOC1", "DOC1.pdf", "2026-01-01", "DOC1.pdf", "1", digest, "native", "unclassified", "r", ""]]
+        (self.root / "pages-inventory.tsv").write_text("".join("\t".join(r) + "\n" for r in inv))
+        (self.agency / "pages" / "DOC1_p001.txt").write_text("=== DOC1 p.1 ===\n" + quote + " today\n")
+        self.draft.write_text('1. Please send records.\n"%s" (DOC1 p.1)\n' % quote)
+        quote_id = "2:1:" + hashlib.sha256(quote.encode()).hexdigest()
+        row = [quote_id, "DOC1", "1", digest, "native-reextract", "", "VERIFIED-ORIGINAL", "records-reviewer",
+               "2026-11-19T10:00:00-08:00"]
+        ledger = self.root / "quote-verify.tsv"
+        header = "quote_id doc_id page original_sha256 method render_sha256 verdict checked_by checked_at".split()
+        ledger.write_text("\t".join(header) + "\n" + "\t".join(row) + "\n")
+        extra = ["--quote-ledger", str(ledger), "--inventory", str(self.root / "pages-inventory.tsv"),
+                 "--original-root", str(self.root / "orig")]
+        code, out, err = self.run_real(team=True)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("Q3 original-page ledger not run", out)
+        code, out, err = self.run_real(team=True, extra=extra)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("quotes: pass; text check only; no visual check of page images; Q3 ledger consistency only", out)
+        ledger.write_text("\t".join(header) + "\n")
+        code, out, err = self.run_real(team=True, extra=extra)
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("quotes: FAIL, 1 hits, first 2:1; text check only", out)
+        self.assertNotIn(quote, out + err)
+        code, out, err = self.run_real(team=True, extra=extra[:2])
+        self.assertEqual((code, out.strip()), (2, "refused agency_lint_input"))
 
     def test_message_quote_coverage_is_not_misrepresented(self):
         self.draft.write_text('1. Please send existing records.\n"this is fabricated wording" (msg M1),\n')
