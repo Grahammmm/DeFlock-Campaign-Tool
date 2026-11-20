@@ -50,6 +50,43 @@ class ExportTests(Base):
         self.assertEqual(self.out().stat().st_mode & 0o777, 0o700)
         self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in self.out().iterdir()))
 
+    def test_manifest_size_preflight_preserves_previous_export(self):
+        ident = self.written()
+        out = self.out()
+        bridge.export_changes(self.project, out)
+        previous = bridge.read_export(out)
+        before = {path.name: path.read_bytes() for path in out.iterdir()}
+
+        ids = {ident}
+        for i in range(7):
+            added = self.approved(doc(source=f"synthetic-doc-{i}"))
+            pp.write_change(self.project, added, now=T0)
+            ids.add(added)
+        self.assertEqual(len(ids), 8)
+        reference = out.with_name("reference")
+        bridge.export_changes(self.project, reference)
+        manifest_bytes = (reference / bridge.MANIFEST).read_bytes()
+        limit = len(manifest_bytes) - 1
+        self.assertTrue(all(path.stat().st_size <= limit for path in reference.glob("*-r0.json")))
+
+        # A late check could leave new change files behind, even if it never replaces the manifest.
+        missing = out.with_name("missing-parent") / "export"
+        with mock.patch.object(bridge, "MAX_CHANGE", limit):
+            for destination in (out, missing):
+                with self.subTest(destination=destination), mock.patch.object(
+                    bridge.tempfile, "mkstemp", wraps=bridge.tempfile.mkstemp
+                ) as make_temp:
+                    self.assertEqual(self.code(bridge.export_changes, self.project, destination), "file_too_large")
+                    make_temp.assert_not_called()
+            self.assertFalse(missing.parent.exists())
+            self.assertEqual({path.name: path.read_bytes() for path in out.iterdir()}, before)
+            self.assertEqual(bridge.read_export(out), previous)
+
+        with mock.patch.object(bridge, "MAX_CHANGE", len(manifest_bytes)):
+            self.assertEqual(bridge.export_changes(self.project, out), {"exported": 7, "existing": 1, "active": 8})
+            self.assertEqual((out / bridge.MANIFEST).read_bytes(), manifest_bytes)
+            self.assertEqual({change["packet"] for change in bridge.read_export(out)}, ids)
+
     def test_superseded_written_revision_not_active_even_if_old_export_remains(self):
         ident = self.written()
         bridge.export_changes(self.project, self.out())

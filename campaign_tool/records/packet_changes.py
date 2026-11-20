@@ -95,18 +95,23 @@ def export_changes(project, out):
             prepared.append((name, raw))
 
     pp._reading(str(project), True, collect, lambda: None)
+    prepared.sort()
+    manifest = {"schema": MANIFEST_SCHEMA, "changes": [
+        {"file": name, "sha256": hashlib.sha256(raw).hexdigest()} for name, raw in prepared]}
+    manifest_bytes = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+    # Refuse an export the reader cannot load before even creating the output directory.
+    pp._need(len(manifest_bytes) <= MAX_CHANGE, "file_too_large")
+
     out_path = directory(out_path, create=True)
     pp._need(not out_path.stat().st_mode & 0o077, "export_not_private")
-    # Preflight collisions before writing anything. No overwrite on same id+rev.
+    # Preflight collisions before writing change files. No overwrite on same id+rev.
     new = []
-    for name, raw in sorted(prepared):
+    for name, raw in prepared:
         existing = pp._read(out_path / name, MAX_CHANGE)
         pp._need(existing is None or existing == raw, "export_conflict")
         if existing is None:
             new.append((name, raw))
-    manifest = {"schema": MANIFEST_SCHEMA, "changes": [
-        {"file": name, "sha256": hashlib.sha256(raw).hexdigest()} for name, raw in sorted(prepared)]}
-    writes = new + [(MANIFEST, (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode())]
+    writes = new + [(MANIFEST, manifest_bytes)]
     for name, raw in writes:
         # Publish complete files only. A crash can leave an ignored private temp,
         # never a partial final. The active manifest is replaced atomically last.
