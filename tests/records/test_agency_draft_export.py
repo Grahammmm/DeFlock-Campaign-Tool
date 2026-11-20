@@ -340,7 +340,7 @@ class LintReceiptExportTests(Base):
         good = json.loads(receipt.read_text("utf-8"))
         bad = {"schema": {**good, "schema": "records-agency-lint-receipt-v2"},
                "lint": {**good, "results": {**good["results"], "mystery": {"status": "pass"}}},
-               "hash": {**good, "body_sha256": "xyz"}, "role": {**good, "inputs": {**good["inputs"], "secret_role": "not given"}}}
+               "hash": {**good, "body_sha256": "xyz"}, "role": {**good, "inputs": {**good["inputs"], "extra_role": "not given"}}}
         paths = {}
         for name, doc in bad.items():
             paths[name] = self.root / (name + ".json")
