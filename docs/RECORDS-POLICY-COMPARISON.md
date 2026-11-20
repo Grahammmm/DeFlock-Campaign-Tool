@@ -2,7 +2,7 @@
 
 Words only: this guide runs nothing, installs nothing, sends nothing and publishes nothing.
 
-Checked against `main` commit `342cc0b06f4f40510aa12b17a7b7c8e7bed6f67c`, which includes `records comparison-input` (DF1117L-09).
+Checked against `main` commit `48bd7f46ade2268290abe5582ae53959dc3ab0e1`, which includes `records comparison-input` (DF1117L-09).
 After later changes to the comparison code, re-walk every command, option, file and page below and update this line before relying on it.
 
 ## 1. What `comparison.json` is, and is not
