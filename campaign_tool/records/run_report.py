@@ -8,7 +8,6 @@ semantic acceptance of the run.
 
 import json
 import math
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,9 +43,13 @@ def check_outcomes(outcomes, counts, where="outcomes"):
 # without a coded gap). A recorded [] is a measured zero-input stage; absent means unavailable.
 GAP_STAGES = ("delta", "adoption")
 GAP_NONE, GAP_OTHER, MAX_GAP_CODES = "GAP_NONE", "OTHER", 32
-_WIRE = re.compile(r"[A-Z][A-Z0-9_]{2,63}")
-_SOURCE = re.compile(r"[a-z][a-z0-9_]*")
-_SUFFIX = re.compile(r"[A-Z][A-Z0-9_]*")
+_LOWER, _UPPER = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_"), frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+
+
+def _token(text, chars, shortest=1):
+    """Full match of ``[A-Za-z][chars]*`` (the report code grammar, no regex), 64 characters at most."""
+    return (isinstance(text, str) and shortest <= len(text) <= 64 and set(text) <= chars
+            and text[0] not in "0123456789_")
 
 
 def _count(value):
@@ -65,7 +68,7 @@ def gap_partition(report, accepted):
     blocked, receipts = report.get("unaccepted_coded_gaps") or {}, report.get("receipts")
     if not (isinstance(gaps, dict) and isinstance(blocked, dict) and _count(total) and _count(receipts)):
         return None
-    if not all(type(key) is str and _SOURCE.fullmatch(key) and _count(value) for key, value in gaps.items()):
+    if not all(type(key) is str and _token(key, _LOWER) and _count(value) for key, value in gaps.items()):
         return None
     if sum(gaps.values()) != total or total > receipts or any(not _count(v) for v in blocked.values()):
         return None
@@ -75,7 +78,7 @@ def gap_partition(report, accepted):
     for key, value in gaps.items():
         prefix = "GA" if key in accepted else "GB"
         wire = f"{prefix}_{key.upper()}"
-        if value and (key.upper() == GAP_OTHER or not _WIRE.fullmatch(wire)):
+        if value and (key.upper() == GAP_OTHER or not _token(wire, _UPPER, 3)):
             other[prefix] += value
         elif value:
             named.append((wire, value))
@@ -98,7 +101,7 @@ def _gap_rows(outcomes):
             raise ValueError("gap partition: count must be a positive integer")
         if code == GAP_NONE:
             continue
-        if code[:3] not in ("GA_", "GB_") or not _SUFFIX.fullmatch(code[3:]) or not _WIRE.fullmatch(code):
+        if code[:3] not in ("GA_", "GB_") or not _token(code[3:], _UPPER) or not _token(code, _UPPER, 3):
             raise ValueError("gap partition: not a gap code")
         suffix = code[3:]
         if suffix != GAP_OTHER:
