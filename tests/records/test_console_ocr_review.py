@@ -72,6 +72,29 @@ class OcrBase(Apply):
 
     # ---- helpers ------------------------------------------------------------------------------------------------
 
+    def write_citations(self, run, cited, root=None):
+        """Producer-shaped same-run fact sheet and gap proposals that cite page 1 of the document `cited` three times: two
+        statements, one document proposal (also named in review_list) and one ledger-only proposal that cites no page."""
+        root = root or self.live
+        outputs = root / "run-outputs" / run
+        items = json.loads((outputs / "outcomes" / "received-items.json").read_text())
+        received = (ri._canon(items) + "\n").encode()
+        (outputs / "outcomes" / "received-items.json").write_bytes(received)  # the producer writes canonical JSON
+        cite = lambda: {"citation": {"document_sha256": cited, "page": 1, "unit_id": "u1"}, "quote": "q"}
+        sheets = {"schema": "records-agency-factsheets-v1", "run_id": run, "agencies": [{"agency_id": AGENCY, "fields": {
+            "contract": {"status": "S", "statements": [cite()]}, "cost": {"status": "S", "statements": [cite()]},
+            "vendor": {"status": "NOT FOUND", "statements": []}}}]}
+        item = next(i["item_id"] for i in items["items"] if i["original_sha256"] == cited)
+        gaps = {"schema": "records-gap-proposals-v1", "run_id": run, "received_items_sha256": hashlib.sha256(received).hexdigest(),
+                "review_list": ["p-doc"], "agencies": [{"agency_id": AGENCY, "requests": [{"request_id": "rq1", "proposals": [
+                    {"proposal_id": "p-doc", "evidence_kind": "document", "item_id": item, "page": 1},
+                    {"proposal_id": "p-ledger", "evidence_kind": "ledger_field", "item_id": None, "page": None}]}]}]}
+        (outputs / "agency-factsheets.json").write_text(json.dumps(sheets))
+        (outputs / "outcomes" / "gap-proposals.json").write_text(json.dumps(gaps))
+
+    def order(self, listing):
+        return re.findall(r'/ocr-review\?id=([0-9a-f]{64}-1)"', listing)
+
     def model(self):
         return json.loads((self.root / "current" / "console-model" / "ocr-pages.json").read_text())
 
@@ -156,6 +179,113 @@ class ListAndPage(OcrBase):
         self.assertIn("2 awaiting confirmation", page)
         self.assertNotIn("<form", self.get("/ocr-review?id=" + self.id_a))
         self.assertEqual(tree_state(self.live), before)
+
+    def cited_and_uncited(self):
+        """(cited, uncited) page ids: the cited page sorts second in today's hash order, so a pass proves the new order."""
+        (uncited, cited) = sorted((self.id_a, self.id_b))
+        self.write_citations(RUN, cited[:64])
+        return cited, uncited
+
+    def test_a_cited_page_is_listed_first_with_its_count_in_the_exported_console(self):
+        # protects: pending pages are ranked by same-run citations (2 statements + 1 document proposal; the ledger-only
+        # proposal and the review_list repeat add nothing); a hash-order-only list would put the uncited page first.
+        cited, uncited = self.cited_and_uncited()
+        self.make_export()
+        self.up()
+        listing = self.get("/ocr-review")
+        self.assertEqual(self.order(listing), [cited, uncited])
+        self.assertEqual(re.findall(r"cited by[:\w ]*?(?=<)", listing), ["cited by 3", "cited by 0"])
+        self.assertIn("cited by 3", self.get("/ocr-review?id=" + cited))
+        self.assertIn("cited by 0", self.get("/ocr-review?id=" + uncited))
+        self.assertEqual(sorted(self.forms(cited)), ["/ocr-review/confirm", "/ocr-review/reject"])  # the decision forms are as before
+        self.write_citations(RUN, uncited[:64])  # the live inputs change after sealing: the pinned export is what is shown
+        self.assertEqual(self.order(self.get("/ocr-review")), [cited, uncited])
+        self.assertIn("cited by 3", self.get("/ocr-review?id=" + cited))
+        self.assertEqual(self.post("reject", cited)[:2], (303, "/ocr-review"))  # a decision and its journal entry are unchanged
+        (entry,) = self.lines()
+        self.assertEqual((entry["route"], entry["action"], entry["target_id"]), ("/ocr-review/reject", "ocr_reject", cited))
+
+    def test_the_live_console_ranks_the_same_way_and_creates_nothing(self):
+        cited, uncited = self.cited_and_uncited()
+        server = ap.build_server(str(self.live), RUN, actor="operator", system=False)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (server.shutdown(), server.server_close(), thread.join()))
+        self.server = server
+        before = tree_state(self.live)
+        listing = self.get("/ocr-review")
+        self.assertEqual(self.order(listing), [cited, uncited])
+        self.assertIn("cited by 3", listing)
+        self.assertIn("cited by 3", self.get("/ocr-review?id=" + cited))
+        self.assertEqual(tree_state(self.live), before)
+        victim = self.live / "run-outputs" / RUN / "agency-factsheets.json"  # a symlinked source is refused, never followed
+        victim.rename(victim.with_name("real.json"))
+        victim.symlink_to("real.json")
+        listing = self.get("/ocr-review")
+        self.assertEqual(self.order(listing), sorted((self.id_a, self.id_b)))
+        self.assertEqual(listing.count("cited by: unknown"), 2)
+        self.assertNotIn("cited by 0", listing)
+
+    def test_unreadable_citation_source_keeps_old_list_order(self):
+        # protects: a source that cannot be read shows unknown and today's order, never 0 (which would claim "uncited").
+        cited, uncited = self.cited_and_uncited()
+        self.make_export(mutate=lambda dest: (dest / "run-outputs" / RUN / "agency-factsheets.json").write_text("{not json"))
+        self.up()
+        listing = self.get("/ocr-review")
+        self.assertEqual(self.order(listing), [uncited, cited])
+        self.assertEqual(listing.count("cited by: unknown"), 2)
+        self.assertNotRegex(listing, r"cited by \d")
+        self.assertIn("2 awaiting confirmation", listing)
+        page = self.get("/ocr-review?id=" + cited)
+        self.assertIn("cited by: unknown", page)
+        self.assertEqual(sorted(self.forms(cited)), ["/ocr-review/confirm", "/ocr-review/reject"])
+
+    def test_every_unusable_citation_input_makes_the_whole_index_unknown(self):
+        # protects: no partial counts; each way the inputs cannot be trusted gives None, a producer-shaped empty set gives zero.
+        cited, _ = self.cited_and_uncited()
+        outputs = self.live / "run-outputs" / RUN
+        gaps_path, sheet_path = outputs / "outcomes" / "gap-proposals.json", outputs / "agency-factsheets.json"
+        self.assertEqual(console_ocr._citations(self.live, RUN), {(cited[:64], 1): 3})
+
+        def with_(path, change):
+            doc = json.loads(path.read_text())
+            change(doc)
+            path.write_text(json.dumps(doc))
+            return console_ocr._citations(self.live, RUN)
+        proposal = lambda d: d["agencies"][0]["requests"][0]["proposals"][0]
+        statement = lambda d: d["agencies"][0]["fields"]["cost"]["statements"][0]["citation"]
+        cases = [("other run", sheet_path, lambda d: d.update(run_id="other")),
+                 ("bound to other items", gaps_path, lambda d: d.update(received_items_sha256="0" * 64)),
+                 ("unresolved item", gaps_path, lambda d: proposal(d).update(item_id="nope")),
+                 ("boolean page", gaps_path, lambda d: proposal(d).update(page=True)),
+                 ("bad hash", sheet_path, lambda d: statement(d).update(document_sha256="x")),
+                 ("page zero", sheet_path, lambda d: statement(d).update(page=0)),
+                 ("bad container", sheet_path, lambda d: d.update(agencies={}))]
+        for name, path, change in cases:
+            original = path.read_bytes()
+            self.assertIsNone(with_(path, change), name)
+            path.write_bytes(original)
+        empty = with_(sheet_path, lambda d: d["agencies"][0]["fields"]["cost"].update(statements=[]))
+        self.assertEqual(empty, {(cited[:64], 1): 2})
+        gaps_path.unlink()  # an absent source is unknown too
+        self.assertIsNone(console_ocr._citations(self.live, RUN))
+        with mock.patch.object(console_ocr, "CITE_CAP", 10):  # oversize
+            self.assertIsNone(console_ocr._citations(self.live, RUN))
+        self.assertIsNone(console_ocr._citations(self.live, "../x"))
+
+    def test_the_ranking_is_cited_count_then_lower_confidence_then_hash_and_page(self):
+        # protects the golden order: pending first by count desc, equal count by confidence asc (unrecorded last), then hash/page;
+        # decided rows keep hash/page order after the pending ones; unknown counts keep exactly today's order.
+        def row(sha, page, conf, state="pending"):
+            return {"id": "%s-%d" % (sha * 64, page), "original_sha256": sha * 64, "page_no": page, "confidence": conf,
+                    "state": state}
+        rows = [row("a", 1, None), row("b", 1, 90.0), row("b", 2, 40.0), row("c", 1, 40.0), row("d", 1, 10.0), row("1", 1, 99.0, "confirmed"),
+                row("0", 1, 5.0, "rejected")]
+        cites = {("d" * 64, 1): 1, ("c" * 64, 1): 2, ("b" * 64, 1): 2, ("a" * 64, 1): 2, ("1" * 64, 1): 9}
+        got = [(r["original_sha256"][0], r["page_no"]) for r in console_ocr._ranked(rows, cites)]
+        self.assertEqual(got, [("c", 1), ("b", 1), ("a", 1), ("d", 1), ("b", 2), ("0", 1), ("1", 1)])
+        got = [(r["original_sha256"][0], r["page_no"]) for r in console_ocr._ranked(rows, None)]
+        self.assertEqual(got, [("a", 1), ("b", 1), ("b", 2), ("c", 1), ("d", 1), ("0", 1), ("1", 1)])
 
 
 class Decisions(OcrBase):
