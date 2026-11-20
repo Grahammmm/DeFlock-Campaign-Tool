@@ -11,6 +11,7 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from . import run_report
 from .console_runs_model import _read_at
@@ -106,7 +107,12 @@ STAGES = {
 }
 
 
-def load_reports(directory):
+def load_reports(directory, *, now: datetime | None = None):
+    """Load stage evidence against one UTC cutoff; a naive injected time means UTC."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.utcoffset() is None:
+        now = now.replace(tzinfo=timezone.utc)
     schema = run_report.load_schema()
     reports = {}
     try:
@@ -120,6 +126,8 @@ def load_reports(directory):
             try:
                 report = _read_at(dir_fd, name)
                 run_report.validate_run_report(report, schema)
+                if run_report._parse_utc(report["finished_at"]) > now:
+                    raise ValueError("report finishes in the future")
             except OSError:
                 raise ValueError(f"{name!r}: unreadable report") from None
             except (ValueError, TypeError, KeyError, OverflowError):

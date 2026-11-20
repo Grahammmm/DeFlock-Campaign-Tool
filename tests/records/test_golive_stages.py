@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -235,6 +236,35 @@ class GOLiveStagesTests(unittest.TestCase):
         self.assertEqual(self.rows()["6"]["state"], "not proven")
         self.report(9, "OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE", ocr=2)
         self.assertEqual(self.rows()["6"]["state"], golive_stages.HISTORICAL_OCR)
+
+    def test_report_finish_cutoff_compares_instants(self):
+        # A missing cutoff accepts the future; >= rejects equality; wall-time comparison misreads offsets.
+        run_id = self.report(6)
+        finished = datetime(2026, 1, 1, 6, 7, 30, tzinfo=timezone.utc)
+        tick = timedelta(microseconds=1)
+        for clock_zone in (timezone.utc, timezone(timedelta(hours=5, minutes=30)),
+                           timezone(-timedelta(hours=8)), None):
+            for delta in (-tick, timedelta(0), tick):
+                with self.subTest(clock_zone=clock_zone, delta=delta):
+                    now = finished + delta
+                    now = now.astimezone(clock_zone) if clock_zone is not None else now.replace(tzinfo=None)
+                    if delta < timedelta(0):
+                        with self.assertRaisesRegex(ValueError, "invalid report"):
+                            golive_stages.load_reports(self.reports, now=now)
+                    else:
+                        reports = golive_stages.load_reports(self.reports, now=now)
+                        self.assertEqual([report["run_id"] for report in reports], [run_id])
+
+    def test_future_report_refuses_cli_proof_even_with_a_valid_sibling(self):
+        # A bad-clock run must fail the whole CLI read, not prove drafts or be silently skipped.
+        self.report(6)
+        self.report(7, name="future.json")
+        fixed = datetime(2026, 1, 1, 7, 7, 29, tzinfo=timezone.utc)
+        with patch.object(golive_stages, "datetime", create=True) as date_type:
+            date_type.now.side_effect = lambda tz: fixed.astimezone(tz)
+            code, out, err = self.invoke("--json")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("'future.json': invalid report", err)
 
     def test_module_output_is_stable_and_names_invalid_report(self):
         # Exercise the actual module entry point, stable order, and no leak via validator exception text.
