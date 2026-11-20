@@ -207,6 +207,7 @@ def _clocks(row, setting, today):
 
 HOLD_ARRIVAL = ("arrived_unrecorded", "unknown")  # answer_arrived.state (DF2307-01): a reply needs recording first
 RECORD_FIRST = "reply arrived; record it first"
+CHECK_REPLY_STATUS = "Reply status unclear; check the source"
 
 
 def _answer_unrecorded(row):
@@ -276,7 +277,8 @@ def reminder_status(register, settings, queue_rows, *, as_of):
             match = queued.get(pair) if pair in candidates else None
             state, reason = None, "No reminder draft queued"
             if _answer_unrecorded(row):
-                reason = RECORD_FIRST
+                reason = (CHECK_REPLY_STATUS if row["answer_arrived"]["state"] == "unknown"
+                          else RECORD_FIRST)
             elif closed:
                 state, reason = "closed", "Request closed"
             elif setting["autonomy"] != "draft":

@@ -699,7 +699,7 @@ class Reminders(unittest.TestCase):
         self.assertIn('Reminder status unavailable', page)
         self.assertNotIn('private detail', page)
 
-    def test_reminder_column_says_record_reply_first(self):
+    def test_reminder_column_distinguishes_confirmed_and_unknown_reply_status(self):
         from campaign_tool.records import followup_clock as fc
         from tests.records.test_followup_clock import row, doc
         requests = [self.request(s, due="2026-10-01", overdue="2026-10-01") for s in ("held", "unsure", "plain")]
@@ -711,7 +711,8 @@ class Reminders(unittest.TestCase):
         cal.put(self.project / fc.SETTINGS_FILE, {"schema": fc.SETTINGS_SCHEMA, "default": {"autonomy": "draft"}})
         model, page = self.page(requests)
         section = page.split('<section id="waiting">')[1].split('</section>')[0]
-        self.assertEqual(section.count('reply arrived; record it first'), 2)
+        self.assertEqual(section.count('reply arrived; record it first'), 1)
+        self.assertEqual(section.count('Reply status unclear; check the source'), 1)
         self.assertNotIn('Request needs checking', section)
         self.assertEqual(section.count('/review?id='), 0)
 

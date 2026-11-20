@@ -891,7 +891,7 @@ class AnswerUnrecorded(Base):
         self.assertEqual((out["created"], out["existing"], out["skipped_answer_unrecorded"]), (0, 1, 0))
         self.assertEqual([(r["id"], r["body"], r["status"]) for r in self.queued()], plain)
 
-    def test_reminder_status_says_record_it_first(self):
+    def test_reminder_status_distinguishes_confirmed_and_unknown_arrival(self):
         settings = self.settings_for()
         rows = [arrived("arrived_unrecorded", request="u"), arrived("unknown", "arrival_unresolved", request="k"),
                 arrived("none", request="n")]
@@ -900,7 +900,7 @@ class AnswerUnrecorded(Base):
         before = json.dumps([rows, settings, queue], sort_keys=True)
         result = fc.reminder_status(doc(rows), settings, queue, as_of=AS_OF)
         self.assertEqual([(r["request_id"], r["reason"]) for r in result],
-                         [("u", "reply arrived; record it first"), ("k", "reply arrived; record it first"),
+                         [("u", "reply arrived; record it first"), ("k", "Reply status unclear; check the source"),
                           ("n", "No reminder draft queued")])
         for r in result[:2]:
             self.assertIsNone(r["state"])
