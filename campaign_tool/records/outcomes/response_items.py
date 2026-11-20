@@ -123,7 +123,8 @@ def content_words(text):
 def sentences(text):
     """Exact-substring sentences of one page: newline and . ? ! boundaries."""
     out = []
-    for line in re.finditer(r"[^\n]+", text):
+    # Match nonempty lines in the original page, using str.splitlines boundaries.
+    for line in re.finditer(r"[^\r\n\v\f\x1c-\x1e\x85\u2028\u2029]+", text):
         raw, start = line.group(0), 0
         for bound in list(_BOUND.finditer(raw)) + [None]:
             end = bound.end() if bound else len(raw)
