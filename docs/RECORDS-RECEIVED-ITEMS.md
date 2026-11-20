@@ -38,7 +38,9 @@ the us-ca law package is draft and each finding says so.
 ## Comparison projection
 
 The existing comparison rating is copied unchanged (`meets`, `gap`, `unknown`); no second evaluator
-runs. A row attaches to an item only when the row's agency (and request, if the row names one) matches
+runs. Each comparison row's citation `baseline` is `jurisdictions/us-ca/package.json (<status>; sha256 <12 hex>)`,
+read from the installed package when the comparison is written, or `package unavailable` if it cannot be read and
+validated; this is package metadata, not legal acceptance. A row attaches to an item only when the row's agency (and request, if the row names one) matches
 the item and the row's `evidence` uses the admitted reference form:
 
 ```json

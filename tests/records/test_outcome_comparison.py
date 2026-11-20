@@ -3,12 +3,14 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from campaign_tool import law
 from campaign_tool.records import run_stages
 from campaign_tool.records.ledger.migrations import v001
 from campaign_tool.records.outcomes import comparison as c
@@ -160,6 +162,103 @@ class DocumentaryComparison(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 acceptance()
         acceptance()
+
+
+# Statute sections cited by comparison rows that jurisdictions/us-ca/package.json does not encode as a rule today.
+# Law data is a separate unit; an entry that becomes covered (or a new gap) must change this list.
+UNENCODED = {("Gov.", "6700"): "holiday designations referenced by the CPRA timing row, not encoded as a rule",
+             ("Gov.", "6800"): "time computation and last-day holiday cross-reference, not encoded as a rule"}
+
+
+def sections(text):
+    """(code family, base section number) pairs; subdivisions and parenthetical history are dropped."""
+    found, family = set(), None
+    for part in re.sub(r"\([^)]*\)", "", text).split(";"):
+        mention = re.search(r"\b(Civ|Gov|Veh)\. Code", part)
+        family = mention.group(1) if mention else family
+        number = re.search(r"§§?\s*(\d+(?:\.\d+)*)", part) or re.match(r"\s*(\d+(?:\.\d+)*)", part)
+        if number:
+            found.add((family + ".", number.group(1)))
+    return found
+
+
+def cited_sections():
+    rows = [r for r in report()["rows"] if r["field"] in c.CRITERIA or r["field"] == "cpra_response_deadline"]
+    return set().union(*(sections(r["citation"]["label"]) for r in rows))
+
+
+def uncovered(package):
+    covered = set().union(*(sections(rule["citation"]) for rule in package["rules"]))
+    return cited_sections() - covered
+
+
+class CitationBaseline(unittest.TestCase):
+    def package_file(self, **changes):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        package = json.loads(law.package_path("us-ca").read_text(encoding="utf-8"))
+        package.update(changes)
+        path = Path(tmp.name) / "package.json"
+        path.write_text(json.dumps(package), encoding="utf-8")
+        return path
+
+    def labels(self, path):
+        with patch.object(c.law, "package_path", return_value=path):
+            result = report()
+        self.assertTrue(any(r["field"] == "cpra_response_deadline" for r in result["rows"]))
+        self.assertTrue(any(r["reason"] == "unmapped_fact_sheet_field" for r in result["rows"]))
+        for r in result["rows"]:
+            self.assertTrue(r["needs_attorney_review"])
+            self.assertIs(r["legal_conclusion"], False)
+        self.assertIn("not a legal conclusion", result["disclaimer"])
+        return {r["citation"]["baseline"] for r in result["rows"]}, result
+
+    # Contract: every row's baseline names the status and revision of the package as read at run time. Bug: a
+    # hard-coded "(draft)" label survives a status change or a data-only package update.
+    def test_comparison_baseline_resolves_draft_and_reviewed_each_run(self):
+        shipped = law.package_path("us-ca").read_bytes()
+        expected = "jurisdictions/us-ca/package.json (draft; sha256 %s)" % hashlib.sha256(shipped).hexdigest()[:12]
+        self.assertEqual({r["citation"]["baseline"] for r in report()["rows"]}, {expected})
+        path = self.package_file()
+        draft = "jurisdictions/us-ca/package.json (draft; sha256 %s)" % hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        self.assertEqual(self.labels(path)[0], {draft})
+        path = self.package_file(status="reviewed", reviewed_by=["Synthetic Reviewer"], reviewed_at="2026-01-01")
+        reviewed = "jurisdictions/us-ca/package.json (reviewed; sha256 %s)" % hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        self.assertEqual(self.labels(path)[0], {reviewed})
+        self.assertNotEqual(draft, reviewed)
+
+    # Contract: a package that cannot be read and validated never yields a label; no path or error text leaks.
+    # Bug: falling back to "draft" for a missing package, or echoing the OSError path into stored output.
+    def test_comparison_baseline_unavailable_for_missing_or_unreadable_package(self):
+        good = self.package_file()
+        missing = good.with_name("absent.json")
+        corrupt = good.with_name("corrupt.json")
+        corrupt.write_text("{not json", encoding="utf-8")
+        bad_status = self.package_file(status="bogus")
+        no_reviewer = self.package_file(status="reviewed")
+
+        def unreadable():
+            raise PermissionError(str(good))
+        locked = SimpleNamespace(read_bytes=unreadable)
+        for name, path in (("missing", missing), ("unreadable", locked), ("corrupt", corrupt),
+                           ("invalid_status", bad_status), ("reviewed_without_reviewer", no_reviewer)):
+            with self.subTest(name):
+                labels, result = self.labels(path)
+                self.assertEqual(labels, {"package unavailable"})
+                self.assertNotIn(str(good.parent), json.dumps(result))
+
+    # Contract: base sections cited by CRITERIA and the CPRA row appear in a rule citation of the real package,
+    # apart from the two documented gaps. Bug: a corrected or dropped package section leaves stale cited rows.
+    def test_comparison_statute_sections_match_law_package(self):
+        cited = cited_sections()
+        self.assertIn(("Civ.", "1798.90.53"), cited)
+        self.assertIn(("Gov.", "7922.535"), cited)
+        self.assertEqual(uncovered(law.load_package("us-ca")), set(UNENCODED))
+
+    def test_comparison_statute_check_rejects_missing_section(self):
+        package = law.load_package("us-ca")
+        package["rules"] = [r for r in package["rules"] if ("Civ.", "1798.90.53") not in sections(r["citation"])]
+        self.assertEqual(uncovered(package), set(UNENCODED) | {("Civ.", "1798.90.53")})
 
 
 class CPRAComparison(unittest.TestCase):

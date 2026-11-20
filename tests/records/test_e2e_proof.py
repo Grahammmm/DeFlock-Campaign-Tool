@@ -14,6 +14,7 @@ from email.policy import SMTP
 from pathlib import Path
 from unittest import mock
 
+from campaign_tool import law
 from campaign_tool.records import approval_queue, e2e_proof, native_extract, notify_text, run_stages
 from tests.records.test_run_slice import synthetic_email
 
@@ -242,6 +243,10 @@ class SeededReplayTests(unittest.TestCase):
         comparison = self.outcome("seeded", "comparison.json")
         self.assertGreaterEqual(comparison["agency_count"], 1)
         self.assertEqual(comparison["input_status"], "fact_sheets_supplied")
+        # DF1117L-11: each row's citation baseline is the shipped package's status and sha256 prefix, read at run time.
+        label = "jurisdictions/us-ca/package.json (draft; sha256 %s)" % hashlib.sha256(
+            law.package_path("us-ca").read_bytes()).hexdigest()[:12]
+        self.assertEqual({r["citation"]["baseline"] for r in comparison["rows"]}, {label})
         gaps = self.outcome("seeded", "outcomes/gap-proposals.json")
         proposals = [p for a in gaps["agencies"] if a["agency_id"] == "ca-fictional-valley-pd"
                      for r in a["requests"] for p in r["proposals"]]

@@ -19,7 +19,7 @@ from tests.records.test_console_snapshot import Panel, RUN as EXPORT_RUN, RUN2, 
 
 NOW = datetime(2026, 11, 5, tzinfo=timezone.utc)
 SECTION = re.compile(r'<section id="system">.*?</section>\n', re.S)
-HOME_REST_SHA256 = "cb3f20874cf672ed5952c7ceecf9c8f13d96cf3e45a0fdab09a3a61b5c0513d4"  # pragma: allowlist secret (main's Home over Home.fixture, before DFCON17-12, plus the DF1117L-01 Policy comparison and DF1117L-02 Agency fact sheets More links; a page digest, not a credential)
+HOME_REST_SHA256 = "01eb92ee8d78e3a20170a04749a3c3d5d49219b1fb682aa4eb256411a5ced587"  # pragma: allowlist secret (main's Home over Home.fixture, before DFCON17-12, plus the DF1117L-01 Policy comparison, DF1117L-02 Agency fact sheets and GS2-DF-STAGES-PAGE Go-live stages More links; a page digest, not a credential)
 
 
 def put_received(project):
