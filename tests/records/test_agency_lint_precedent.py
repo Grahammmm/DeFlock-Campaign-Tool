@@ -88,6 +88,18 @@ class AgencyLintPrecedentTests(unittest.TestCase):
         self.assertEqual(self.run_lint("> Quote.\n# Agency B released logs.\n"), (1, "2 refusal L9_RELEASE_PRECEDENT\n", ""))
         self.assertEqual(self.run_lint("> Quote.\n- Agency B released logs.\n"), (1, "2 refusal L9_RELEASE_PRECEDENT\n", ""))
 
+    # Contract: only a quoted paragraph line can be lazily continued; text after a quoted heading, thematic break, fence or fenced code
+    # is outside the blockquote, so an authored release precedent there stays a refusal.
+    # Bug caught: treating any quoted block as lazy-continuable downgraded the author's own release sentence to a quote note.
+    def test_lazy_continuation_needs_a_quoted_paragraph(self):
+        for quote in ("> # Heading", "> ---", "> ***", "> ```", "> ```\n> code\n> ```", "> ```\n> code", "> ~~~\n> code\n> ~~~"):
+            with self.subTest(quote=quote):
+                line = quote.count("\n") + 2
+                self.assertEqual(self.run_lint(quote + "\nAgency B released logs.\n"), (1, "%d refusal L9_RELEASE_PRECEDENT\n" % line, ""))
+        # a quoted paragraph after a quoted heading or closed fence is a paragraph again and can be continued lazily
+        self.assertEqual(self.run_lint("> # Heading\n> Agency B\nreleased logs.\n"), (0, "2 note L9_QUOTED_PRECEDENT\n", ""))
+        self.assertEqual(self.run_lint("> ```\n> code\n> ```\n> Agency B\nreleased logs.\n"), (0, "4 note L9_QUOTED_PRECEDENT\n", ""))
+
     # Contract: bad input exits 2 with one fixed line and never echoes a value; a good run prints no name and writes nothing.
     def test_bad_input_never_echoes(self):
         fixed = (2, "", "refused agency_lint_precedent_input\n")

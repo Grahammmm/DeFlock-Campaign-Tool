@@ -25,6 +25,7 @@ QUOTE = re.compile(r"^\s*(?:>\s?)+")
 ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])\s")
 BOUNDARY = re.compile(r"[.?!]+[\"')\]]*(?=\s|$)")
 BLOCK = re.compile(r"\s{0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:[-*_]\s*){3,}$)")  # a line that cannot lazily continue a quote
+FENCE = re.compile(r"\s{0,3}(?:`{3,}|~{3,})")
 ABBREV = re.compile(r"(?:^|[\s(\[\"'])(?:vs|cf|mr|mrs|ms|dr|[a-z]{1,2}(?:\.[a-z]{1,2})+)$", re.I)  # never ends a sentence
 ABBREV_MID = re.compile(r"(?:^|[\s(\[\"'])(?:inc|ltd|llc|co|corp|dept|depts|dist|st|jr|sr|approx)$", re.I)  # ends one only before a capital
 LOWER = re.compile(r"\s+[a-z]")
@@ -75,15 +76,22 @@ def matcher(names, me):
 
 def runs(text):
     """-> [(quoted, one-line text, [(offset, line)])]: paragraphs and quote blocks, soft-wrapped lines joined by a space."""
-    out, cur = [], None
+    out, cur, lazy, fence = [], None, False, False
     for number, raw in enumerate(text.split("\n"), 1):
         quoted = bool(QUOTE.match(raw))
         body = QUOTE.sub("", raw, count=1) if quoted else raw
         if not body.strip():
-            cur = None
+            cur, lazy, fence = None, False, False
             continue
-        if not quoted and cur is not None and cur[0] and not ITEM.match(body) and not BLOCK.match(body):
-            quoted = True  # Markdown lazy continuation: an unmarked line directly after a quote line stays in the quote
+        if not quoted and cur is not None and cur[0] and lazy and not ITEM.match(body) and not BLOCK.match(body):
+            quoted = True  # Markdown lazy continuation: an unmarked line directly after a quoted paragraph line stays in the quote
+        elif quoted:
+            if FENCE.match(body):
+                fence = not fence
+            # only a quoted paragraph line (not a heading, rule, fence line or fenced code) can be continued lazily
+            lazy = not fence and not BLOCK.match(body)
+        else:
+            lazy, fence = False, False
         if cur is None or cur[0] != quoted or ITEM.match(body):
             cur = [quoted, [], [], 0]
             out.append(cur)
