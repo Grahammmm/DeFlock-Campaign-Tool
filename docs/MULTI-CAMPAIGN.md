@@ -175,6 +175,12 @@ package status (`draft`/`reviewed`) and whether a portal approval file exists. E
   `READINESS_OUTPUTS_UNWRITABLE` (exit 1). Nothing is created, written or changed; the repair is an operator creating the
   directory owned by the runner user with mode 0700.
 
+- A `comparison_input` block (also a final `comparison_input:` text line) says whether the policy comparison has anything to
+  work with, read through the comparison loader and never written: `absent` (no `agency-fact-sheets.json`; "every policy
+  comparison row will be unknown"), `present_valid` with `agency_count` and `confirmed_field_count` (the literal count of
+  fact entries whose `applicability_confirmed` is `true`, not verified evidence or a row outcome), or `invalid` with the
+  loader's fixed `code`. It is informational: no new issue, no exit change, and no permission to send or publish.
+
 ## Open question: the hosted workspace
 
 The hosted workspace is one campaign per deployment (`CAMPAIGN_ID` in `workers/workspace/src/env.ts`). Hosting several
