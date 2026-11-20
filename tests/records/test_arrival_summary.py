@@ -346,6 +346,130 @@ class ComposeTests(unittest.TestCase):
         text = self.notify.compose(report, "label", 0)
         self.assertNotIn("Came in", text)
         self.assertNotIn("pre-decision", text)
+        self.assertEqual(text, self.legacy_scheduled(report))
+
+    # DF2222-06: plain-words outputs failures and the queued-draft total.
+    ID = "run_20260101T060000Z_0a1b2c3d (test)"
+    FULL = {"received_items": 1, "message_links": 0, "followup_clock": 2, "followup_engine": 0, "next_steps": 0}
+
+    def coverage(self, report):
+        from campaign_tool.records import run_coverage
+        return run_coverage.format_coverage(run_coverage.coverage_counts(report))
+
+    def legacy_scheduled(self, report):
+        needs = len(report["needs_g"])
+        return (f"label: records run {self.ID} completed with warnings (portal PORTAL_RATE_LIMITED, "
+                f"digest_gates GATE_REVIEW_REQUIRED). Details are in the private run report. "
+                f"Needs G: {needs} item(s).\n" + self.coverage(report))
+
+    def scheduled(self, counts=None, outputs_code=None, needs_extra=(), valid=True):
+        report = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+        outputs = next(s for s in report["stages"] if s["name"] == "outputs")
+        if outputs_code:
+            outputs.update(status="warn", error_code=outputs_code)
+        report["needs_g"] += [{"code": c, "stage": "outputs", "severity": "action", "count": 1}
+                              for c in needs_extra]
+        if counts is not None:
+            report["draft_queue_counts"] = counts
+        if valid:
+            run_report.validate_run_report(report)
+        return report
+
+    def test_scheduled_outputs_summary_goldens(self):
+        warn = ("label: records run " + self.ID + " completed with warnings (portal PORTAL_RATE_LIMITED, "
+                "digest_gates GATE_REVIEW_REQUIRED, outputs {code}). Details are in the private run report.")
+        # Clean run with counts: the example already warns on two other stages; counts alone add one line.
+        report = self.scheduled(counts=self.FULL)
+        self.assertEqual(self.notify.compose(report, "label", 0), (
+            self.legacy_scheduled(report).split(" Needs G")[0] + "\nDrafts queued: 3 new\n"
+            "Needs G: 2 item(s).\n" + self.coverage(report)))
+        zero = self.scheduled(counts=dict.fromkeys(self.FULL, 0))
+        self.assertIn("\nDrafts queued: 0 new\n", self.notify.compose(zero, "label", 0))
+        # Queue failure with unknown counts.
+        queue = dict(self.FULL, received_items=None)
+        report = self.scheduled(counts=queue, outputs_code="OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE",
+                                needs_extra=["OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"])
+        self.assertEqual(self.notify.compose(report, "label", 0), (
+            warn.format(code="OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE") +
+            "\nOutputs: Reply drafts could not be queued this run.\nDrafts queued: unknown\n"
+            "Needs G: 3 item(s).\n" + self.coverage(report)))
+        # Two failures: stage code and item duplicate removed, first-seen order.
+        report = self.scheduled(counts=self.FULL, outputs_code="OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE",
+                                needs_extra=["OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE",
+                                             "OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE"])
+        self.assertIn("\nOutputs: No-response follow-ups were not checked this run. "
+                      "Reply follow-ups were not drafted this run.\nDrafts queued: 3 new\n",
+                      self.notify.compose(report, "label", 0))
+        # Unmapped code is shown as the code.
+        report = self.scheduled(counts=self.FULL, outputs_code="OUTPUTS_BRAND_NEW_THING",
+                                needs_extra=["OUTPUTS_BRAND_NEW_THING"])
+        self.assertIn("\nOutputs: OUTPUTS_BRAND_NEW_THING\n", self.notify.compose(report, "label", 0))
+        # More than four distinct failures: first four then the remainder.
+        many = ["OUTPUTS_LEDGER_BUSY", "OUTPUTS_WRITE_FAILED", "OUTPUTS_TIMELINE_UNAVAILABLE",
+                "OUTPUTS_REGISTER_UNAVAILABLE", "OUTPUTS_TEXTSTATE_UNAVAILABLE", "OUTPUTS_BRAND_NEW_THING"]
+        report = self.scheduled(counts=self.FULL, outputs_code=many[0], needs_extra=many)
+        text = self.notify.compose(report, "label", 0)
+        self.assertIn("\nOutputs: The records ledger was busy this run. Run outputs could not be written this run. "
+                      "The request timeline was not produced this run. The request register was not updated this "
+                      "run. +2 more\n", text)
+        self.assertTrue(text.endswith(self.coverage(report)))
+
+    def test_scheduled_draft_count_unknown_cases(self):
+        for key in ModuleKeys.PRODUCERS:
+            for broken in (None, "absent"):
+                counts: dict = dict(self.FULL)
+                if broken == "absent":
+                    del counts[key]
+                else:
+                    counts[key] = None
+                text = self.notify.compose(self.scheduled(counts=counts, valid=broken is None), "label", 0)
+                self.assertIn("\nDrafts queued: unknown\n", text, (key, broken))
+        for bad in (True, -1):
+            counts = dict(self.FULL, next_steps=bad)
+            text = self.notify.compose(self.scheduled(counts=counts, valid=False), "label", 0)
+            self.assertIn("\nDrafts queued: unknown\n", text)
+        # No count field at all: unknown with a failure, absent without one.
+        failed = self.scheduled(outputs_code="OUTPUTS_APPROVAL_QUEUE_UNWRITABLE",
+                                needs_extra=["OUTPUTS_APPROVAL_QUEUE_UNWRITABLE"])
+        self.assertIn("\nDrafts queued: unknown\n", self.notify.compose(failed, "label", 0))
+        self.assertNotIn("Drafts queued", self.notify.compose(self.scheduled(), "label", 0))
+
+    def test_failed_stage_keeps_outputs_lines_before_needs_g(self):
+        report = self.scheduled(counts=self.FULL)
+        report["stages"][2].update(status="fail", error_code="STAGE_FAILED")
+        text = self.notify.compose(report, "label", 3)
+        self.assertIn("No replies were sent.\nDrafts queued: 3 new\nNeeds G: 2 item(s).\n", text)
+        self.assertTrue(text.endswith(self.coverage(report)))
+
+    def test_arrival_outputs_summary_golden(self):
+        block = {"received_by_kind": {"response": 0, "extension": 1, "denial": 0, "fee": 0, "records": 0,
+                                      "other": 0}, "pending_drafts": 4}
+        plain = self.report(block)
+        report = self.report(block, draft_queue_counts=dict(self.FULL, followup_engine=None))
+        report["stages"][-2].update(status="warn", error_code="OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE")
+        report["needs_g"] = [{"code": "OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE", "stage": "outputs",
+                              "severity": "action", "count": 1}]
+        run_report.validate_run_report(report)
+        before = copy.deepcopy(report)
+        text = self.notify.compose(report, SENTINEL, 0)
+        lines = text.splitlines()
+        self.assertEqual(lines[3:5], [
+            "Outputs: Reply drafts could not be queued this run. Reply follow-ups were not drafted this run.",
+            "Drafts queued: unknown"])
+        self.assertTrue(lines[5].startswith(self.LABEL + "4 draft(s) waiting for approval; "), text)
+        self.assertIn("coverage", lines[-1].lower())
+        self.assertEqual(len(lines), 7)
+        self.assertEqual(report, before)
+        self.assertNotIn(SENTINEL, text)
+        self.assertLess(len(text.encode()), 4096)
+        counted = self.report(block, draft_queue_counts=self.FULL)
+        self.assertEqual(self.notify.compose(counted, "x", 0).splitlines()[3], "Drafts queued: 3 new")
+        self.assertNotIn("Drafts queued", self.notify.compose(plain, "x", 0))
+        self.assertNotIn("Outputs:", self.notify.compose(plain, "x", 0))
+
+
+class ModuleKeys:
+    PRODUCERS = ("received_items", "message_links", "followup_clock", "followup_engine", "next_steps")
 
 
 class TriggerCrossesContainerTests(unittest.TestCase):
