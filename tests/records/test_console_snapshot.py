@@ -6,10 +6,12 @@ import http.client
 import io
 import json
 import os
+import re
+import sqlite3
 import threading
 import unittest
 import urllib.parse
-from contextlib import redirect_stderr
+from contextlib import closing, redirect_stderr
 from unittest import mock
 
 from campaign_tool.records import admin_panel as ap
@@ -169,7 +171,7 @@ class ServedExport(Panel):
                     ("/packets/reject", {"id": self.proposed, "revision": "0", "reason": "no"}),
                     ("/public-updates/off", {}), ("/public-updates/kill", {}),
                     ("/public-updates/retract", {"id": "0" * 16}), ("/send", {"id": self.approved_id}),
-                    ("/manual-event", {"id": "0" * 32, "ticket": "t"})):
+                    ("/manual-event", {"id": "0" * 32, "ticket": "t"}), ("/holds", {})):
                 status, page = self.request("POST", path, {"csrf_token": token, **fields})
                 self.assertEqual(status, 503, path)
                 self.assertIn("read_only_export", page)
@@ -244,6 +246,157 @@ class ServedExport(Panel):
         with self.assertRaises(console_snapshot.SnapshotError), redirect_stderr(io.StringIO()) as err:
             pinner.pin()
         self.assertIn("export_hash_mismatch", err.getvalue())
+
+
+CANARY = "/srv/canary-agency/jane.doe@example.org/secret.pdf"
+# (n, preserved, alert key tail, alert count, run-list row): one held document per non-EXTRACTED outcome, plus an unlisted
+# detail canary (3), a two-detail row (2) and a retryable error still below its attempt limit (12).
+DOCS = ((1, True, "ocr_runtime_unconfigured", 1, None),
+        (2, True, None, 0, ("CORRUPT_DOCUMENT", ["no_text_after_ocr", "invalid_or_bounded_parser_output"])),
+        (3, True, None, 0, ("EXTRACT_INCOMPLETE", ["zz_canary_code"])),
+        (4, True, None, 0, ("WORKBOOK_POLICY_REQUIRED", ["workbook_policy_refused"])),
+        (5, True, None, 0, ("PARSER_MISSING", ["parser_missing"])),
+        (6, True, None, 0, ("DECODER_NEEDED", ["decoder_needed"])),
+        (7, True, "extraction_timeout", 3, None),
+        (8, True, "extraction_check_refused:accept_status_rejected", 1, None),
+        (9, True, "extraction_stage_error", 3, None),
+        (10, False, None, 0, None),
+        (11, True, None, 0, ("DEFERRED_RUN_BUDGET", ["deferred_run_budget"])),
+        (12, True, "extraction_stage_error", 1, ("EXTRACT_ERROR", ["extraction_stage_error"])))
+RETRY, WAIT, SCOPE = "retry with records holds release (attended)", "wait for the next run", "G scope decision"
+# (prefix, outcome, detail code, attempts, route, next step), sorted by outcome order then prefix.
+ROWS = (("111111111111", "AWAITING_OCR", "ocr_runtime_unconfigured", 1, None, "review OCR readiness"),
+        ("222222222222", "CORRUPT_DOCUMENT", "invalid_or_bounded_parser_output,no_text_after_ocr", 0, None, "review required"),
+        ("333333333333", "EXTRACT_INCOMPLETE", "unlisted", 0, None, "review required"),
+        ("444444444444", "WORKBOOK_POLICY_REQUIRED", "workbook_policy_refused", 0, None, "review required"),
+        ("555555555555", "PARSER_MISSING", "parser_missing", 0, None, "operator checks parser availability"),
+        ("666666666666", "DECODER_NEEDED", "decoder_needed", 0, None, "review required"),
+        ("777777777777", "EXTRACT_TIMEOUT", "extraction_timeout", 3, None, RETRY),
+        ("888888888888", "EXTRACT_NOT_ACCEPTED", "accept_status_rejected", 1, None, "review required"),
+        ("999999999999", "EXTRACT_ERROR", "extraction_stage_error", 3, None, RETRY),
+        ("cccccccccccc", "EXTRACT_ERROR", "extraction_stage_error", 1, None, WAIT),
+        ("aaaaaaaaaaaa", "PRESERVE_PENDING", "preserve_pending", 0, "R5", SCOPE),
+        ("bbbbbbbbbbbb", "DEFERRED_RUN_BUDGET", "deferred_run_budget", 0, None, WAIT))
+
+
+class HoldsView(Panel):
+    """DF2222-07: console-model/holds.json and the read-only GET /holds page, live and from a pinned export."""
+
+    def seed(self):
+        """A synthetic ledger holding one document per outcome, with the extract outcome list of the run."""
+        processing = self.live / "processing-v1"
+        (processing / "runs").mkdir(mode=0o700)
+        (self.live / "mail-history" / "objects").mkdir(parents=True)
+        listed = []
+        with closing(sqlite3.connect(processing / "ledger.sqlite")) as db:
+            db.execute("INSERT INTO runs VALUES ('r1','records-runner','2026-11-01T00:00:00Z',NULL,'e',NULL,NULL,NULL,'completed','{}')")
+            for n, preserved, tail, count, row in DOCS:
+                sha = f"{n:x}" * 64
+                db.execute("INSERT INTO originals(sha256,bytes,first_seen_at,role,scope,storage_path,preservation_status,"
+                           "provenance_json) VALUES (?,1,'2026-10-01T00:00:00+00:00','agency_original','in_scope',?,?,?)",
+                           (sha, CANARY if preserved else None, "preserved" if preserved else "pending",
+                            json.dumps({"subject": CANARY})))
+                db.execute("INSERT INTO stage_state VALUES (?,'extract','pending',NULL,'runtime','t','r1',NULL)", (sha,))
+                db.execute("INSERT INTO stage_state VALUES (?,'preserve',?,?,'runtime','t','r1',NULL)",
+                           (sha, "done" if preserved else "pending", "x" if preserved else None))
+                if tail:
+                    db.execute("INSERT INTO alerts VALUES (?,?,'2026-11-01T07:00:00+00:00','2026-11-13T07:00:00+00:00',?,"
+                               "'runtime','open')", (sha[-32:], f"extract:{sha}:{tail}", count))
+                if row:
+                    listed.append({"original_sha256": sha, "outcome": row[0], "issue_codes": row[1]})
+            db.commit()
+        (processing / "runs" / f"extract-{RUN}.json").write_text(json.dumps(
+            {"schema": "records-extract-outcomes-v1", "run_id": RUN, "documents": listed}))
+
+    def live_page(self):
+        self.server = ap.build_server(str(self.live), RUN, actor="operator", system=False)
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(lambda server=self.server: (server.shutdown(), server.server_close(), thread.join()))
+        return self.get("/holds")
+
+    def tables(self, page):
+        return re.findall(r"<table>.*?</table>", page, re.S)
+
+    def holds_json(self):
+        return json.loads((self.root / "current" / "console-model" / "holds.json").read_text())
+
+    def test_golden_model_and_page_live_equals_export(self):
+        self.seed()
+        live = self.live_page()
+        self.make_export()
+        model = self.holds_json()
+        items = [{"sha256_prefix": p, "code": c, "detail_code": d, "attempts": a, "route": r} for p, c, d, a, r, _ in ROWS]
+        self.assertEqual(model, {
+            "schema": console_export.MODEL_SCHEMA, "source_project_id": self.pid, "state": "ok", "items": items,
+            "counts": {"AWAITING_OCR": 1, "CORRUPT_DOCUMENT": 1, "EXTRACT_INCOMPLETE": 1, "WORKBOOK_POLICY_REQUIRED": 1,
+                       "PARSER_MISSING": 1, "DECODER_NEEDED": 1, "EXTRACT_TIMEOUT": 1, "EXTRACT_NOT_ACCEPTED": 1,
+                       "EXTRACT_ERROR": 2, "PRESERVE_PENDING": 1, "DEFERRED_RUN_BUDGET": 1},
+            "detail_counts": {"AWAITING_OCR": {"ocr_runtime_unconfigured": 1},
+                              "CORRUPT_DOCUMENT": {"invalid_or_bounded_parser_output": 1, "no_text_after_ocr": 1},
+                              "EXTRACT_INCOMPLETE": {"unlisted": 1}, "WORKBOOK_POLICY_REQUIRED": {"workbook_policy_refused": 1},
+                              "PARSER_MISSING": {"parser_missing": 1}, "DECODER_NEEDED": {"decoder_needed": 1},
+                              "EXTRACT_TIMEOUT": {"extraction_timeout": 1}, "EXTRACT_NOT_ACCEPTED": {"accept_status_rejected": 1},
+                              "EXTRACT_ERROR": {"extraction_stage_error": 2}, "PRESERVE_PENDING": {"preserve_pending": 1},
+                              "DEFERRED_RUN_BUDGET": {"deferred_run_budget": 1}}})  # CORRUPT: one row, two detail counts
+        self.assertTrue(all(set(i) == {"sha256_prefix", "code", "detail_code", "attempts", "route"}
+                            and re.fullmatch(r"[0-9a-f]{12}", i["sha256_prefix"]) for i in items))
+        self.up()
+        page = self.get("/holds")
+        for text in (json.dumps(model), page, live):
+            self.assertNotRegex(text, r"[0-9a-f]{64}")
+            for canary in ("/srv", "canary", "jane.doe", "secret.pdf", "zz_canary_code"):
+                self.assertNotIn(canary, text)
+        for tag in ("<form", "<button", "csrf_token"):
+            self.assertNotIn(tag, page)
+        self.assertIn("read only; the coordinator owns these documents", page)
+        self.assertLess(page.index("Totals"), page.index("<h2>AWAITING_OCR</h2>"))
+        order = [page.index(">%s<" % row[0]) for row in ROWS]
+        self.assertEqual(order, sorted(order))
+        for row in ROWS:
+            self.assertIn("<td>%s</td>" % row[5], page)
+        self.assertEqual(self.tables(page), self.tables(live))  # live and export render the same rows
+
+    def test_missing_invalid_or_empty_is_unavailable_never_none(self):
+        self.make_export(RUN2)
+        self.up()
+        self.assertIn("No held documents.", self.get("/holds"))  # control: an exported empty listing is a real zero
+        self.seed()
+
+        def edit(change):
+            def mutate(dest):
+                path = dest / "console-model" / "holds.json"
+                doc = json.loads(path.read_text())
+                path.write_text(json.dumps(change(doc)))
+            return mutate
+        item = lambda doc: doc["items"][0]  # noqa: E731
+        cases = {"missing": lambda dest: (dest / "console-model" / "holds.json").unlink(),
+                 "extra field": edit(lambda doc: item(doc).update(path=CANARY) or doc),
+                 "long hash": edit(lambda doc: item(doc).update(sha256_prefix="1" * 64) or doc),
+                 "bad outcome": edit(lambda doc: item(doc).update(code="EXTRACTED") or doc),
+                 "bad count": edit(lambda doc: doc["counts"].update(AWAITING_OCR=True) or doc),
+                 "total off": edit(lambda doc: doc["counts"].update(EXTRACT_ERROR=1) or doc),
+                 "foreign project": edit(lambda doc: {**doc, "source_project_id": "0" * 16}),
+                 "unavailable": edit(lambda doc: {**doc, "state": "unavailable", "code": "holds_unreadable", "items": []})}
+        for n, (name, mutate) in enumerate(cases.items()):
+            run = RUN + "-%d" % (n + 5)
+            (self.live / "run-outputs" / run).mkdir()
+            (self.live / "run-outputs" / run / "text-state.json").write_text("{}")
+            self.make_export(run, mutate)
+            page = self.get("/holds")
+            self.assertIn("holds: unavailable", page, name)
+            for text in ("No held documents.", "<table>", CANARY, "AWAITING_OCR"):
+                self.assertNotIn(text, page, name)
+            self.get("/oversight")  # the rest of the console still serves
+
+    def test_post_to_holds_is_refused_on_a_write_capable_panel_and_changes_nothing(self):
+        self.seed()
+        self.live_page()
+        before = tree_state(self.live)
+        status, _ = self.request("POST", "/holds", {"csrf_token": self.server.csrf_token})
+        self.assertEqual(status, 404)
+        self.assertEqual(self.request("GET", "/holds?id=1")[0], 400)  # no query selector, and the query is not echoed
+        self.assertEqual(tree_state(self.live), before)
 
 
 class SendResults(Panel):

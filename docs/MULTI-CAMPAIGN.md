@@ -168,6 +168,13 @@ package status (`draft`/`reviewed`) and whether a portal approval file exists. E
   list cannot be read (`READINESS_PROJECT_UNAVAILABLE`, `_CAMPAIGN_ROOT_UNAVAILABLE`, `_AGENCIES_INVALID`) with nothing on
   stdout. No exit code means ready to send.
 
+- Run it as the records runner user before a switch. It also checks, for the user running it, whether `run-outputs/` and
+  `approvals/` inside the project can be used or created, and prints one state each in a `writable` block: `present_writable`,
+  `present_not_writable`, `present_unsafe` (a symlink, not a directory, another owner, or group or other mode bits),
+  `missing_creatable` or `missing_not_creatable`. Anything but `present_writable` or `missing_creatable` adds the degraded
+  `READINESS_OUTPUTS_UNWRITABLE` (exit 1). Nothing is created, written or changed; the repair is an operator creating the
+  directory owned by the runner user with mode 0700.
+
 ## Open question: the hosted workspace
 
 The hosted workspace is one campaign per deployment (`CAMPAIGN_ID` in `workers/workspace/src/env.ts`). Hosting several

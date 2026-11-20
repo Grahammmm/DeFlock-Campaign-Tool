@@ -249,7 +249,7 @@ def _status(link, now):
         return "unknown", None
 
 
-def view(model, agency, now):
+def view(model, agency, now, *, detail_links=False):
     """One agency's slice (agency None = items and links not linked to any agency). Pure."""
     state = model["textstate"].get("doc")
     text_of = {r["sha256"]: r["state"] for r in (state or {}).get("records", []) if type(r) is dict and "sha256" in r}
@@ -271,6 +271,8 @@ def view(model, agency, now):
                       "ocr_review_status": item.get("ocr_review_status"),
                       "answers_asks": sorted(set(answers.get(item.get("item_id"), []))),
                       "findings": len(item.get("findings") or [])})
+        if detail_links and isinstance(digest, str) and _ri.is_hash(digest):
+            items[-1]["document_prefix"] = digest[:12]
     links = []
     for link in (model["links"].get("doc") or {}).get("links", []):
         ids = link.get("agency_ids") or []
@@ -311,13 +313,16 @@ def sources(model):
 
 # ---- rendering ---------------------------------------------------------------------------------------
 
-def _table(headers, rows, caption):
+def _table(headers, rows, caption, *, item_prefixes=None):
     if not rows:
         return "<p>None reported in this source.</p>"
     out = ["<table><caption>%s</caption><thead><tr>%s</tr></thead><tbody>" % (
         esc(caption), "".join('<th scope="col">%s</th>' % esc(h) for h in headers))]
-    for row in rows:
-        out.append("<tr>" + "".join("<td>%s</td>" % esc("" if c is None else c) for c in row) + "</tr>")
+    for idx, row in enumerate(rows):
+        cells = [esc("" if c is None else c) for c in row]
+        if item_prefixes is not None and item_prefixes[idx] is not None:
+            cells[1] = '<a href="/document?id=%s">%s</a>' % (esc(item_prefixes[idx]), cells[1] or "Document details")
+        out.append("<tr>" + "".join("<td>%s</td>" % cell for cell in cells) + "</tr>")
     return "".join(out) + "</tbody></table>"
 
 
@@ -329,7 +334,8 @@ def render_agency(v):
         [(i["received_at"], i["item_id"], i["kind"], i["request_id"],
           i["pages"] if i["pages"] is not None else "not recorded",
           STATE_WORDS.get(i["text_state"], i["text_state"] or "not recorded"),
-          ", ".join(i["answers_asks"]) or "none matched", i["findings"]) for i in v["items"]], "Received items"))
+          ", ".join(i["answers_asks"]) or "none matched", i["findings"]) for i in v["items"]], "Received items",
+        item_prefixes=[i.get("document_prefix") for i in v["items"]]))
     out.append("<h3>Release links (listed, not fetched)</h3>" + _table(
         ("Host", "Platform", "First seen", "Expiry", "Status"),
         [(l["host"], l["platform"], l["first_seen"], l["expiry"] or l["expiry_state"],
@@ -351,15 +357,15 @@ def render_agency(v):
     return "".join(out) + "</section>"
 
 
-def render(model, now, agency=...):
+def render(model, now, agency=..., *, detail_links=False):
     """agency=... means all agencies (plus unlinked material); a string or None selects one."""
     chosen = (agencies(model) + [None]) if agency is ... else [agency]
     notes = ["<p class=\"diag\" role=\"status\">%s</p>" % esc(console_layout.unavailable_note(*console_layout.plain([k]), s.get("code")))
              for k, s in sources(model).items() if s["state"] != "ok"]
-    body = [render_agency(view(model, a, now)) for a in chosen]
+    body = [render_agency(view(model, a, now, detail_links=detail_links)) for a in chosen]
     head = [console_layout.start("Documents and findings", "Library"),
             "<h1>Documents and findings</h1>", "<p>Run %s. %s Nothing is fetched, sent or published.</p>" % (
-                esc(model["run_id"]), esc(LABEL))]
+                esc(model["run_id"]), esc(LABEL))] + (['<p><a href="/holds">Holds</a></p>'] if detail_links else [])
     return "\n".join(head + notes + body + ["</main></body></html>"]) + "\n"
 
 
@@ -384,7 +390,7 @@ def serve(handler):
     if agency is not ... and _key(model, agency) not in agencies(model):
         handler._fail(404, "Unknown agency")
         return True
-    handler._send(200, render(model, datetime.now(timezone.utc), agency))
+    handler._send(200, render(model, datetime.now(timezone.utc), agency, detail_links=True))
     return True
 
 

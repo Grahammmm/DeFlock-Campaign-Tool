@@ -290,7 +290,8 @@ def render_oversight(model):
     else:
         out.append("<p>Pipeline health: unavailable.</p>")
     latest = runs.get("latest") if runs["state"] == "ok" else None
-    out.append("<p>PRESERVE_PENDING documents (read only; the coordinator owns them) in the latest run: %s.</p>" % (
+    out.append('<p>PRESERVE_PENDING documents (read only; the coordinator owns them) in the latest run: %s. '
+               '<a href="/holds">Holds</a></p>' % (
         esc("unknown" if not latest or latest["preserve_pending"] is None else latest["preserve_pending"])))
     if model["timeline"]["state"] == "ok":
         out.append(_table("Overdue requests (labelled arithmetic, not a legal finding)", ("Agency", "Request", "Overdue", "Owner"),

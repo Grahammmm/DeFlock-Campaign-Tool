@@ -363,7 +363,21 @@ class DigestTests(unittest.TestCase):
         args = SimpleNamespace(project=str(self.root), run_id=RUN, digest_context=self.ctx)
         line, code = run_stages.stage_outputs(args)
         self.assertEqual((line["status"], line["error_code"], code), ("warn", "OUTPUTS_DIGEST_UNRESOLVED", 0))
+        # Precedence: unresolved overrides only the primary code; an earlier register warning stays listed, in order.
+        from campaign_tool.records.outcomes import register
+        self.ctx["output_root"] = self.root / "digest-unresolved-2"
+        with mock.patch.object(register, "write_for_run", side_effect=RuntimeError("inert synthetic failure")):
+            line, code = run_stages.stage_outputs(args)
+        self.assertEqual((line["error_code"], [i["code"] for i in line["needs_g"]]),
+                         ("OUTPUTS_DIGEST_UNRESOLVED", ["OUTPUTS_REGISTER_UNAVAILABLE", "OUTPUTS_DIGEST_UNRESOLVED"]))
         self.ctx["output_root"] = self.root / "digest-failed"
+        with mock.patch.object(digest, "commit_digest", side_effect=OSError("inert synthetic failure")), \
+                mock.patch.object(register, "write_for_run", side_effect=RuntimeError("inert synthetic failure")):
+            line, code = run_stages.stage_outputs(args)
+        self.assertEqual((line["status"], line["error_code"], code), ("fail", "OUTPUTS_DIGEST_WRITE_FAILED", 1))
+        # The hard failure keeps the additive item already collected; it is not itself an item.
+        self.assertEqual([i["code"] for i in line["needs_g"]], ["OUTPUTS_REGISTER_UNAVAILABLE"])
+        self.ctx["output_root"] = self.root / "digest-failed-clean"
         with mock.patch.object(digest, "commit_digest", side_effect=OSError("inert synthetic failure")):
             line, code = run_stages.stage_outputs(args)
         self.assertEqual((line["status"], line["error_code"], code), ("fail", "OUTPUTS_DIGEST_WRITE_FAILED", 1))

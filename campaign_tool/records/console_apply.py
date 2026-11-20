@@ -22,7 +22,8 @@ from .outcomes import unmatched
 
 FILE = "decisions-applied.jsonl"
 INTENT = "INTENT"  # write-ahead receipt line (never an outcome): recorded before an entry's live mutation, see ``settle``
-QUEUE_ACTIONS = ("approve", "reject", "edit")
+QUEUE_ACTIONS = ("approve", "reject", "edit", "phone_approve")
+PHONE_APPROVE = "phone_approve"  # A6: value is the canonical JSON tap (campaign_tool.phone_approval.TAP_FIELDS)
 OCR_ACTIONS = {"ocr_confirm": "confirmed", "ocr_reject": "rejected"}  # OCR-REVIEW-ROUTE-1: the existing ocr_review.mark
 TRANSIENT = {"approval_unavailable", "queue_busy", "queue_io", "journal_busy", "ocr_ledger_busy", "message_link_ledger_busy"}  # not final: the entry stays unreceipted and is tried at the next run
 # A store that cannot be read at all (a moved or restored project whose approvals name another path, a damaged journal) says
@@ -150,15 +151,25 @@ def _apply_ocr(project, entry):
         raise ValueError("ocr_ledger_unreadable") from None
 
 
+def _evidence(entry):
+    """The approve evidence an approve entry carries: the typed SSH signature, or a phone tap (strict JSON object)."""
+    if entry["action"] == "approve":
+        return {"kind": "ssh", "signature": entry["value"]}
+    tap = aq._strict_load(entry["value"].encode(), "phone_entry_invalid") if isinstance(entry["value"], str) else None
+    if not isinstance(tap, dict):
+        raise ValueError("phone_entry_invalid")
+    return {"kind": "phone", "tap": tap}
+
+
 def _apply(project, entry):
     """Call the existing function for the entry's action with the recorded value; its refusal propagates."""
     action, ident, revision, value = entry["action"], entry["target_id"], entry["revision_seen"], entry["value"]
     actor = entry["actor"]
-    if action == "approve":
+    if action in ("approve", PHONE_APPROVE):
         link = _link_choice(project, ident, entry)
         if link:
             _precheck_relink(project, ident, link)  # stale before anything is recorded: neither approval nor link
-        aq.approve(project, ident, {"kind": "ssh", "signature": value}, choice=entry.get("choice"))
+        aq.approve(project, ident, _evidence(entry), choice=entry.get("choice"))
         if link:
             _append_link(project, ident, link)
     elif action == "message_link_relink":
@@ -220,9 +231,11 @@ def _landed(project, entry, base):
             ev = aq._strict_load(line, "queue_invalid")
             if ev.get("id") != ident or ev.get("revision") != base + 1:
                 continue
-            if action == "approve":  # the signed choice is part of the approval: a substituted one is not this entry's mutation
-                return ev.get("event") == "approve" and (ev.get("approval") or {}).get("signature") == value \
-                    and (ev.get("approval") or {}).get("choice") == entry.get("choice")
+            if action in ("approve", PHONE_APPROVE):  # the signed choice is part of the approval: a substituted one is not this entry's mutation
+                ap = ev.get("approval") or {}
+                ours = (ap.get("signature") == value and aq.PHONE_FIELD not in ap if action == "approve"
+                        else ap.get(aq.PHONE_FIELD) == _evidence(entry)["tap"].get("envelope"))
+                return ev.get("event") == "approve" and ours and ap.get("choice") == entry.get("choice")
             if action == "reject":
                 return ev.get("event") == "reject" and ev.get("reason") == value and ev.get("actor") == actor
             return ev.get("event") == "edited" and ev.get("body") == value and ev.get("actor") == actor
@@ -263,10 +276,11 @@ def settle(project, entry, intents, trust_deferred=None):
     write = True
     try:
         if known and _landed(project, entry, intents[ident]):
-            if entry["action"] == "approve":  # the message-link step after the approve is idempotent
+            if entry["action"] in ("approve", PHONE_APPROVE):  # the message-link step after the approve is idempotent
                 link = _link_choice(project, entry["target_id"], entry)
                 if link:  # reverified against the signed revision and this choice before any append (same API as a fresh apply)
-                    aq.approve(project, entry["target_id"], {"kind": "ssh", "signature": entry["value"]}, choice=entry.get("choice"))
+                    if entry["action"] == "approve":  # a phone nonce approves once; its stored proof is re-verified by the fold
+                        aq.approve(project, entry["target_id"], {"kind": "ssh", "signature": entry["value"]}, choice=entry.get("choice"))
                     _append_link(project, entry["target_id"], link)
             return "APPLIED"
         base = _mark(project, entry)  # nothing of ours landed since the old base: this attempt starts from where the target is now

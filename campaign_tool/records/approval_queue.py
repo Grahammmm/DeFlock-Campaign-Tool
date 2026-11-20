@@ -18,7 +18,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from .. import approval
+from .. import approval, phone_approval
 from . import draft_templates
 from .outcomes import unmatched
 
@@ -30,6 +30,7 @@ MAX_JOURNAL = 64 * 1024 * 1024
 MAX_SOURCE = 64 * 1024 * 1024
 LOCK_SECONDS = 5.0
 PIPELINE_ACTOR = "records-pipeline"
+PHONE_FIELD = "phone_envelope"  # an approve proof made by a phone tap (A6) keeps the exact envelope the phone signed
 
 
 class ApprovalQueueError(Exception):
@@ -342,7 +343,8 @@ def _fold(root, raw, verify=True):
             ap = ev.get("approval")
             _need(isinstance(ap, dict) and row["status"] == "pending" and ap.get("signed_revision") == row["revision"]
                   and ap.get("project") == _project_id(root) and isinstance(ap.get("signature"), str)
-                  and isinstance(ap.get("principal"), str), "queue_invalid")
+                  and isinstance(ap.get("principal"), str)
+                  and isinstance(ap.get(PHONE_FIELD, ""), str), "queue_invalid")
             row["approval_recorded"] = True
             row["approval_unverified"] = "untrusted"
             valid = False
@@ -350,8 +352,12 @@ def _fold(root, raw, verify=True):
             bound = ap.get("choice")  # a tie approval is valid only for the choice it recorded; a legacy one has none
             if verify and (isinstance(bound, str) if tie else "choice" not in ap):
                 try:
-                    valid = approval.verify(_payload(root, row, row["revision"], bound if tie else None),
-                                            ap["signature"]) == ap["principal"]
+                    payload = _payload(root, row, row["revision"], bound if tie else None)
+                    if PHONE_FIELD in ap:  # a phone tap: its signed envelope must bind this id and these exact bytes
+                        principal = phone_approval.check(ap[PHONE_FIELD], ap["signature"], ident, payload)
+                    else:
+                        principal = approval.verify(payload, ap["signature"])
+                    valid = principal == ap["principal"]
                 except approval.TrustUnavailable:
                     row["approval_unverified"] = "unavailable"
                 except (approval.ApprovalError, ApprovalQueueError):
@@ -526,8 +532,49 @@ def _guard_recorded(row):
                                  else "approval_unverified")
 
 
+def _phone_nonces(raw):
+    """Every nonce a recorded phone approval has used (one nonce approves once, whatever its later fate)."""
+    used = set()
+    for line in raw.split(b"\n")[:-1]:
+        ap = _strict_load(line, "queue_invalid").get("approval")
+        if isinstance(ap, dict) and isinstance(ap.get(PHONE_FIELD), str):
+            try:
+                used.add(phone_approval.parse_envelope(ap[PHONE_FIELD])["nonce"])
+            except approval.ApprovalError:
+                continue
+    return used
+
+
+def _approve_phone(root, store, row, tap, choice):
+    """A tap from an enrolled phone (A6): fresh, unused nonce, bound to this id and the exact payload bytes."""
+    try:
+        nonce = phone_approval.tap_envelope(tap)["nonce"]
+    except approval.ApprovalError as error:
+        raise ApprovalQueueError("approval_required") from error
+    _need(nonce not in _phone_nonces(store.raw()), "phone_replay")
+    _guard_recorded(row)
+    _need(row["status"] == "pending", "invalid_transition")
+    try:
+        principal, signature, envelope = phone_approval.verify_tap(tap, row["id"], _payload(root, row, row["revision"], choice))
+    except phone_approval.PhoneExpired as error:
+        raise ApprovalQueueError("phone_expired") from error
+    except approval.TrustUnavailable as error:
+        raise ApprovalQueueError("approval_unavailable") from error
+    except approval.ApprovalError as error:
+        raise ApprovalQueueError("approval_required") from error
+    proof = {"signed_revision": row["revision"], "project": _project_id(root), "principal": principal,
+             "signature": signature, PHONE_FIELD: envelope}
+    if row["kind"] == draft_templates.MESSAGE_LINK:
+        proof["choice"] = choice
+    store.append([_event("approve", row["id"], row["revision"] + 1, principal, approval=proof)])
+    return _public(_row(root, store, row["id"]))
+
+
 def approve(root, id, actor, *, choice=None, expected_revision=None, expected_body=None):
-    if not (isinstance(actor, dict) and actor.get("kind") == "ssh" and isinstance(actor.get("signature"), str)):
+    """Approve with G's detached SSH signature (``{"kind": "ssh", "signature": ...}``, the typed path) or with a phone
+    tap (``{"kind": "phone", "tap": {...}}``, see campaign_tool.phone_approval). Both verify against the same trust file."""
+    phone = isinstance(actor, dict) and actor.get("kind") == "phone" and isinstance(actor.get("tap"), dict)
+    if not phone and not (isinstance(actor, dict) and actor.get("kind") == "ssh" and isinstance(actor.get("signature"), str)):
         raise ApprovalQueueError("approval_required")
     _need(expected_revision is None or (type(expected_revision) is int and expected_revision >= 0), "invalid_draft")
     _need(expected_body is None or isinstance(expected_body, str), "invalid_draft")
@@ -538,6 +585,8 @@ def approve(root, id, actor, *, choice=None, expected_revision=None, expected_bo
               "approve_unsaved_text")
         tie = row["kind"] == draft_templates.MESSAGE_LINK
         _need(tie or choice is None, "invalid_choice")
+        if phone:
+            return _approve_phone(root, store, row, actor["tap"], choice)
         if row["status"] == "approved" and row["approval_evidence"]["signature_sha256"] == \
                 hashlib.sha256(actor["signature"].encode()).hexdigest():
             # a replay only counts for the very choice the stored (verified) approval is bound to

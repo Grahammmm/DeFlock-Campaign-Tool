@@ -137,6 +137,27 @@ calculated) and `State: pending-approval`. Nothing is sent.
 - `python -m campaign_tool.records approvals list|payload|approve|reject|edit --project DIR`.
   `approve` takes a detached SSH signature file over `payload` (same trust file as the outbox);
   a typed name is refused. An edit returns the draft to pending and voids earlier approvals.
+- Phone tap (A6, `campaign_tool.phone_approval`): `records decisions-apply` also takes a journal
+  `phone_approve` entry whose value is a passkey (WebAuthn) assertion over a signed envelope: the
+  draft id, the sha256 of the exact `payload` bytes, issue and expiry time (at most 36 h) and a
+  nonce. It is repacked as an OpenSSH `webauthn-sk-ecdsa` signature and verified by the same
+  root-owned `ssh-keygen` and trust file, against a phone line limited to
+  `namespaces="deflock-phone-approval"`; user presence, user verification and the `https://<rp id>`
+  origin are required. Refusals: `SIGNATURE_REFUSED` (unknown or removed device, other text, edited
+  envelope), `REFUSED phone_expired`, `REFUSED phone_replay` (a nonce approves once). The typed
+  signature path above is unchanged and stays the fallback. Removing the phone line (lost phone)
+  makes its approvals unverified, as for any removed key.
+- Phone enrolment (A6, attended; follow the enrolment packet kept with the go-live sitting records,
+  not this file): `records panel ... --decisions-dir J --phone-enrol-dir E` adds `/phone/enrol`
+  (E is an absolute, owner-only 0700 directory apart from the export, J and every other console
+  location). On the console's public address the page asks the phone for a new passkey (ES256,
+  user verification required, attestation none) and stores only its **public** record as one 0600
+  file in E, then shows the key fingerprint. `records phone-key line --from FILE --principal NAME
+  [--valid-days N]` (default 365, at most 400) checks that record again and prints one trust line
+  limited to `namespaces="deflock-phone-approval"` with a `valid-before` date, plus the fingerprint.
+  Nothing writes the trust file: the line is added by hand at the sitting, only after G confirms the
+  fingerprint shown on the phone. Never paste key material into notes, cards or logs; the
+  fingerprint is enough.
 - Approval only marks the draft reviewed and approved-to-send. It cannot send, and an outbox or
   Flock signature cannot approve a draft. The outbox and `EMAIL-APPROVAL.json` stay the only
   send authority.

@@ -289,19 +289,21 @@ def _analysis(analysis_root, now, limits):
     return _check("analysis", "ok", "analysis_ticking", tick)
 
 
-def _console_export(export_root, latest, now, limits):
-    """Does CONSOLE_EXPORT_DIR/current/EXPORT.json name the newest run report's run (allowing a post-step grace)?"""
-    if export_root is None:
+def _console_export(export_root, latest, now, limits, *, pinned_run_id=None):
+    """Compare the request's pin or the configured export to the latest run, allowing a post-step grace."""
+    if export_root is None and pinned_run_id is None:
         return _check("console_export", "unknown", "console_export_not_configured")
     if latest is None:
         return _check("console_export", "unknown", "console_export_no_run")
-    try:
-        if not Path(export_root).is_absolute():
-            raise ValueError("export root")
-        manifest = _read_json(Path(export_root) / "current" / "EXPORT.json")
-        exported = None if manifest is None else manifest["run_id"]
-    except (ValueError, KeyError, OSError):
-        return _check("console_export", "unknown", "console_export_unreadable")
+    exported = pinned_run_id
+    if exported is None and export_root is not None:
+        try:
+            if not Path(export_root).is_absolute():
+                raise ValueError("export root")
+            manifest = _read_json(Path(export_root) / "current" / "EXPORT.json")
+            exported = None if manifest is None else manifest["run_id"]
+        except (ValueError, KeyError, OSError):
+            return _check("console_export", "unknown", "console_export_unreadable")
     if exported == latest["run_id"]:
         return _check("console_export", "ok", "console_export_current")
     finished = _finished(latest)
@@ -339,7 +341,8 @@ def _disk(runtime_dir, records_root, limits):
 # ----- assessment and line ----------------------------------------------------------------------
 
 def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limits=LIMITS,
-           spec=None, analysis_root=None, console_export_root=None, schedule_snapshot_path=None):
+           spec=None, analysis_root=None, console_export_root=None, schedule_snapshot_path=None,
+           pinned_export_run_id=None, check_disk=True):
     """Read-only health report; unknown is never reported as ok."""
     spec = spec or schedule.configured()
     now = (now or datetime.now(timezone.utc))
@@ -351,7 +354,9 @@ def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limi
     last_run, latest = _last_run(target_dir, now, limits, spec)
     checks = [backlog, _mail_poll(mail_store, now, limits), last_run, _run_failures(target_dir, latest, limits, now),
               _notify(target_dir, limits, now), _schedule(records_root, now, spec, schedule_snapshot_path), _analysis(analysis_root, now, limits),
-              _console_export(console_export_root, latest, now, limits), _disk(runtime_dir, records_root, limits)]
+              _console_export(console_export_root, latest, now, limits, pinned_run_id=pinned_export_run_id)]
+    if check_disk:
+        checks.append(_disk(runtime_dir, records_root, limits))
     states = {item["state"] for item in checks if item["reason_code"] not in NOT_CONFIGURED}
     overall = next(state for state in ("stop", "warn", "unknown", "ok") if state in states)
     report = {"schema": SCHEMA, "now": now.isoformat(), "state": overall, "exit_code": EXIT[overall],

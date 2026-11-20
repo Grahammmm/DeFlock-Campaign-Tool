@@ -21,10 +21,10 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, console_redactions, draft_templates, mail_drafts, mail_send, run_report, schedule, site_prs
+from . import approval_queue, console_board, console_calendar, console_documents, console_findings, console_holds, console_home, console_jobs, console_manual_events, console_ocr, console_oversight, console_packets, console_redactions, draft_templates, mail_drafts, mail_send, run_report, schedule, site_prs
 from . import console_origin, console_automation
 from . import console_access, console_export, console_journal, console_layout, console_review, console_settings, console_snapshot
-from . import console_data_age, console_pages
+from . import console_data_age, console_pages, console_phone, console_phone_enrol
 from .ledger import store
 from .outcomes import unmatched
 from .outcomes.reading import BANNER, esc
@@ -798,11 +798,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     timeout = SOCKET_TIMEOUT
     options = pin = actor = None  # set per request by _begin (actor: by do_POST)
+    allow_script = False  # set per request by console_phone.section: that page may load the one same-origin script
 
     def log_message(self, *args):  # request lines and bodies may carry record text or tokens
         pass
 
-    def _send(self, status, body, location=None):
+    def _send(self, status, body, location=None, csp=None):
         if self.pin is not None:  # every export page names its run and export
             body = body.replace("</main>", '<footer class="muted"><p>Run %s, export %s, exported %s.</p></footer></main>' % (
                 esc(self.pin.run_id), esc(self.pin.name), esc(self.pin.exported_at)), 1)
@@ -817,6 +818,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         for k, v in SECURITY:
+            if k == "Content-Security-Policy" and csp:  # csp: /phone/enrol's own script
+                v = csp
+            elif k == "Content-Security-Policy" and self.allow_script:  # the phone tap script (A6)
+                v += "; script-src 'self'"
             self.send_header(k, v)
         if location:
             self.send_header("Location", location)
@@ -879,6 +884,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if console_packets.serve(self):
             return
+        if console_phone_enrol.serve(self):  # A6 enrolment: public key record only, with --phone-enrol-dir
+            return
         if console_settings.serve(self):
             return
         if console_jobs.serve(self):
@@ -887,11 +894,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if console_home.serve(self):
             return
+        if console_phone.serve(self):  # the static "Approve with phone" script (A6)
+            return
         if console_review.serve(self):
             return
         if console_manual_events.serve(self):
             return
         if console_ocr.serve(self):  # OCR page confirm / reject
+            return
+        if console_holds.serve(self):  # held documents, read-only (DF2222-07)
             return
         if console_findings.serve(self):  # finding review (DF2007-06)
             return
@@ -1047,7 +1058,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._fail(503, "read_only_export")  # no journal: nothing runs before this
         if not self._begin():
             return
+        if console_phone.post(self):  # one phone tap (A6): journaled only, verified at decisions-apply
+            return
         if console_packets.post(self):
+            return
+        if console_phone_enrol.post(self):  # stores one public record in --phone-enrol-dir, never journaled
             return
         if console_oversight.post(self):  # Screen F: Undo, OFF and kill only
             return
@@ -1199,11 +1214,27 @@ def _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg):
         raise PanelError("access_config_invalid") from None  # the email is too long to label a decision
 
 
+def _check_backup_alerts_dir(path, *write_locations):
+    """The real, existing, absolute, non-symlink backup-alerts directory, or ValueError. Never creates or changes anything."""
+    try:
+        real = os.path.realpath(path)
+        if not (isinstance(path, str) and os.path.isabs(path) and real == path and os.path.isdir(real)):
+            raise ValueError
+        for other in write_locations:  # read-only input: no enabled console write location may be, hold or sit inside it
+            if other is not None:
+                other = os.path.realpath(other)
+                if os.path.commonpath((other, real)) in (other, real):  # root-safe: "/" + os.sep would be "//"
+                    raise ValueError
+    except (ValueError, OSError, TypeError):
+        raise ValueError("backup_alerts_dir_invalid") from None
+    return real
+
+
 def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=None, kit_root=None, as_of=None,
                  timers=DEFAULT_TIMERS, system=True, mail_drafts_config=None, send_config=None, public_origin=None,
                  access_config=None, access_clock=None, manual_events_dir=None, meetings_dir=None, export_root=None,
-                 decisions_dir=None, access_keys=None, analysis_root=None, flock_store=None,
-                 stale_hours=console_data_age.DEFAULT_STALE_HOURS):
+                 decisions_dir=None, access_keys=None, analysis_root=None, flock_store=None, backup_alerts_dir=None,
+                 stale_hours=console_data_age.DEFAULT_STALE_HOURS, phone_enrol_dir=None):
     """Unstarted loopback-only server; the caller serves and closes it.
 
     export_root (DFGL-16A) with run_id "auto" serves the one real export DIR/current points at, pinned per request.
@@ -1252,6 +1283,20 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
             flock_store = console_redactions.check_store(flock_store, project, export_root, decisions_dir, manual_events_dir, meetings_dir)
         except ValueError:
             raise PanelError("flock_store_invalid") from None
+    if backup_alerts_dir is not None:
+        try:
+            backup_alerts_dir = _check_backup_alerts_dir(backup_alerts_dir, project, export_root, decisions_dir, manual_events_dir, meetings_dir)
+        except ValueError:
+            raise PanelError("backup_alerts_dir_invalid") from None
+    if phone_enrol_dir is not None:  # A6: journal mode only; its own 0700 directory, apart from every other location
+        try:
+            if decisions_dir is None:
+                raise ValueError
+            phone_enrol_dir = console_phone_enrol.phone_enrol.check_dir(
+                phone_enrol_dir, project, export_root, decisions_dir, manual_events_dir, meetings_dir, analysis_root,
+                flock_store, backup_alerts_dir)
+        except ValueError:
+            raise PanelError("phone_enrol_dir_invalid") from None
     access_cfg = _access_cfg(public_origin, access_config)
     _check_access_keys(public_origin, decisions_dir, access_keys, access_cfg)
     server = http.server.HTTPServer(("127.0.0.1", port), _Handler)
@@ -1274,6 +1319,9 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
     server.decisions_dir = decisions_dir
     server.analysis_root = analysis_root
     server.flock_store = flock_store  # its own attribute: never passed to the dashboard loaders
+    server.backup_alerts_dir = backup_alerts_dir  # likewise: read only by /health, never written
+    server.phone_enrol_dir = phone_enrol_dir  # public enrolment records only; never the export or the journal
+    server.phone_enrol_key = secrets.token_bytes(32)  # binds each enrol challenge to this console process
     return server
 
 
@@ -1290,6 +1338,10 @@ def main(argv=None):
                         help="with --export-root: journal each decision in J (absolute, 0700, outside DIR) for the next apply")
     parser.add_argument("--analysis-root", metavar="ROOT", help="read-only analysis root: adds /findings/review (finding review); never written here")
     parser.add_argument("--flock-store", metavar="STORE", help="read-only private Flock store: adds /redactions (redactions waiting for sign-off); never written here")
+    parser.add_argument("--backup-alerts-dir", metavar="DIR", help="read-only host path of the backup-check alerts directory: adds a Backups section to /health; never written here")
+    parser.add_argument("--phone-enrol-dir", metavar="DIR",
+                        help="with --decisions-dir: adds /phone/enrol, which stores each new phone passkey's PUBLIC "
+                             "record in DIR (absolute, 0700, apart from every other location); trusts nothing")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--run-report")
     parser.add_argument("--stale-hours", type=int, default=console_data_age.DEFAULT_STALE_HOURS,
@@ -1369,7 +1421,9 @@ def main(argv=None):
                               send_config=args.send_config, public_origin=args.public_origin,
                               access_config=access, manual_events_dir=args.manual_events, meetings_dir=args.meetings_dir,
                               export_root=args.export_root, decisions_dir=args.decisions_dir, access_keys=args.access_keys,
-                              analysis_root=args.analysis_root, flock_store=args.flock_store, stale_hours=args.stale_hours)
+                              analysis_root=args.analysis_root, flock_store=args.flock_store,
+                              backup_alerts_dir=args.backup_alerts_dir, stale_hours=args.stale_hours,
+                              phone_enrol_dir=args.phone_enrol_dir)
     except PanelError as error:
         print(error.code, file=sys.stderr)
         return 2 if error.code.endswith(("_invalid", "_required", "_unused", "_needs_export")) else 1

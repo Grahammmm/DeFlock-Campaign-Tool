@@ -242,8 +242,15 @@ class WorkflowContract(unittest.TestCase):
             self.assertIn(f'    strategy:\n      fail-fast: false\n      max-parallel: {shards if name == "affected" else 6}\n      matrix:', block)
             self.assertIn('        shard: ' + str(list(range(shards))), block)
             self.assertIn(f'tools/ci_affected.py --tier {tier} --shard ${{{{ matrix.shard }}}} --shards {shards} --jobs 2\n', block)
-        self.assertIn("python: ['3.11', '3.12', '3.13']", blocks['full'])
         offline = blocks['offline']
+        # PRs run both full shards on 3.12; dropping 3.11/3.13 from any other event is a regression.
+        python_matrix = (
+            "        python: ${{ fromJSON(github.event_name == 'pull_request' && "
+            "'[\"3.12\"]' || '[\"3.11\",\"3.12\",\"3.13\"]') }}"
+        )
+        for name in ('full', 'offline'):
+            with self.subTest(matrix=name):
+                self.assertIn(python_matrix, blocks[name].splitlines())
         for required in ('needs: [affected, full]', 'if: always()', '${{ needs.affected.result }}',
                          '${{ needs.full.result }}', 'tools/check_public_tree.py',
                          'tools/check_pin_guard.py --all', 'tools/ci_affected.py --self-test'):

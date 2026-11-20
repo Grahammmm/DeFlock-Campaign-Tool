@@ -15,7 +15,7 @@ permissions:
   contents: read
 jobs:
   affected:
-    # Only the merge clock; full-tier source tests run below on 3.11–3.13.
+    # Only the merge clock; the full source set runs separately below.
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     # Shards 2/3 run up to ~10 min; 20 leaves headroom (AUD-DF3, 2026-10-31).
@@ -39,15 +39,16 @@ jobs:
           TMPDIR: /var/tmp
         run: python -B -W error::ResourceWarning tools/ci_affected.py --tier pr --shard ${{ matrix.shard }} --shards 5 --jobs 2
   full:
-    # All-event full source coverage in two disjoint shards per Python. One 4-CPU job ran 20-35 min and hit the old
-    # 35-minute offline timeout on slow runners (main runs 43768448222, 43769348646, 43772136816: 'cancelled').
+    # R12.2 / HOSTED-DIET-DFPY (t_afa433cb): both full shards run on 3.12 on PRs, and on 3.11–3.13 otherwise.
+    # One 4-CPU job ran 20-35 min and hit the old 35-minute offline timeout on slow runners
+    # (main runs 43768448222, 43769348646, 43772136816: 'cancelled').
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
       fail-fast: false
       max-parallel: 6
       matrix:
-        python: ['3.11', '3.12', '3.13']
+        python: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || '["3.11","3.12","3.13"]') }}
         shard: [0, 1]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -70,7 +71,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.11', '3.12', '3.13']
+        python: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || '["3.11","3.12","3.13"]') }}
     steps:
       - name: Require every fast-tier shard
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
