@@ -205,12 +205,24 @@ def _clocks(row, setting, today):
     return out
 
 
+HOLD_ARRIVAL = ("arrived_unrecorded", "unknown")  # answer_arrived.state (DF2307-01): a reply needs recording first
+RECORD_FIRST = "reply arrived; record it first"
+
+
+def _answer_unrecorded(row):
+    arrived = row.get("answer_arrived")
+    return isinstance(arrived, dict) and arrived.get("state") in HOLD_ARRIVAL
+
+
 def _plan(register, settings, queue_rows, as_of):
     today = _day(as_of)
     approved = {(r["item_id"], r["kind"]): r for r in queue_rows if r["status"] == "approved"}
-    counts = {"skipped_off": 0, "skipped_issue": 0, "not_due": 0}
+    counts = {"skipped_off": 0, "skipped_issue": 0, "not_due": 0, "skipped_answer_unrecorded": 0}
     found = []
     for row in register.get("requests", []):
+        if _answer_unrecorded(row):  # One skip per row; already queued drafts are never touched.
+            counts["skipped_answer_unrecorded"] += 1
+            continue
         setting = _setting(settings, row["agency_key"])
         clocks = _clocks(row, setting, today)
         if not clocks or str(row.get("status", "")).strip().casefold() in CLOSED:
@@ -263,7 +275,9 @@ def reminder_status(register, settings, queue_rows, *, as_of):
             pair = (ident, REMINDERS[0 if kind == "determination" else 1])
             match = queued.get(pair) if pair in candidates else None
             state, reason = None, "No reminder draft queued"
-            if closed:
+            if _answer_unrecorded(row):
+                reason = RECORD_FIRST
+            elif closed:
                 state, reason = "closed", "Request closed"
             elif setting["autonomy"] != "draft":
                 state, reason = "off", "Reminders are off for this agency (see Settings)"
@@ -353,7 +367,7 @@ def read_register(project, run_id):
 def queue_followups(project, run_id):
     """Queue pending drafts for this run's register. Returns counts only (no bodies, names or dates)."""
     summary = {"created": 0, "existing": 0, "skipped_off": 0, "skipped_issue": 0, "not_due": 0,
-               "settings_invalid": False}
+               "skipped_answer_unrecorded": 0, "settings_invalid": False}
     register = read_register(project, run_id)
     if register is None:
         return summary

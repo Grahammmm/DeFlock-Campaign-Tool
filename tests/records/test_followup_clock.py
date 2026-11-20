@@ -733,3 +733,98 @@ class Advisories(Base):
         self.put_register([row()], run="run-2")
         with mock.patch.object(fc, "_render", changed), self.assertRaises(aq.ApprovalQueueError):
             fc.queue_followups(self.root, "run-2")
+
+
+def arrived(answer, *issues, **kw):
+    r = row(issues=issues, **kw)
+    r["answer_arrived"] = {"state": answer, "first_arrival": "2030-01-20T10:00:00Z", "occurrence_ids": ["o1"]}
+    return r
+
+
+class AnswerUnrecorded(Base):
+    """DF2307-02: a reply that arrived (or may have) and is not recorded holds the reminder drafts."""
+
+    def settings_for(self, **extra):
+        settings = fc.load_settings(self.root)
+        settings["agencies"] = {"ag1": dict({"autonomy": "draft", "notice_after_days": 10}, **extra)}
+        return settings
+
+    def test_unrecorded_and_unknown_skipped_once_and_counted(self):
+        settings = self.settings_for()
+        ident = fc.item_id("ag1", "req-1", "determination", "2030-01-12")
+        prior = [{"item_id": ident, "kind": "reminder-no-response", "status": "approved",
+                  "updated_at": "2030-01-10T10:00:00Z"}]  # old enough for the formal-notice ladder
+        promised = {"state": "passed", "date": "2030-01-15"}  # a second overdue clock on the same row
+        for state, issues in (("arrived_unrecorded", ()), ("unknown", ("arrival_unresolved",))):
+            rows = [arrived(state, *issues, promised=promised)]
+            found, counts = fc._plan(doc(rows), settings, prior, AS_OF)
+            self.assertEqual(found, [])
+            self.assertEqual(counts, {"skipped_off": 0, "skipped_issue": 0, "not_due": 0, "skipped_answer_unrecorded": 1})
+        # none and the absent key behave as before: both clocks and the notice ladder draft
+        for legacy in (arrived("none", promised=promised), row(promised=promised)):
+            found, counts = fc._plan(doc([legacy]), settings, prior, AS_OF)
+            self.assertEqual(sorted(c["kind"] for c in found),
+                             sorted(["reminder-no-response", fc.NOTICE, "reminder-promised-date"]))
+            self.assertEqual(counts["skipped_answer_unrecorded"], 0)
+        # the held row is not also counted as off, issue or not due
+        off = fc.load_settings(self.root)
+        self.assertEqual(fc._plan(doc([arrived("arrived_unrecorded")]), off, [], AS_OF)[1],
+                         {"skipped_off": 0, "skipped_issue": 0, "not_due": 0, "skipped_answer_unrecorded": 1})
+
+    def test_queue_summary_counts_and_existing_drafts_untouched(self):
+        self.enable()
+        self.put_register([row(request="old")])
+        self.assertEqual(fc.queue_followups(self.root, "run-1")["created"], 1)
+        before = json.dumps(self.queued(), sort_keys=True)
+        self.put_register([arrived("arrived_unrecorded", request="old"), arrived("unknown", "arrival_unresolved", request="b"),
+                           arrived("none", request="c")], run="run-2")
+        out = fc.queue_followups(self.root, "run-2")
+        self.assertEqual((out["created"], out["existing"], out["skipped_answer_unrecorded"]), (1, 0, 2))
+        self.assertEqual([r["request_id"] for r in self.queued()], ["old", "c"])
+        self.assertEqual(json.dumps([r for r in self.queued() if r["request_id"] == "old"], sort_keys=True),
+                         json.dumps(json.loads(before), sort_keys=True))
+        self.assertEqual(fc.queue_followups(self.root, "run-missing")["skipped_answer_unrecorded"], 0)
+
+    def test_none_is_byte_identical_to_no_key(self):
+        self.enable()
+        self.put_register([row(request="a"), row(request="b", state="running")])
+        fc.queue_followups(self.root, "run-1")
+        plain = [(r["id"], r["body"], r["status"]) for r in self.queued()]
+        self.put_register([arrived("none", request="a"), arrived("none", request="b", state="running")], run="run-2")
+        out = fc.queue_followups(self.root, "run-2")
+        self.assertEqual((out["created"], out["existing"], out["skipped_answer_unrecorded"]), (0, 1, 0))
+        self.assertEqual([(r["id"], r["body"], r["status"]) for r in self.queued()], plain)
+
+    def test_reminder_status_says_record_it_first(self):
+        settings = self.settings_for()
+        rows = [arrived("arrived_unrecorded", request="u"), arrived("unknown", "arrival_unresolved", request="k"),
+                arrived("none", request="n")]
+        queue = [{"id": "q", "item_id": fc.item_id("ag1", "u", "determination", "2030-01-12"),
+                  "kind": fc.REMINDERS[0], "status": "pending", "updated_at": AS_OF}]
+        before = json.dumps([rows, settings, queue], sort_keys=True)
+        result = fc.reminder_status(doc(rows), settings, queue, as_of=AS_OF)
+        self.assertEqual([(r["request_id"], r["reason"]) for r in result],
+                         [("u", "reply arrived; record it first"), ("k", "reply arrived; record it first"),
+                          ("n", "No reminder draft queued")])
+        for r in result[:2]:
+            self.assertIsNone(r["state"])
+            self.assertNotIn("queue_id", r)
+        self.assertEqual(json.dumps([rows, settings, queue], sort_keys=True), before)
+
+    def test_stage_output_carries_count(self):
+        seam = Seam("test_outputs_seam_queues_pending_and_sends_nothing")
+        seam.setUp()
+        self.addCleanup(seam.doCleanups)
+        seam.enable("a1")
+
+        def write(project, run_id):
+            seam.put_register([arrived("arrived_unrecorded", agency="a1", request="x"),
+                               arrived("unknown", "arrival_unresolved", agency="a1", request="y"),
+                               arrived("none", agency="a1", request="FB-01")], run=run_id)
+        with mock.patch.object(register, "write_for_run", side_effect=write):
+            code, result, run = seam.outputs(run="held-1")
+        self.assertEqual((code, result["status"]), (0, "ok"))
+        self.assertEqual(result["counts"], {"input": 1, "output": 1, "failed": 0, "skipped": 2})
+        self.assertEqual([r["request_id"] for r in seam.queued()], ["FB-01"])
+        code, result, _ = seam.outputs()
+        self.assertEqual(result["counts"]["skipped"], 0)
