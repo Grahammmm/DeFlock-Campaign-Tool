@@ -64,6 +64,22 @@ def build(project, drop=()):
             put(out / name, doc)
 
 
+class PagePathRedaction(unittest.TestCase):
+    def test_paths_are_omitted_from_rendered_source(self):
+        from campaign_tool.records import console_page_page
+
+        paths = ("/secret.txt", "./private.txt", "../private.txt",
+                 "/home/user/My Documents/secret.pdf", "C:\\My Documents\\secret.pdf")
+        row = {"agency": "alpha-pd", "received_at": "2026-09-01T06:30:00Z", "route": "native",
+               "confidence_band": "not_applicable", "review_state": "not_applicable", "citations": [],
+               "text": "\n".join("See " + path + " for details." for path in paths)}
+        rendered = console_page_page._render(H1[:12], 1, row, None)
+        for path in paths:
+            with self.subTest(path=path):
+                self.assertNotIn(path, rendered)
+        self.assertEqual(rendered.count("See [omitted] for details."), len(paths))
+
+
 class ScreenC(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

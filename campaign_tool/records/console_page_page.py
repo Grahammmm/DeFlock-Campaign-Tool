@@ -10,7 +10,11 @@ NAV = None
 BANNER = "Private; source text, review required; not for publication"
 PAGE = re.compile(r"[1-9][0-9]{0,8}")
 SHORT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.:-]{0,59}")
-PATH_LIKE = re.compile(r"(?<![\w/.<])(?:~|\.{1,2}|[A-Za-z]:)?(?:[/\\][\w.~-]+){2,}[/\\]?|[A-Za-z]:\\\S*")
+PATH_LIKE = re.compile(
+    r"(?<![\w/.<])(?:~|\.{1,2}|[A-Za-z]:|[\w~-]+)?[/\\]"
+    r"(?:[\w.~-]+(?:[ ]+[\w.~-]+)*[/\\])*"
+    r"(?:[\w~-]+(?:[ ]+[\w~-]+)*\.[\w~-]+|[\w.~-]+)[/\\]?"
+)
 OMITTED = "[omitted]"
 ROUTES = {"native": "Native", "ocr": "OCR"}
 BANDS = {"below_80": "Below 80", "at_least_80": "80 or above", "not_recorded": "Not recorded", "not_applicable": "Not applicable"}
