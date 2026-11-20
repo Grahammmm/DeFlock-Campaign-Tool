@@ -60,7 +60,8 @@ same run and the reviewed fact store, and writes a new `records-comparison-works
 - request timing as a **proposal** from the register only: a recorded receipt or a submission date, never a confirmation. A
   submission date is not a recorded receipt.
 
-It prints counts only. An unfilled worksheet compiles to all `unknown`.
+It prints counts only. Before compiling, the custodian must fill in the sheet's required `reviewer_role` and `review_date`.
+With that metadata provided but all criterion entries left unfilled, the compiled input yields all `unknown`.
 
 ### Step 2: the custodian fills it
 
@@ -70,8 +71,10 @@ Only the custodian may set a predicate, a role, applicability or an attestation.
   agency, role and scope, time, operative policy and version, and data layer. Record `reviewer_role` and `review_date` for the sheet.
 - **A citation must show it.** Each citation names a `fact_id` that is *checked* in the store and has a page. The compiler takes the
   page from the store row, not from the worksheet, and refuses a mismatch.
-- Predicates are exact booleans. **`false` means an affirmative cited discrepancy**: the cited record says the opposite of the
-  criterion. **It never means "not found" or "not produced".** For absent, redacted or unresolved evidence, leave the value unset
+- Boolean values must describe what the cited record affirmatively establishes. For a criterion predicate, `false` can indicate
+  a cited documentary discrepancy, not a violation. Contextual booleans are not themselves discrepancies: for example,
+  `has_website=false` can be a cited neutral fact, and a public written policy can still yield `meets` without a website.
+  **Never use `false` for "not found" or "not produced".** For absent, redacted or unresolved evidence, leave the value unset
   (or `state` missing, redacted or unresolved) so the row stays `unknown`.
 - Policy and practice are separate rows. A documented policy never establishes practice, and a configured relationship is not a disclosure.
 - Timing: the custodian confirms receipt, the calendar (with applicable holidays) and any extension notice. A proposed date is not a
