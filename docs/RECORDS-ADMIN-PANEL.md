@@ -299,6 +299,7 @@ no files are created and no network is contacted. Add `--apply` to queue one
 **pending** `correspondence-draft` through the existing approval journal. This
 never approves, signs, places, sends, changes settings or starts a records run.
 Use a private input outside the engine repository; never commit real drafts.
+Before this step, see the [Agency-run guide](RECORDS-AGENCY-RUN.md).
 
 The input is exactly one UTF-8 JSON object (not an array or JSONL), schema
 `records-console-draft-input-v1`, with these exact keys:
