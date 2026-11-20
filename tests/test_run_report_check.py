@@ -81,6 +81,23 @@ class RunReportCheckTests(unittest.TestCase):
         self.report['needs_g'] = []
         self.assertEqual(evaluate(self.report, self.baseline)[0], 0)
 
+    def test_outputs_warning_item_is_a_widened_gap_until_allowed(self):
+        # An outputs sub-step item (DF2222-01) is a valid report entry; with no allowance it is a widened gap,
+        # and an explicit count-1 allowance for the same (stage, code) accepts it. Fails if it reads as invalid
+        # input, or an allowance for another stage or code accepts it.
+        code = 'OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE'
+        self.report['needs_g'].append({'stage': 'outputs', 'code': code, 'count': 1, 'severity': 'action'})
+        status, lines = evaluate(self.report, self.baseline)
+        self.assertEqual(status, 1)
+        self.assertIn(f'{code} FAIL count=1 baseline=0', '\n'.join(lines))
+        allowed = copy.deepcopy(self.baseline)
+        allowed['needs_g'].append({'stage': 'delta', 'code': code, 'count': 1})
+        self.assertEqual(evaluate(self.report, allowed)[0], 1)
+        allowed['needs_g'][-1]['stage'] = 'outputs'
+        status, lines = evaluate(self.report, allowed)
+        self.assertEqual(status, 0)
+        self.assertIn(f'{code} PASS count=1 baseline=1', '\n'.join(lines))
+
     def test_no_stage_offset_or_code_relocation(self):
         self.report['needs_g'][0]['count'] = 115
         self.report['needs_g'][1]['count'] = 117

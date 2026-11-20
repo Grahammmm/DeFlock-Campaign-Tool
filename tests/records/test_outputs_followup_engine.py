@@ -1,12 +1,15 @@
 """FLK-REC-1: the scheduled outputs stage runs the draft-only follow-up engine. Synthetic; nothing is sent."""
 import json
 import sqlite3
+import sys
+import tempfile
+import time
 from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
 from campaign_tool.records import approval_queue as aq, followup_clock as fc, followup_engine as fe
-from campaign_tool.records import run_stages
+from campaign_tool.records import run_orchestrator, run_report, run_stages
 from campaign_tool.records.outcomes import received_items, response_items, timeline
 from campaign_tool.records.outcomes import register as outcome_register
 from tests.records.test_case_builder import DAY, ask
@@ -26,6 +29,10 @@ def request(agency, rid):
 def rated(agency, rid):
     return {"agency_key": agency, "request_id": rid,
             "asks": [ask(1, "ALPR search logs", "answered"), ask(2, "Vendor agreement", "missing")]}
+
+
+def item(code):
+    return {"code": code, "severity": "action", "count": 1}
 
 
 def fee_item():
@@ -86,10 +93,10 @@ class OutputsEngineTests(StageTestCase):
                "requests": [request(a, r) for a, r in self.agencies]}
         (self.project / "run-outputs" / RUN / fc.REGISTER_NAME).write_text(json.dumps(doc))
 
-    def stage_outputs(self):
+    def stage_outputs(self, timeline_writer=None):
         with mock.patch.object(received_items, "write_run_received_items", self.write_received), \
                 mock.patch.object(response_items, "write_run_response_items", self.write_ratings), \
-                mock.patch.object(timeline, "write_run_timeline", self.write_timeline), \
+                mock.patch.object(timeline, "write_run_timeline", timeline_writer or self.write_timeline), \
                 mock.patch.object(outcome_register, "write_for_run", self.write_register):
             return self.stage("outputs")
 
@@ -100,6 +107,9 @@ class OutputsEngineTests(StageTestCase):
         self.settings()
         code, parsed, _ = self.stage_outputs()
         self.assertEqual((code, parsed["status"]), (0, "ok"))
+        # A clean run's result is unchanged: no needs_g key and no extra field.
+        self.assertEqual(parsed, {"stage_result_version": 1, "status": "ok", "error_code": None,
+                                  "counts": {"input": 1, "output": 1, "failed": 0, "skipped": 0}})
         engine = self.rows(fe.KIND)
         self.assertEqual([(r["agency_id"], r["request_id"], r["status"]) for r in engine],
                          [("alpha-pd", "OLD-1", "pending")])
@@ -140,6 +150,7 @@ class OutputsEngineTests(StageTestCase):
             code, parsed, raw = self.stage_outputs()
         self.assertEqual((code, parsed["status"], parsed["error_code"]), (0, "warn", "OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE"))
         self.assertNotIn(PRIVATE, raw)
+        self.assertEqual(parsed["needs_g"], [item("OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE")])  # one failure, one item
         self.assertEqual(self.rows(fe.KIND), [])
         self.assertEqual(len(self.rows("fee-reply")), 1)  # received-item drafts stay
         outputs = self.project / "run-outputs"
@@ -159,9 +170,63 @@ class OutputsEngineTests(StageTestCase):
             _, parsed, raw = self.stage("outputs")
         self.assertEqual(parsed["error_code"], "OUTPUTS_REGISTER_UNAVAILABLE")
         self.assertNotIn(PRIVATE, raw)
+        self.assertEqual([i["code"] for i in parsed["needs_g"]],
+                         ["OUTPUTS_REGISTER_UNAVAILABLE", "OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE"])
         with mock.patch.object(fe, "run", side_effect=run_stages.StageTimeout()):
             code, parsed, _ = self.stage_outputs()
         self.assertEqual((code, parsed["error_code"]), (1, "STAGE_CONTAINER_TIMEOUT"))
+        self.assertNotIn("needs_g", parsed)  # a timeout carries no additive warning items
+
+    def failing_outputs(self):
+        """One run where the queue, follow-up clock and timeline sub-steps fail; the private text is a canary."""
+        def broken_timeline(project, run_id):
+            self.write_timeline(project, run_id)  # later readers still find their input
+            raise RuntimeError(PRIVATE)
+        with mock.patch.object(aq, "queue_received_items", side_effect=RuntimeError(PRIVATE)), \
+                mock.patch.object(fc, "queue_followups", side_effect=RuntimeError(PRIVATE)):
+            return self.stage_outputs(timeline_writer=broken_timeline)
+
+    def test_outputs_warning_items_round_trip_in_order(self):
+        # Contract: every failed outputs sub-step is one report needs_g item in sub-step order while the stage
+        # error_code stays the first warning. Fails if a later failure is dropped, reordered or leaks exception text.
+        self.settings()
+        code, parsed, raw = self.failing_outputs()
+        self.assertEqual((code, parsed["status"], parsed["error_code"]), (0, "warn", "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"))
+        expected = ["OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE", "OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE", "OUTPUTS_TIMELINE_UNAVAILABLE"]
+        self.assertEqual(parsed["needs_g"], [item(c) for c in expected])
+        self.assertNotIn(PRIVATE, raw)
+
+        def fake_run_stage(argv, timeout, schema, work_dir, env):
+            if "outputs" in argv:
+                return "warn", dict(parsed["counts"]), parsed["error_code"], parsed, 1.0
+            ok = run_stages.result("ok", {})
+            return "ok", dict(ok["counts"]), None, ok, 1.0
+
+        stages = [{"name": name, "argv": [sys.executable, "-B", "-m", "campaign_tool.records.run_orchestrator",
+                                          "stub-stage", "--stage", name, "--fixture", "/unused"],
+                   "timeout_seconds": 60, "on_fail": "stop"} for name in run_orchestrator.WORK_STAGES]
+        config = run_orchestrator.validate_target_config(
+            {"target_config_version": 1, "target": "TEST", "mode": "test", "stages": stages})
+        with tempfile.TemporaryDirectory() as work, \
+                mock.patch.object(run_orchestrator, "run_stage", side_effect=fake_run_stage):
+            report_path = Path(work) / "report.json"
+            run_orchestrator.execute(config, "run_20261019T120000Z_0123abcd", "test", run_orchestrator.utc_now(),
+                                     time.time() + 600, report_path, work)
+            text = report_path.read_text(encoding="utf-8")
+        report = json.loads(text)
+        run_report.validate_run_report(report)
+        outputs = next(s for s in report["stages"] if s["name"] == "outputs")
+        self.assertEqual(outputs["error_code"], "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE")
+        self.assertEqual([(i["stage"], i["code"], i["severity"], i["count"]) for i in report["needs_g"]],
+                         [("outputs", c, "action", 1) for c in expected])
+        self.assertNotIn(PRIVATE, text)
+
+    def test_single_failure_gives_one_item(self):
+        self.settings()
+        with mock.patch.object(aq, "queue_received_items", side_effect=RuntimeError(PRIVATE)):
+            _, parsed, _ = self.stage_outputs()
+        self.assertEqual((parsed["error_code"], parsed["needs_g"]),
+                         ("OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE", [item("OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE")]))
 
     def test_engine_runs_once_with_apply_after_queue_and_its_three_inputs(self):
         self.settings()

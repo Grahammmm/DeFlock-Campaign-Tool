@@ -1036,7 +1036,7 @@ def stage_outputs(args):
         return result("fail", {"input": 1, "failed": 1}, "OUTPUTS_WRITE_FAILED"), 1
     finally:
         os.umask(old)
-    warning = None
+    warnings = []  # Ordered fixed codes of every failed sub-step, the first included.
     # Cited reply drafts for this run's received items go to the private review queue; nothing is sent.
     try:
         from .approval_queue import queue_received_items
@@ -1044,7 +1044,7 @@ def stage_outputs(args):
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
-        warning = "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE"
+        warnings.append("OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE")
     # Untied received messages become 'tie to a request' decisions (DFGL-04): own try, own code; earlier outputs stay.
     try:
         from .outcomes.unmatched import write_run_unmatched
@@ -1052,7 +1052,7 @@ def stage_outputs(args):
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
-        warning = warning or "OUTPUTS_UNMATCHED_UNAVAILABLE"
+        warnings.append("OUTPUTS_UNMATCHED_UNAVAILABLE")
     # Shadow-only model advice (REC-H2O-1): off unless the campaign enables it; never changes another output.
     try:
         from .model_advice import write_run_model_advice
@@ -1060,7 +1060,7 @@ def stage_outputs(args):
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
-        warning = warning or "OUTPUTS_MODEL_ADVICE_UNAVAILABLE"
+        warnings.append("OUTPUTS_MODEL_ADVICE_UNAVAILABLE")
     # The additive register must never suppress the counts snapshot or the digest.
     try:
         from .outcomes.register import write_for_run
@@ -1068,7 +1068,7 @@ def stage_outputs(args):
     except StageTimeout:
         raise  # Preserve the run's hard deadline, not a recoverable register warning.
     except Exception:  # noqa: BLE001 - isolate register errors; never expose private exception text
-        warning = warning or "OUTPUTS_REGISTER_UNAVAILABLE"
+        warnings.append("OUTPUTS_REGISTER_UNAVAILABLE")
         register_ok = False
     else:
         register_ok = True
@@ -1077,11 +1077,11 @@ def stage_outputs(args):
         try:
             from .followup_clock import queue_followups
             if queue_followups(args.project, args.run_id).get("settings_invalid"):
-                warning = warning or "OUTPUTS_FOLLOWUP_SETTINGS_INVALID"
+                warnings.append("OUTPUTS_FOLLOWUP_SETTINGS_INVALID")
         except StageTimeout:
             raise
         except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
-            warning = warning or "OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE"
+            warnings.append("OUTPUTS_FOLLOWUP_CLOCK_UNAVAILABLE")
     # Private gap/misuse proposals (REC-AUTO-9): own try, own code; never suppresses earlier outputs.
     try:
         from .outcomes.gap_proposals import write_run_gap_proposals
@@ -1089,7 +1089,7 @@ def stage_outputs(args):
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - isolate proposal errors; never expose private exception text
-        warning = warning or "OUTPUTS_GAP_PROPOSALS_UNAVAILABLE"
+        warnings.append("OUTPUTS_GAP_PROPOSALS_UNAVAILABLE")
     # Recommended next steps (REC-AUTO-11): queue the social, site and probe drafts from this run's proposals so the
     # Next Steps page fills without a manual command. Needs the campaign root; nothing is sent or published.
     try:
@@ -1098,11 +1098,11 @@ def stage_outputs(args):
             from .next_steps import queue_run_next_steps
             if queue_run_next_steps(args.project, args.run_id, campaign_root=campaign_root).get("skipped") in (
                     "content_invalid", "proposals_invalid", "proposals_stale"):
-                warning = warning or "OUTPUTS_NEXT_STEPS_UNAVAILABLE"
+                warnings.append("OUTPUTS_NEXT_STEPS_UNAVAILABLE")
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - isolate next-step errors; never expose private exception text
-        warning = warning or "OUTPUTS_NEXT_STEPS_UNAVAILABLE"
+        warnings.append("OUTPUTS_NEXT_STEPS_UNAVAILABLE")
     # Additive per-record text state (DOC-2): its own code; never suppresses the snapshot, register or digest.
     try:
         from .outcomes.textstate import write_run_textstate
@@ -1110,7 +1110,7 @@ def stage_outputs(args):
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - isolate text-state errors; never expose private exception text
-        warning = warning or "OUTPUTS_TEXTSTATE_UNAVAILABLE"
+        warnings.append("OUTPUTS_TEXTSTATE_UNAVAILABLE")
     # Per-asked-item response ratings need the register and the received items written above.
     try:
         from .outcomes.response_items import write_run_response_items
@@ -1118,40 +1118,43 @@ def stage_outputs(args):
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - isolate rating errors; never expose private exception text
-        warning = warning or "OUTPUTS_RESPONSE_ITEMS_UNAVAILABLE"
+        warnings.append("OUTPUTS_RESPONSE_ITEMS_UNAVAILABLE")
     try:  # Per-run request timeline (REC-TL-1): own code; reads the files written above.
         from .outcomes.timeline import write_run_timeline
         write_run_timeline(args.project, args.run_id)
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - isolate timeline errors; never expose private exception text
-        warning = warning or "OUTPUTS_TIMELINE_UNAVAILABLE"
+        warnings.append("OUTPUTS_TIMELINE_UNAVAILABLE")
     try:  # Engine-owned follow-up drafts (FLK-REC-1): needs received-item drafts, response items and timeline above.
         from .followup_engine import run as run_followup_engine
         run_followup_engine(args.project, args.run_id, apply=True)  # The engine keeps its own autonomy/identity gates.
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
-        warning = warning or "OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE"
+        warnings.append("OUTPUTS_FOLLOWUP_ENGINE_UNAVAILABLE")
     try:  # Analysis-ready manifest (DFGL-05): last, own code; reads the files written above; starts nothing.
         from .outcomes.analysis_ready import write_run_analysis_ready
         write_run_analysis_ready(args.project, args.run_id)
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - isolate manifest errors; never expose private exception text
-        warning = warning or "OUTPUTS_ANALYSIS_READY_UNAVAILABLE"
+        warnings.append("OUTPUTS_ANALYSIS_READY_UNAVAILABLE")
     produced = 1
+    # Every failed sub-step is one operator-action item (codes only); error_code stays the first warning.
+    items = needs(*((code, "action", 1) for code in dict.fromkeys(warnings)))
     if prepared_digest is not None:
         try:
             digest_outcome = usage_digest.commit_digest(prepared_digest)
         except (OSError, usage_digest.DigestRefused):
             return result("fail", {"input": 1, "output": 1, "failed": 1},
-                          "OUTPUTS_DIGEST_WRITE_FAILED"), 1
+                          "OUTPUTS_DIGEST_WRITE_FAILED", needs_g=items), 1
         produced = 3
         if digest_outcome["status"] == "unresolved":
-            warning = "OUTPUTS_DIGEST_UNRESOLVED"
-    if warning:
-        return result("warn", {"input": 1, "output": produced}, warning), 0
+            items = items + needs(("OUTPUTS_DIGEST_UNRESOLVED", "action", 1))
+            warnings = ["OUTPUTS_DIGEST_UNRESOLVED"]  # Overrides only the primary code, not the item list.
+    if warnings:
+        return result("warn", {"input": 1, "output": produced}, warnings[0], needs_g=items), 0
     return result("ok", {"input": 1, "output": produced}), 0
 
 
