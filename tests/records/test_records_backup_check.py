@@ -10,7 +10,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from campaign_tool.records import approval_queue, cli, e2e_proof, public_packets
+from campaign_tool.records import approval_queue, cli, e2e_proof, public_packets, records_backup
 from campaign_tool.records.intake import imap_intake
 from tests.records.test_records_backup_profile import tree_state
 from tests.records.test_run_slice import synthetic_email
@@ -90,6 +90,26 @@ class BackupCheckCli(unittest.TestCase):
         self.assertEqual(self.check(), (0, "BACKUP_OK"))
         self.assertEqual(tree_state(self.into), before)
         self.assertFalse(self.alerts.exists())
+
+    def test_future_newest_receipt_does_not_fall_back(self):
+        # Both digests match: neither negative age nor choosing the last line may clear the alarm.
+        future = dict(self.entry, at=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat())
+        self.write_digests(future, self.entry)
+        before = tree_state(self.into)
+        self.assertEqual(self.check(), (1, "DIGESTS_INVALID"))
+        self.assertEqual(self.alert_names(), ["health-backup-digests_invalid.json"])
+        self.assertEqual(tree_state(self.into), before)
+
+    def test_receipt_at_exact_now_still_verifies_digest(self):
+        # An inclusive future cutoff or an early OK would break one of these cases.
+        now = datetime.fromisoformat(self.entry["at"])
+        for digest, expected in ((self.entry["manifest_sha256"], "BACKUP_OK"),
+                                 ("0" * 64, "BACKUP_VERIFY_FAILED")):
+            with self.subTest(expected=expected):
+                self.write_digests(dict(self.entry, manifest_sha256=digest))
+                before = tree_state(self.into)
+                self.assertEqual(records_backup._check(self.into, 8, now)[0], expected)
+                self.assertEqual(tree_state(self.into), before)
 
     def test_flipped_byte_fails_and_alerts(self):
         victim = next(p for p in sorted((self.set / "payload").rglob("*")) if p.is_file() and p.stat().st_size)

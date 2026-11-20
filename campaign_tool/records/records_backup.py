@@ -205,6 +205,8 @@ def _check(into, max_age_days, now):
             raise ValueError("entry")
     except (ValueError, KeyError, TypeError, UnicodeDecodeError):
         return "DIGESTS_INVALID", {}
+    if taken > now:
+        return "DIGESTS_INVALID", {}
     try:
         report = v2.verify_v2(str(into / name), manifest_sha256=digest)
     except (RecoveryError, OSError, ValueError, sqlite3.Error):
