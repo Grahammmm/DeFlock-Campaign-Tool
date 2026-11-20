@@ -90,6 +90,7 @@ COMMANDS = {
     "campaign-readiness": ("campaign_readiness", "main"),
     "comparison-worksheet": ("comparison_worksheet", "main"),
     "quiescence-audit": ("quiescence_audit", "main"),
+    "units-diff": ("units_diff", "main"),
 }
 
 

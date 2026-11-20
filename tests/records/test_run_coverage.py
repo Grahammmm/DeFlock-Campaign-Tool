@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from campaign_tool.records import run_coverage, run_report  # noqa: E402
+from tests.test_records_run_report import ACCEPTED, adopt_report  # noqa: E402
 
 FIXTURE = ROOT / "examples" / "run-report" / "coverage-projection.synthetic.json"
 MODULE = ROOT / "campaign_tool" / "records" / "run_coverage.py"
@@ -66,6 +67,46 @@ class CoverageFixtureTests(unittest.TestCase):
                                   "severity": "action", "count": 9})
         run_report.validate_run_report(report)
         self.assertEqual(run_coverage.coverage_counts(report)["portal_held"], 7)
+
+    def gap_case(self, gaps, name="a_live_shaped_scheduled_run", **adoption):
+        """The case's report with a recorded adoption gap partition and its needs-G totals."""
+        report = copy.deepcopy(next(c for c in load_cases() if c["name"] == name)["report"])
+        stage = report["stages"][2]
+        stage.update(adoption)
+        payload = adopt_report(stage["counts"]["input"], gaps)
+        stage["outcomes"] = run_report.gap_partition(payload, ACCEPTED)
+        report["needs_g"] = [i for i in report["needs_g"] if i["stage"] != "adoption"]
+        for code, severity, n in (("ADOPTION_CODED_GAPS", "info", payload["coded_gap_messages"]),
+                                  ("ADOPTION_UNACCEPTED_GAP", "blocking", sum(payload["unaccepted_coded_gaps"].values()))):
+            if n:
+                report["needs_g"].append({"code": code, "stage": "adoption", "severity": severity, "count": n})
+        return report
+
+    def test_coded_gap_equals_the_recorded_breakdown_sum(self):
+        # Contract: with a breakdown recorded, coded_gap is its sum and matches the legacy totals.
+        legacy = next(c for c in load_cases() if c["name"] == "a_live_shaped_scheduled_run")["expected"]["counts"]
+        for gaps in ({"original_scope_unresolved": 3, "unsupported_rfc822_part": 2},
+                     {"original_scope_unresolved": 3, "new_unknown_class": 2}):
+            report = self.gap_case(gaps)
+            run_report.validate_run_report(report)
+            counts = run_coverage.coverage_counts(report)
+            self.assertEqual(counts["coded_gap"], sum(r["count"] for r in
+                                                      run_report.adoption_gap_breakdown(report["stages"][2])))
+            self.assertEqual(counts, legacy)
+        report = self.gap_case({}, "c_portal_and_extract_fail")
+        self.assertEqual(run_coverage.coverage_counts(report)["coded_gap"], 0)
+
+    def test_coded_gap_matches_partition_even_when_adoption_fails(self):
+        # Believable bug: a failed adoption hides which gaps held messages; legacy reports stay unknown.
+        gaps = {"original_scope_unresolved": 3, "new_unknown_class": 2}
+        report = self.gap_case(gaps, status="fail", error_code="ADOPTION_BLOCKED")
+        report["overall_status"] = "fail"
+        run_report.validate_run_report(report)
+        counts = run_coverage.coverage_counts(report)
+        self.assertEqual((counts["coded_gap"], counts["adopted"], counts["adopted_this_run"]), (5, None, None))
+        del report["stages"][2]["outcomes"]
+        counts = run_coverage.coverage_counts(report)
+        self.assertEqual((counts["coded_gap"], counts["adopted"]), (None, None))
 
     def test_module_is_a_pure_consumer(self):
         tree = ast.parse(MODULE.read_text(encoding="utf-8"))
