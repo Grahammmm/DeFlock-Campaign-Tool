@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import urllib.parse
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -372,23 +373,34 @@ def _fold(line):
     return "\r\n ".join(p.decode("utf-8") for p in parts)
 
 
+def _uid_parts(e):
+    return e["kind"], e["agency_key"], e["request"], _iso(e["date"])
+
+
 def uid(e):
-    blob = "|".join((e["kind"], e["agency_key"], e["request"], _iso(e["date"])))
+    blob = "|".join(_uid_parts(e))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32] + UID_HOST
 
 
 def to_ics(items, now):
     stamp = now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//DeFlock Campaign Tool//records console//EN", "CALSCALE:GREGORIAN"]
-    done = set()
+    # Deduplicate exact rows before deciding which legacy UIDs are ambiguous.
+    # Include the label in the identity, not in the exported display text.
+    events = {}
     for e in items:
-        if uid(e) in done:
-            continue
-        done.add(uid(e))
+        identity = (*_uid_parts(e), e.get("label"), e["agency"], e["basis"], e["source"])
+        events.setdefault((uid(e), identity), e)
+    counts = Counter(base for base, _ in events)
+    for (base, identity), e in events.items():
+        event_uid = base
+        if counts[base] > 1:
+            blob = json.dumps(identity).encode("utf-8")
+            event_uid = hashlib.sha256(blob).hexdigest()[:32] + UID_HOST
         summary = "%s: %s %s (%s)" % (KINDS[e["kind"]], _scrub(e["agency"]), _scrub(e["request"]), e["basis"])
         if e["kind"] == "meeting":
             summary = "Meeting: %s (DATED)" % _scrub(e["agency"])
-        lines += ["BEGIN:VEVENT", "UID:" + uid(e), "DTSTAMP:" + stamp, "DTSTART;VALUE=DATE:" + e["date"].strftime("%Y%m%d"),
+        lines += ["BEGIN:VEVENT", "UID:" + event_uid, "DTSTAMP:" + stamp, "DTSTART;VALUE=DATE:" + e["date"].strftime("%Y%m%d"),
                   "SUMMARY:" + _esc(re.sub(r"\s+", " ", summary)), "DESCRIPTION:" + _esc(_scrub(e["source"])), "END:VEVENT"]
     lines.append("END:VCALENDAR")
     return "".join(_fold(x) + "\r\n" for x in lines)
