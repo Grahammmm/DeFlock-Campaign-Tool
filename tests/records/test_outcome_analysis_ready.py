@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import stat
@@ -15,6 +16,8 @@ from unittest import mock
 from campaign_tool.records import run_stages
 from campaign_tool.records.ledger.migrations import v001
 from campaign_tool.records.outcomes import analysis_ready as ar
+from campaign_tool.records.outcomes import gap_proposals, received_items, textstate
+from tests.records.private_fixture import private_fixture_parent
 
 FIXTURE = Path(__file__).parent / "fixtures" / "outcome_register" / "tracker.csv"
 CANARY = "Secret Synthetic Document Text"
@@ -26,9 +29,7 @@ def h(n):
 
 class AnalysisReadyTests(unittest.TestCase):
     def setUp(self):
-        work = Path(tempfile.gettempdir()) / "outcome-analysis-ready" / "test-workspaces"
-        work.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.temp = tempfile.TemporaryDirectory(prefix="ar-", dir=work)
+        self.temp = tempfile.TemporaryDirectory(prefix="ar-", dir=private_fixture_parent())
         self.addCleanup(self.temp.cleanup)
         self.project = Path(self.temp.name)
         processing = self.project / "processing-v1"
@@ -54,10 +55,10 @@ class AnalysisReadyTests(unittest.TestCase):
 
     def fixture_run(self, run, items):
         directory = self.outcomes(run)
-        self.put(directory / "received-items.json", {"schema": "records-received-items-v1", "run_id": run, "items": items})
-        self.put(directory / "gap-proposals.json", {"run_id": run, "agencies": [
+        self.put(directory / "received-items.json", {"schema": received_items.SCHEMA, "run_id": run, "items": items})
+        self.put(directory / "gap-proposals.json", {"schema": gap_proposals.SCHEMA, "run_id": run, "agencies": [
             {"agency_id": "ag1", "requests": [{"request_id": "rq1", "proposals": [{"proposal_id": h(200), "quote": CANARY}]}]}]})
-        self.put(directory.parent / "text-state.json", {"run_id": run, "records": [
+        self.put(directory.parent / "text-state.json", {"schema": textstate.SCHEMA, "run_id": run, "records": [
             {"sha256": h(1), "state": "text_reviewed", "words": CANARY}]})
         return directory
 
@@ -95,15 +96,47 @@ class AnalysisReadyTests(unittest.TestCase):
         first = (directory / "analysis-ready.json").read_bytes()
         ar.write_run_analysis_ready(self.project, "r1")
         self.assertEqual((directory / "analysis-ready.json").read_bytes(), first)
-        self.put(directory / "received-items.json", {"run_id": "other", "items": []})
-        with self.assertRaises(OSError):
+        self.put(directory / "received-items.json", {"schema": received_items.SCHEMA, "run_id": "other", "items": []})
+        with self.assertRaisesRegex(OSError, "analysis_ready_input_stale"):
             ar.write_run_analysis_ready(self.project, "r1")
+
+    def test_wrong_schema_in_each_input_preserves_previous_manifest(self):
+        # A same-run artifact from another producer must not become an empty handoff.
+        for relative, wrong_schema in (("received-items.json", gap_proposals.SCHEMA),
+                                       ("gap-proposals.json", textstate.SCHEMA),
+                                       ("../text-state.json", received_items.SCHEMA)):
+            with self.subTest(relative=relative):
+                directory = self.fixture_run("r1", [self.item(1)])
+                ar.write_run_analysis_ready(self.project, "r1")
+                target = directory / "analysis-ready.json"
+                previous = target.read_bytes()
+                path = directory / relative
+                self.put(path, {"schema": wrong_schema, "run_id": "r1"})
+                with self.assertRaisesRegex(OSError, r"analysis_ready_input_schema: " + re.escape(path.name)):
+                    ar.write_run_analysis_ready(self.project, "r1")
+                self.assertEqual(target.read_bytes(), previous)
+
+    def test_each_absent_input_keeps_existing_fallback(self):
+        for relative in ("received-items.json", "gap-proposals.json", "../text-state.json"):
+            with self.subTest(relative=relative):
+                directory = self.fixture_run("r1", [self.item(1)])
+                path = directory / relative
+                path.unlink()
+                report = ar.write_run_analysis_ready(self.project, "r1")
+                self.assertEqual(set(report["inputs"]),
+                                 {"received-items.json", "gap-proposals.json", "text-state.json"} - {path.name})
+                if relative == "received-items.json":
+                    self.assertEqual(report["agencies"], [])
+                elif relative == "gap-proposals.json":
+                    self.assertEqual(report["agencies"][0]["gap_proposal_ids"], [])
+                else:
+                    self.assertEqual(report["agencies"][0]["records"], [{"sha256": h(1), "text_state": "unknown"}])
 
     @mock.patch("campaign_tool.records.followup_engine.run", new=lambda *args, **kwargs: None)  # needs full engine inputs; covered in test_outputs_followup_engine
     def test_writer_failure_warns_and_keeps_earlier_outputs(self):
         processing = self.project / "processing-v1" / "runs"
         (processing / "extract-r1.json").write_text(json.dumps({
-            "schema": "records-extract-outcomes-v1", "run_id": "r1", "documents": [
+            "schema": textstate.LIST_SCHEMA, "run_id": "r1", "documents": [
                 {"original_sha256": h(1), "form": "pdf", "outcome": "EXTRACTED"}]}))
         with mock.patch.object(ar, "write_run_analysis_ready", side_effect=RuntimeError(CANARY)):
             code, line = self.stage("r1")
@@ -118,7 +151,7 @@ class AnalysisReadyTests(unittest.TestCase):
     @mock.patch("campaign_tool.records.followup_engine.run", new=lambda *args, **kwargs: None)  # needs full engine inputs; covered in test_outputs_followup_engine
     def test_stage_writes_manifest_after_earlier_outputs(self):
         (self.project / "processing-v1" / "runs" / "extract-r2.json").write_text(json.dumps({
-            "schema": "records-extract-outcomes-v1", "run_id": "r2", "documents": []}))
+            "schema": textstate.LIST_SCHEMA, "run_id": "r2", "documents": []}))
         code, line = self.stage("r2")
         self.assertEqual((code, line["status"], line["error_code"]), (0, "ok", None))
         report = json.loads((self.project / "run-outputs" / "r2" / "outcomes" / "analysis-ready.json").read_text())
@@ -133,7 +166,7 @@ class AnalysisReadyTests(unittest.TestCase):
                 project = Path(tempfile.mkdtemp(prefix=f"ar-{kind}-", dir=self.temp.name))
                 target = outside / kind
                 target.mkdir(mode=0o700, parents=True)
-                (target / "text-state.json").write_text(json.dumps({"run_id": "r1", "records": []}))
+                self.put(target / "text-state.json", {"schema": textstate.SCHEMA, "run_id": "r1", "records": []})
                 if kind == "run-outputs":
                     (project / "run-outputs").symlink_to(target)
                 else:
