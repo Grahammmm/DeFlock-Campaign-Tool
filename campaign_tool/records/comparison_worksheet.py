@@ -91,8 +91,12 @@ def _candidates(tool, store, agency_id):
         for part in (store / "agencies", folder):
             if os.path.islink(part):
                 raise WorksheetError("fact_store_unsafe")
-        if not os.path.lexists(folder / "FACTS.csv"):
-            return {}, [], {"disputed": 0, "unreviewed": 0}
+        # A missing file is empty only after checking the journal under the store lock.
+        with tool.store_lock(store, exclusive=False):
+            if os.path.lexists(folder / tool.JOURNAL):
+                raise WorksheetError("fact_store_refused")
+            if not os.path.lexists(folder / "FACTS.csv"):
+                return {}, [], {"disputed": 0, "unreviewed": 0}
         rows, _, codes = tool.read_reviewed(store, agency_id)
     except tool.Locked:
         raise WorksheetError("fact_store_busy") from None
@@ -123,7 +127,7 @@ def build_worksheet(comparison_path, facts_store):
     """The worksheet document; reads only; refuses a store inside the checkout. Never fills a value, role or attestation."""
     run_id, as_of, agencies, inventory = _read_comparison(comparison_path)
     try:
-        store = cmp._checked(Path(facts_store).resolve(), directory=True)
+        store = cmp._checked(Path(facts_store), directory=True).resolve()
     except OSError:
         raise WorksheetError("fact_store_unsafe") from None
     if store == REPO or REPO in store.parents:
@@ -170,7 +174,10 @@ def _write(out, comparison_path, facts_store, data):
     if any(parent == g or g in parent.parents for g in guarded):
         raise WorksheetError("output_location_refused")
     target = parent / out.name
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        raise WorksheetError("output_write_failed") from None
     info = os.fstat(fd)
     try:
         with os.fdopen(fd, "wb") as handle:

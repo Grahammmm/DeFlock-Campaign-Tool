@@ -160,6 +160,54 @@ class WorksheetTest(unittest.TestCase):
         self.assertEqual(self.run_cli()[2], "comparison_worksheet_fact_store_refused\n")
         self.assertEqual([p.name for p in self.out_dir.iterdir()], ["dangling.json"])
 
+    def test_missing_facts_still_refuses_pending_transaction_and_busy_store(self):
+        import fcntl
+        folder = self.store / "agencies" / "beta-no-facts"
+        folder.mkdir()
+        journal = folder / ".FACTS-TXN.json"
+        journal.write_text("{}")
+        self.assertEqual(self.run_cli(), (1, "", "comparison_worksheet_fact_store_refused\n"))
+        journal.unlink()
+        report = c.compare([{"agency_id": "beta-no-facts"}], run_id="syn-run", as_of="2026-04-30")
+        self.comparison.write_text(json.dumps(report))
+        fd = os.open(self.store, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with mock.patch.object(ws, "_tool", wraps=ws._tool) as load_tool:
+            tool = ws._tool()
+            tool.LOCK_WAIT = 0
+            load_tool.return_value = tool
+            self.assertEqual(self.run_cli(), (1, "", "comparison_worksheet_fact_store_busy\n"))
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        self.assertEqual(self.run_cli()[0], 0)
+
+    def test_refuses_symlink_in_store_path(self):
+        link = self.dir / "store-link"
+        link.symlink_to(self.store, target_is_directory=True)
+        self.assertEqual(self.run_cli(store=link), (1, "", "comparison_worksheet_fact_store_unsafe\n"))
+        parent_link = self.dir / "parent-link"
+        parent_link.symlink_to(self.dir, target_is_directory=True)
+        self.assertEqual(self.run_cli(store=parent_link / "store"), (1, "", "comparison_worksheet_fact_store_unsafe\n"))
+        self.assertFalse((self.out_dir / "worksheet.json").exists())
+
+    def test_output_creation_error_is_fixed_refusal(self):
+        real_open = os.open
+        target = self.out_dir / "worksheet.json"
+        def fail_output(path, flags, *args, **kwargs):
+            if Path(path) == target and flags & os.O_CREAT:
+                raise PermissionError("synthetic private path")
+            return real_open(path, flags, *args, **kwargs)
+        with mock.patch.object(os, "open", side_effect=fail_output):
+            self.assertEqual(self.run_cli(), (1, "", "comparison_worksheet_output_write_failed\n"))
+        self.assertFalse(target.exists())
+        def race_output(path, flags, *args, **kwargs):
+            if Path(path) == target and flags & os.O_CREAT:
+                target.write_bytes(b"other writer")
+            return real_open(path, flags, *args, **kwargs)
+        with mock.patch.object(os, "open", side_effect=race_output):
+            self.assertEqual(self.run_cli(), (1, "", "comparison_worksheet_output_write_failed\n"))
+        self.assertEqual(target.read_bytes(), b"other writer")
+
     # Contract: one typed table beside CRITERIA drives every key. Bug caught: a predicate or typed extra dropped from the blank.
     def test_projects_all_criteria_predicates_and_typed_extras_blank(self):
         sheet = self.sheet()["agencies"][1]["facts"]
