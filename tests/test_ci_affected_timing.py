@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import types
@@ -44,8 +45,28 @@ class TimingSummaryTest(unittest.TestCase):
                 mock.patch.object(ci_affected, 'partition', return_value=[[name]]):
             code = ci_affected.main(['--tier', 'full'])
         lines = out.getvalue().splitlines()
-        self.assertEqual((code, len(lines), json.loads(lines[0])['selected_modules']), (1, 2, [name]))
-        self.assertEqual([m for m, _ in json.loads(lines[1])['slowest']], ['unittest.loader'])
+        self.assertEqual((code, json.loads(lines[0])['selected_modules']), (1, [name]))
+        self.assertEqual([m for m, _ in json.loads(lines[-1])['slowest']], ['unittest.loader'])
+
+    def test_stalled_module_dumps_stack_and_exits_without_a_green_record(self):
+        # Exercise the actual watchdog in a disposable interpreter with a
+        # longer parent deadline; never arm an exit timer in this test runner.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'stalled_fixture.py').write_text(
+                'import time, unittest\nclass Case(unittest.TestCase):\n'
+                '    def test_stalled(self):\n        time.sleep(30)\n')
+            driver = root / 'driver.py'
+            driver.write_text(f'import sys\nsys.path.insert(0, {str(ci_affected.ROOT)!r})\n'
+                              'from tools import ci_affected\nci_affected.MODULE_TIMEOUT = 1\n'
+                              'raise SystemExit(ci_affected.run_modules(["stalled_fixture"], "receipt"))\n')
+            child = subprocess.run([sys.executable, str(driver)], cwd=root, timeout=10,
+                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            self.assertFalse((root / 'receipt').exists(), child.stdout)
+        self.assertEqual(child.returncode, 1, child.stdout)
+        self.assertRegex(child.stdout, r'CI_MODULE_START stalled_fixture phase=run started=\S+ timeout_seconds=1')
+        self.assertRegex(child.stdout, r'Timeout .*\nThread ')
+        self.assertIn('stalled_fixture.py", line 4 in test_stalled', child.stdout)
 
     def test_skip_is_timed_and_passes(self):
         code, lines = run([synthetic('synthetic.skip', lambda self: self.skipTest('n/a'))])

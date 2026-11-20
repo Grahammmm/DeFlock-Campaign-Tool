@@ -2,12 +2,69 @@
 import io
 import json
 import os
+import signal
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tests.records import test_console_phone_journey as journey
+
+
+class PhoneDeadline(unittest.TestCase):
+    def test_silent_or_event_only_websocket_cannot_extend_call_deadline(self):
+        # The real framing code must apply the remaining budget to socket I/O.
+        # A series of events must not renew the response deadline either.
+        for events in (False, True):
+            with self.subTest(events=events):
+                clock = [0.0]
+                budget = [None]
+
+                def recv(_size):
+                    timeout = budget[0]
+                    if timeout is None:
+                        self.fail("recv was not given a timeout")
+                    if not events or timeout <= 1:
+                        clock[0] += timeout
+                        raise TimeoutError("silent socket")
+                    clock[0] += 1
+                    body = b'{"method":"Page.event"}'
+                    return bytes((0x81, len(body))) + body
+
+                ws = journey.WebSocket.__new__(journey.WebSocket)
+                ws.buffer = b""
+                ws.sock = Mock(recv=recv, settimeout=lambda t: budget.__setitem__(0, t))
+                phone = journey.Phone.__new__(journey.Phone)
+                phone.ws, phone.counter, phone.events = ws, 0, []
+                with patch.object(journey.time, 'monotonic', lambda: clock[0]), patch.object(journey, 'TIMEOUT', 3):
+                    with self.assertRaisesRegex(journey.CdpError, "Runtime.evaluate: timed out"):
+                        phone.call("Runtime.evaluate")
+                self.assertLessEqual(clock[0], 3)
+                self.assertEqual(len(phone.events), 2 if events else 0)
+
+    def test_cleanup_kills_group_even_when_leader_exited_and_shares_wait_budget(self):
+        # A reaped leader can leave children; an unresponsive leader must not
+        # give the second wait a fresh budget on top of the first wait's overrun.
+        for leader_exited in (True, False):
+            with self.subTest(leader_exited=leader_exited):
+                clock = [0.0]
+                waits = []
+
+                def wait(timeout):
+                    waits.append(timeout)
+                    if not leader_exited and len(waits) == 1:
+                        clock[0] += timeout + 1
+                        raise subprocess.TimeoutExpired("chrome", timeout)
+                    return 0
+
+                phone = journey.Phone.__new__(journey.Phone)
+                phone.ws, phone.profile = None, None
+                phone.process = Mock(pid=1234, wait=wait)
+                with patch.object(journey.time, 'monotonic', lambda: clock[0]), patch.object(journey.os, 'killpg') as kill:
+                    phone.close()
+                self.assertEqual([args.args for args in kill.call_args_list], [(1234, signal.SIGTERM), (1234, signal.SIGKILL)])
+                self.assertEqual(waits, [10, 20 if leader_exited else 9])
 
 
 class PhoneStartup(unittest.TestCase):

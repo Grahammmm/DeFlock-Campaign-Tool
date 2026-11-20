@@ -3,7 +3,10 @@
 
 import argparse
 import ast
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import contextlib
+from datetime import datetime, timezone
+import faulthandler
 import json
 import os
 from pathlib import Path
@@ -173,6 +176,55 @@ def run_timed(suite, shard, stream=None):
     return 0 if result.wasSuccessful() else 1
 
 
+# Full jobs have 35 minutes; leave room above the heaviest known module
+# without letting a single wedged module consume the whole job.
+MODULE_TIMEOUT = 600
+
+
+@contextlib.contextmanager
+def module_window(name, phase):
+    started = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    clock = time.perf_counter()
+    label = f'{name} phase={phase} started={started}'
+    print(f'CI_MODULE_START {label} timeout_seconds={MODULE_TIMEOUT}', flush=True)
+    # A selector test can invoke us again in the same interpreter. The
+    # process-wide faulthandler timer still belongs to that outer module.
+    owns_watchdog = not getattr(faulthandler, '_ci_affected_watchdog_active', False)
+    if owns_watchdog:
+        faulthandler.dump_traceback_later(MODULE_TIMEOUT, file=2, exit=True)
+        setattr(faulthandler, '_ci_affected_watchdog_active', True)
+    try:
+        yield
+    finally:
+        if owns_watchdog:
+            faulthandler.cancel_dump_traceback_later()
+            delattr(faulthandler, '_ci_affected_watchdog_active')
+        print(f'CI_MODULE_END {label} elapsed_seconds={time.perf_counter() - clock:.3f}', flush=True)
+
+
+def load_modules(names):
+    loaded = {}
+    for name in names:
+        with module_window(name, 'load'):
+            loaded[name] = unittest.defaultTestLoader.loadTestsFromName(name)
+    return loaded
+
+
+class ModuleSuite(unittest.TestSuite):
+    def __init__(self, names, loaded):
+        super().__init__()
+        self.names = names
+        self.loaded = loaded
+
+    def run(self, result, debug=False):
+        for name in self.names:
+            if result.shouldStop:
+                break
+            with module_window(name, 'run'):
+                self.loaded[name].run(result, debug)
+        return result
+
+
 # In-process after the children (<= 5 modules); add one only with its parallel-only failing CI run as evidence.
 # test_fa21_report_finite: its whole-repo listing saw a sibling chunk's __pycache__ write (run 41252980614, shard 2;
 # run 41255540962: campaign_tool/__pycache__/law.*.pyc).
@@ -195,7 +247,7 @@ def run_modules(names, record_path):
     """
     sys.path.insert(0, str(ROOT))
     result = unittest.TextTestRunner(verbosity=2, resultclass=TimedResult).run(
-        unittest.defaultTestLoader.loadTestsFromNames(names))
+        ModuleSuite(names, load_modules(names)))
     ok = result.wasSuccessful() and result.testsRun > 0
     bad = [test.id() for test, _ in result.failures + result.errors] + [t.id() for t in result.unexpectedSuccesses]
     line = RESULT + json.dumps({'ran': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors),
@@ -241,7 +293,7 @@ def aggregate(verdicts, expected):
     return (1 if problems else 0), ran
 
 
-def run_parallel(names, files, jobs, weights, expected, shard):
+def run_parallel(names, files, jobs, weights, expected, shard, loaded):
     serial = sorted(SERIAL & set(names))
     rest = [name for name in names if name not in SERIAL]
     chunks = partition(rest, files, min(jobs, len(rest)), weights) if rest else []
@@ -261,19 +313,24 @@ def run_parallel(names, files, jobs, weights, expected, shard):
                 [sys.executable, '-B', '-W', 'error::ResourceWarning', str(Path(__file__).resolve()),
                  '--record', str(record), '--run-modules', *chunk], cwd=ROOT, env={**os.environ, 'TMPDIR': tmp},
                 stdout=out, stderr=subprocess.STDOUT)))
-        verdicts = []
-        for k, (chunk, (out, record, child)) in enumerate(zip(chunks, children)):
-            child.wait()
-            out.seek(0)
-            text = out.read().decode('utf-8', 'replace')
-            print(f'::group::chunk {k} ({len(chunk)} modules)\n{text.rstrip()}\n::endgroup::', flush=True)
-            try:
-                written = record.read_text(encoding='utf-8')
-            except (OSError, UnicodeDecodeError):
-                written = ''
-            verdicts.append(chunk_verdict(child.returncode, written, text))
+        verdicts_by_chunk = {}
+        # A failure in chunk 1 must be visible even while chunk 0 is still running.
+        with ThreadPoolExecutor(max_workers=max(1, len(children))) as pool:
+            pending = {pool.submit(child.wait): k for k, (_, _, child) in enumerate(children)}
+            for done in as_completed(pending):
+                k = pending[done]
+                out, record, _ = children[k]
+                out.seek(0)
+                text = out.read().decode('utf-8', 'replace')
+                print(f'::group::chunk {k} ({len(chunks[k])} modules)\n{text.rstrip()}\n::endgroup::', flush=True)
+                try:
+                    written = record.read_text(encoding='utf-8')
+                except (OSError, UnicodeDecodeError):
+                    written = ''
+                verdicts_by_chunk[k] = chunk_verdict(done.result(), written, text)
+        verdicts = [verdicts_by_chunk[k] for k in range(len(chunks))]
     if serial:
-        result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromNames(serial))
+        result = unittest.TextTestRunner(verbosity=2).run(ModuleSuite(serial, loaded))
         verdicts.append((result.testsRun, None if result.wasSuccessful() else 'SERIAL modules failed'))
     code, ran = aggregate(verdicts, expected)
     print(json.dumps({'shard': shard, 'jobs': jobs, 'cpu_count': os.cpu_count(), 'expected': expected,
@@ -283,14 +340,14 @@ def run_parallel(names, files, jobs, weights, expected, shard):
 
 def run_shard(names, files, jobs, weights, shard):
     sys.path.insert(0, str(ROOT))
-    suite = unittest.defaultTestLoader.loadTestsFromNames(names)
-    expected = suite.countTestCases()
+    loaded = load_modules(names)
+    expected = sum(suite.countTestCases() for suite in loaded.values())
     if not expected:
         raise RuntimeError('empty test suite; refusing silent success')
     jobs = jobs or os.cpu_count() or 1
     if jobs == 1 or len(names) < 2:
-        return run_timed(suite, shard)
-    return run_parallel(names, files, jobs, weights, expected, shard)
+        return run_timed(ModuleSuite(names, loaded), shard)
+    return run_parallel(names, files, jobs, weights, expected, shard, loaded)
 
 
 def self_test():

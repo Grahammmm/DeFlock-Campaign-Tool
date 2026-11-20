@@ -59,18 +59,27 @@ class CdpError(Exception):
     pass
 
 
+def remaining_time(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("CDP deadline expired")
+    return remaining
+
+
 class WebSocket:
     """The least of RFC 6455 that the DevTools endpoint needs: one text message out, one text message in."""
 
     def __init__(self, host, port, path):
-        self.sock = socket.create_connection((host, port), timeout=TIMEOUT)
+        deadline = time.monotonic() + TIMEOUT
+        self.sock = socket.create_connection((host, port), timeout=remaining_time(deadline))
         try:
             key = base64.b64encode(os.urandom(16)).decode()
-            self.sock.sendall(("GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-                               "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % (path, host, port, key)).encode())
+            request = ("GET %s HTTP/1.1\r\nHost: %s:%d\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                       "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % (path, host, port, key)).encode()
+            self._send(request, deadline)
             self.buffer = b""
             while b"\r\n\r\n" not in self.buffer:
-                self.buffer += self._chunk()
+                self.buffer += self._chunk(deadline)
             head, _, self.buffer = self.buffer.partition(b"\r\n\r\n")
             if b" 101 " not in head.split(b"\r\n")[0]:
                 raise CdpError("websocket refused: %r" % head[:80])
@@ -78,19 +87,25 @@ class WebSocket:
             self.close()
             raise
 
-    def _chunk(self):
+    def _send(self, data, deadline):
+        self.sock.settimeout(remaining_time(deadline))
+        self.sock.sendall(data)
+
+    def _chunk(self, deadline):
+        self.sock.settimeout(remaining_time(deadline))
         data = self.sock.recv(65536)
         if not data:
             raise CdpError("browser closed the connection")
         return data
 
-    def _take(self, count):
+    def _take(self, count, deadline):
+        remaining_time(deadline)  # Buffered fragments and pings cannot restart the clock either.
         while len(self.buffer) < count:
-            self.buffer += self._chunk()
+            self.buffer += self._chunk(deadline)
         data, self.buffer = self.buffer[:count], self.buffer[count:]
         return data
 
-    def send(self, text):
+    def send(self, text, deadline):
         data = text.encode()
         size = len(data)
         head = bytes([0x81])
@@ -101,25 +116,25 @@ class WebSocket:
         else:
             head += bytes([0x80 | 127]) + struct.pack(">Q", size)
         mask = os.urandom(4)
-        self.sock.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+        self._send(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)), deadline)
 
-    def recv(self):
+    def recv(self, deadline):
         message = b""
         while True:
-            first, second = self._take(2)
+            first, second = self._take(2, deadline)
             size = second & 0x7F
             if size == 126:
-                size = struct.unpack(">H", self._take(2))[0]
+                size = struct.unpack(">H", self._take(2, deadline))[0]
             elif size == 127:
-                size = struct.unpack(">Q", self._take(8))[0]
-            payload = self._take(size)  # a server never masks
+                size = struct.unpack(">Q", self._take(8, deadline))[0]
+            payload = self._take(size, deadline)  # a server never masks
             opcode = first & 0x0F
             if opcode == 0x8:
                 raise CdpError("browser closed the websocket")
             if opcode == 0x9:  # ping: answer with the same payload
                 mask = os.urandom(4)
-                self.sock.sendall(bytes([0x8A, 0x80 | len(payload)]) + mask +
-                                  bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+                self._send(bytes([0x8A, 0x80 | len(payload)]) + mask +
+                           bytes(b ^ mask[i % 4] for i, b in enumerate(payload)), deadline)
                 continue
             if opcode in (0x0, 0x1, 0x2):
                 message += payload
@@ -206,31 +221,44 @@ class Phone:
         finally:
             try:
                 if self.process is not None:
+                    process, self.process = self.process, None
+                    deadline = time.monotonic() + 20
                     with suppress(ProcessLookupError):
-                        os.killpg(self.process.pid, signal.SIGTERM)
+                        os.killpg(process.pid, signal.SIGTERM)
                     with suppress(subprocess.TimeoutExpired):
-                        self.process.wait(10)
+                        process.wait(10)
                     # Chrome can leave children behind even if its leader already exited.
                     with suppress(ProcessLookupError):
-                        os.killpg(self.process.pid, signal.SIGKILL)
-                    self.process.wait(10)
-                    self.process = None
+                        os.killpg(process.pid, signal.SIGKILL)
+                    try:
+                        process.wait(max(0, deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired as exc:
+                        raise CdpError("Chrome did not exit after SIGKILL (20s cleanup budget)") from exc
             finally:
                 if self.profile is not None:
                     shutil.rmtree(self.profile)
                     self.profile = None
 
     def call(self, method, **params):
+        deadline = time.monotonic() + TIMEOUT
+        ws = self.ws
+        if ws is None:
+            raise CdpError("CDP websocket is not connected")
         mine = self._next_id()
-        self.ws.send(json.dumps({"id": mine, "method": method, "params": params}))
-        while True:
-            message = json.loads(self.ws.recv())
-            if message.get("id") == mine:
-                if "error" in message:
-                    raise CdpError("%s: %s" % (method, message["error"]))
-                return message["result"]
-            if "method" in message:
-                self.events.append(message["method"])
+        try:
+            ws.send(json.dumps({"id": mine, "method": method, "params": params}), deadline)
+            while True:
+                remaining_time(deadline)
+                message = json.loads(ws.recv(deadline))
+                remaining_time(deadline)
+                if message.get("id") == mine:
+                    if "error" in message:
+                        raise CdpError("%s: %s" % (method, message["error"]))
+                    return message["result"]
+                if "method" in message:
+                    self.events.append(message["method"])
+        except TimeoutError as exc:
+            raise CdpError(f"{method}: timed out waiting for CDP ({TIMEOUT}s deadline)") from exc
 
     def _next_id(self):
         self.counter += 1
