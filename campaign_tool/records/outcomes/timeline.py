@@ -144,6 +144,9 @@ def _next_action(row, stage, drafts, closed, marks):
         return {"owner": "coordinator", "action": "resolve missing or conflicting scope, identity or dates"}
     if action == "follow up":
         return {"owner": "coordinator", "action": "draft a cited follow-up for review"}
+    if action == "record answer":
+        return {"owner": "coordinator", "action": row.get("action_reason") or
+                "an agency reply arrived; record the determination, extension or production before any reminder"}
     if action == "nothing":
         return {"owner": "none", "action": "nothing: recorded complete"}
     if any(m["kind"] == "unknown" for m in marks):

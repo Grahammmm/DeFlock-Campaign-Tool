@@ -6,7 +6,7 @@ Mail subjects never establish membership, fulfillment, or a determination.
 from __future__ import annotations
 
 import csv
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import html
 import io
 import json
@@ -230,6 +230,77 @@ def _subject(mail):
         return None
 
 
+PACIFIC = ZoneInfo("America/Los_Angeles")
+SENT_FOLDERS = frozenset({"sent", "sent mail", "sent items", "sent messages"})
+
+
+def _folder_direction(folder):
+    """sent (ours), incoming (INBOX tree) or None (cannot be established)."""
+    if not isinstance(folder, str) or not folder.strip():
+        return None
+    parts = [p.strip().casefold() for p in re.split(r"[/.]", folder.strip())]
+    if parts[-1] in SENT_FOLDERS:
+        return "sent"
+    return "incoming" if parts[0] == "inbox" else None
+
+
+def _instant(value):
+    try:
+        return correspondence.timestamp(value)
+    except correspondence.CorrespondenceError:
+        return None
+
+
+def answer_arrived(deliveries, occurrences, mail_rows, start, determination_text):
+    """Classify bound deliveries as an unrecorded agency answer. Pure; never a determination.
+
+    Our own sent copy never counts. A delivery whose direction or time cannot be established
+    makes the state unknown rather than guessing.
+    """
+    result = {"state": "none", "first_arrival": None, "occurrence_ids": []}
+    if determination_text:
+        return result
+    mails = {m["id"]: m for m in mail_rows}
+    qualified, unresolved = [], False
+    for delivery in deliveries:
+        oid = delivery["occurrence_id"]
+        occurrence = occurrences[oid]
+        kind = occurrence["kind"]
+        if kind == "portal":
+            stamp = occurrence["acquired_at"]
+        elif kind in ("mail", "attachment"):
+            root, seen = occurrence, set()
+            while root["kind"] == "attachment" and root["id"] not in seen and root["parent_occurrence_id"] in occurrences:
+                seen.add(root["id"])
+                root = occurrences[root["parent_occurrence_id"]]
+            mail = mails.get(root["id"]) if root["kind"] == "mail" else None
+            if mail is None or mail.get("eml_sha256") != root["original_sha256"]:
+                unresolved = True
+                continue
+            way = _folder_direction(mail.get("folder"))
+            if way == "sent":
+                continue
+            if way is None:
+                unresolved = True
+                continue
+            stamp = mail.get("received_at")
+        else:
+            unresolved = True
+            continue
+        moment = _instant(stamp)
+        if moment is None or start is None:
+            unresolved = True
+            continue
+        if moment.astimezone(PACIFIC).date() >= start:
+            qualified.append((moment, oid))
+    if qualified:
+        first = min(m for m, _ in qualified).astimezone(timezone.utc)
+        result["first_arrival"] = first.replace(tzinfo=None).isoformat() + "Z"
+        result["occurrence_ids"] = sorted({oid for _, oid in qualified})
+    result["state"] = "unknown" if unresolved else "arrived_unrecorded" if qualified else "none"
+    return result
+
+
 def build_register(data, tracker=(), *, as_of, gaps=()):
     today = _day(as_of)
     if today is None:
@@ -286,6 +357,10 @@ def build_register(data, tracker=(), *, as_of, gaps=()):
                                "mime": originals[occurrence["original_sha256"]]["mime_detected"],
                                "mail": [{"id": m["id"], "received_at": m["received_at"], "subject": _subject(m)}
                                         for m in messages.get(occurrence["original_sha256"], [])]})
+        arrival = answer_arrived(deliveries, occurrences, data["mail_messages"], started,
+                                 _text(row.get("determination_at")))
+        if arrival["state"] == "unknown":
+            issues.append("arrival_unresolved")
         asked = row.get("asked") or "Unknown — request scope not recorded"
         withheld = row.get("withheld") or "Unknown — not assessed"
         missing = row.get("missing") or "Unknown — fulfillment not assessed"
@@ -297,6 +372,10 @@ def build_register(data, tracker=(), *, as_of, gaps=()):
             action, reason = "clarify", "Resolve missing/conflicting scope, identity or dates."
         elif status in ("clarification requested", "needs clarification", "clarify"):
             action, reason = "clarify", "Recorded request status calls for clarification."
+        elif arrival["state"] == "arrived_unrecorded" and not closed:
+            action = "record answer"
+            reason = (f"An agency reply arrived on {_instant(arrival['first_arrival']).astimezone(PACIFIC).date().isoformat()}; "
+                      "record the determination, extension or production before any reminder")
         elif outstanding:
             action, reason = "follow up", "Recorded withheld or outstanding items need review."
         elif closed:
@@ -315,6 +394,7 @@ def build_register(data, tracker=(), *, as_of, gaps=()):
                        "production_at": row.get("production_at"), "withheld": withheld, "missing": missing,
                        "status": row.get("status") or "unknown", "deadline": clock,
                        "promised": promise, "request_date": started.isoformat() if started else None,
+                       "answer_arrived": arrival,
                        "next_action": action, "action_reason": reason,
                        "sources": row["sources"], "issues": sorted(set(issues)), "fulfillment": "not_assessed"})
     return {"schema": SCHEMA, "as_of": today.isoformat(), "visibility": "private", "review_required": True,

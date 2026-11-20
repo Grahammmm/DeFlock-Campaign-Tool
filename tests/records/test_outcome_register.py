@@ -187,8 +187,84 @@ class RegisterTests(unittest.TestCase):
         self.assertIn("Automatic", mail["subject"])
         self.assertEqual(row["deadline"]["state"], "past_due_reminder")
         self.assertEqual(row["fulfillment"], "not_assessed")
-        self.assertEqual(row["next_action"], "follow up")
+        # No canonical folder: direction cannot be established, so a person must look.
+        self.assertEqual(row["answer_arrived"]["state"], "unknown")
+        self.assertIn("arrival_unresolved", row["issues"])
+        self.assertEqual(row["next_action"], "clarify")
         self.assertEqual(self.report()["requests"][1]["arrived"], [])
+
+    def arrival_case(self, folder="INBOX", received="2030-01-05T10:00:00-08:00", *, with_attachment=False,
+                     determination=None, mail_id="mail-1", **row_values):
+        parent, child = "a" * 64, "b" * 64
+        self.data["originals"] = [original(parent, mime_detected="message/rfc822"), original(child)]
+        self.data["occurrences"] = [occurrence("mail-1", parent, kind="mail")]
+        if with_attachment:
+            self.data["occurrences"].append(occurrence("attachment-1", child, "mail-1"))
+        self.data["joins"] = [join(parent)]
+        self.data["mail_messages"] = [{"id": mail_id, "folder": folder, "eml_sha256": parent, "received_at": received,
+                                      "headers": "{}"}]
+        self.data["requests"][1].update(row_values, determination_at=determination)
+        self.data["joins"][0]["request_id"] = "r2"
+        return next(r for r in self.report()["requests"] if r["ledger_request_id"] == "r2")
+
+    def test_answer_arrived_states_and_next_action(self):
+        none = {"state": "none", "first_arrival": None, "occurrence_ids": []}
+        self.data["requests"][1]["determination_at"] = None
+        base = [r for r in self.report()["requests"] if r["ledger_request_id"] == "r2"][0]
+        self.assertEqual(base["answer_arrived"], none)
+        self.assertEqual(base["next_action"], "wait")
+        # Delivery before the clock start (2030-01-01 Pacific): ignored.
+        row = self.arrival_case(received="2029-12-31T23:00:00-08:00")
+        self.assertEqual(row["answer_arrived"], none)
+        self.assertEqual(row["next_action"], "wait")
+        # On the start day and after it, with offsets and an attachment.
+        row = self.arrival_case(received="2030-01-01T23:30:00-08:00", with_attachment=True)
+        self.assertEqual(row["answer_arrived"], {"state": "arrived_unrecorded", "first_arrival": "2030-01-02T07:30:00Z",
+                                                 "occurrence_ids": ["attachment-1", "mail-1"]})
+        self.assertEqual(row["next_action"], "record answer")
+        self.assertEqual(row["action_reason"], "An agency reply arrived on 2030-01-01; record the determination, "
+                                               "extension or production before any reminder")
+        self.assertEqual(row["deadline"]["state"], base["deadline"]["state"])
+        self.assertEqual(row["deadline"]["due"], base["deadline"]["due"])
+        self.assertEqual(row["promised"], base["promised"])
+        self.assertEqual(row["fulfillment"], "not_assessed")
+        self.assertEqual(row["issues"], base["issues"])
+        row = self.arrival_case(received="2030-01-05T10:00:00-08:00")
+        self.assertEqual(row["answer_arrived"]["first_arrival"], "2030-01-05T18:00:00Z")
+        self.assertIn("2030-01-05;", row["action_reason"])
+        # Markdown carries the exact label and date.
+        self.assertIn("record answer: An agency reply arrived on 2030-01-05; record the determination",
+                      register.markdown(self.report()))
+
+    def test_answer_arrived_recorded_determination_and_sent_copy_do_not_count(self):
+        row = self.arrival_case(determination="2030-01-04")
+        self.assertEqual(row["answer_arrived"], {"state": "none", "first_arrival": None, "occurrence_ids": []})
+        self.assertNotEqual(row["next_action"], "record answer")
+        for folder, received in (("[Gmail]/Sent Mail", "2030-01-05T10:00:00-08:00"), ("Sent", None), ("INBOX.Sent Items", "bad")):
+            with self.subTest(folder=folder):
+                row = self.arrival_case(folder, received, with_attachment=True)
+                self.assertEqual(row["answer_arrived"]["state"], "none")
+                self.assertNotIn("arrival_unresolved", row["issues"])
+                self.assertEqual(row["next_action"], "wait")
+
+    def test_answer_arrived_unresolved_direction_or_time_is_unknown(self):
+        cases = {"undated": {"received": None}, "naive time": {"received": "2030-01-05T10:00:00"},
+                 "blank folder": {"folder": ""}, "other folder": {"folder": "Archive"},
+                 "mail row for another occurrence": {"mail_id": "other"}}
+        for name, kwargs in cases.items():
+            with self.subTest(name):
+                row = self.arrival_case(**kwargs)
+                self.assertEqual(row["answer_arrived"], {"state": "unknown", "first_arrival": None, "occurrence_ids": []})
+                self.assertEqual(row["issues"].count("arrival_unresolved"), 1)
+                self.assertEqual(row["next_action"], "clarify")
+        text = register.markdown(self.report())
+        self.assertIn("CHECK: arrival_unresolved", text)
+        # Equal bytes under a different occurrence cannot supply direction.
+        row = self.arrival_case()
+        self.data["mail_messages"][0]["id"] = "other"
+        self.assertEqual([r for r in self.report()["requests"] if r["ledger_request_id"] == "r2"][0]
+                         ["answer_arrived"]["state"], "unknown")
+        self.assertEqual(row["answer_arrived"]["state"], "arrived_unrecorded")
 
     def test_hinted_conflicting_excluded_and_unassigned_delivery_not_used(self):
         sha = "a" * 64
