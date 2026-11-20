@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import html
 import io
 import json
@@ -18,6 +19,7 @@ import stat
 import tempfile
 from zoneinfo import ZoneInfo
 
+from ... import law
 from .. import correspondence
 from ..intake.folder import secure_open
 from ..ledger.store import checked_path
@@ -25,6 +27,9 @@ from ..ledger.store import checked_path
 SCHEMA = "records-request-register-v1"
 MAX_ROWS = 50000
 MAX_CSV_BYTES = 8 * 1024 * 1024
+HOLIDAY_FILE = "holidays.csv"  # optional custodian input, never shipped
+MAX_HOLIDAY_BYTES = 64 * 1024
+MAX_HOLIDAYS = 1000
 # Explicit aliases, not substring guesses. Unknown columns are reported.
 COLUMNS = {
     "agency": ("agency", "agency name", "agency_id"),
@@ -155,11 +160,40 @@ def production_admission(value, today, start):
     return day, None
 
 
-def _roll_weekend(day):
-    return day + timedelta(days=7 - day.weekday()) if day.weekday() >= 5 else day
+def _roll_weekend(day, holidays=()):
+    """First day on or after ``day`` that is neither Saturday/Sunday nor a custodian-listed holiday."""
+    while day.weekday() >= 5 or day in holidays:
+        day += timedelta(days=1)
+    return day
 
 
-def deadline(row, today, issues):
+def read_holidays(project):
+    """Optional custodian PROJECT/holidays.csv -> (state, frozenset of dates, sha256 prefix).
+
+    State is absent (no file), used (every row valid) or invalid (anything else; no partial list).
+    The prefix is the first 12 hex digits of the bounded raw bytes, None when they were unreadable.
+    """
+    from ..followup_clock import _read_bounded  # bounded, no-follow, nonblocking regular-file reader
+    try:
+        raw = _read_bounded(checked_path(Path(project) / HOLIDAY_FILE, existing=False), MAX_HOLIDAY_BYTES)
+    except FileNotFoundError:
+        return "absent", frozenset(), None
+    except (OSError, ValueError):
+        return "invalid", frozenset(), None
+    prefix = hashlib.sha256(raw).hexdigest()[:12]
+    try:
+        rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig")), strict=True))
+        days = [date.fromisoformat(r[0]) for r in rows[1:] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", r[0])]
+        if (not rows or rows[0] != ["date", "name", "source"] or len(rows) > MAX_HOLIDAYS + 1
+                or any(len(r) != 3 or not r[1].strip() or not r[2].strip() for r in rows[1:])
+                or len(days) != len(rows) - 1 or len(set(days)) != len(days)):
+            raise ValueError("holiday_list_invalid")
+    except (ValueError, IndexError, UnicodeError, csv.Error):
+        return "invalid", frozenset(), prefix
+    return "used", frozenset(days), prefix
+
+
+def deadline(row, today, issues, holidays=()):
     """Running means a clock started with no recorded determination, even if overdue."""
     start = _day(row.get("received_at")) or _day(row.get("submitted_at"))
     determination = _day(row.get("determination_at"))
@@ -178,8 +212,8 @@ def deadline(row, today, issues):
     if determination and (determination > today or (start and determination < start)):
         issues.append("determination_date_inconsistent")
         determination = None
-    base = _roll_weekend(start + timedelta(days=10)) if start else None
-    maximum = _roll_weekend(start + timedelta(days=24)) if start else None
+    base = _roll_weekend(start + timedelta(days=10), holidays) if start else None
+    maximum = _roll_weekend(start + timedelta(days=24), holidays) if start else None
     computed = maximum if extension else base
     recorded = _day(row.get("determination_due_at"))
     # Keep the recorded date visible; do not silently treat a longer date as a lawful extension.
@@ -301,10 +335,14 @@ def answer_arrived(deliveries, occurrences, mail_rows, start, determination_text
     return result
 
 
-def build_register(data, tracker=(), *, as_of, gaps=()):
+def build_register(data, tracker=(), *, as_of, gaps=(), holiday=("absent", frozenset(), None)):
+    """``holiday`` is read_holidays' result; absent leaves every output byte-identical to the legacy register."""
     today = _day(as_of)
     if today is None:
         raise ValueError("as_of_invalid")
+    holiday_state, holidays, holiday_prefix = holiday
+    if holiday_state == "invalid":
+        gaps = [*gaps, "holiday_list_invalid"]
     agencies = {a["id"]: a["name"] for a in data["agencies"]}
     alias = {}
     for aid, name in agencies.items():
@@ -345,7 +383,9 @@ def build_register(data, tracker=(), *, as_of, gaps=()):
     output = []
     for key, row in sorted(records.items()):
         issues = row["issues"]
-        clock = deadline(row, today, issues)
+        if holiday_state == "invalid":
+            issues.append("holiday_list_invalid")
+        clock = deadline(row, today, issues, holidays)
         promise = promised(row, today, issues)
         started = _day(row.get("received_at")) or _day(row.get("submitted_at"))
         deliveries = []
@@ -397,11 +437,21 @@ def build_register(data, tracker=(), *, as_of, gaps=()):
                        "answer_arrived": arrival,
                        "next_action": action, "action_reason": reason,
                        "sources": row["sources"], "issues": sorted(set(issues)), "fulfillment": "not_assessed"})
-    return {"schema": SCHEMA, "as_of": today.isoformat(), "visibility": "private", "review_required": True,
-            "requests": output, "request_count": len(output), "gaps": sorted(set(gaps)),
-            "binding_gaps": join_gaps,
-            "unassigned_occurrences": sum(not members[oid] for oid in occurrences if oid not in excluded),
-            "limits": LIMITS}
+        if holiday_state != "absent":
+            output[-1].update(holiday_list=holiday_state, holiday_list_sha256_prefix=holiday_prefix)
+    report = {"schema": SCHEMA, "as_of": today.isoformat(), "visibility": "private", "review_required": True,
+              "requests": output, "request_count": len(output), "gaps": sorted(set(gaps)),
+              "binding_gaps": join_gaps,
+              "unassigned_occurrences": sum(not members[oid] for oid in occurrences if oid not in excluded),
+              "limits": LIMITS}
+    if holiday_state != "absent":
+        # Private run snapshot of the custodian's list (dates only, no names or sources) for the calculator.
+        report["holiday_list"] = {"state": holiday_state, "sha256_prefix": holiday_prefix}
+        report["limits"] = [*LIMITS, law.CUSTODIAN_HOLIDAY_NOTE if holiday_state == "used"
+                            else law.CUSTODIAN_HOLIDAY_INVALID_NOTE]
+        if holiday_state == "used":
+            report["holiday_list"]["dates"] = sorted(d.isoformat() for d in holidays)
+    return report
 
 
 def markdown(report):
@@ -451,7 +501,7 @@ def write_for_run(project, run_id, *, as_of=None):
         data, gaps = read_ledger(project / "processing-v1" / "ledger.sqlite")
         tracker, tracker_gaps = read_tracker(project / "MASTER-REQUEST-TRACKER.csv")
         report = build_register(data, tracker, as_of=as_of or datetime.now(ZoneInfo("America/Los_Angeles")).date().isoformat(),
-                                gaps=gaps + tracker_gaps)
+                                gaps=gaps + tracker_gaps, holiday=read_holidays(project))
         payloads = {"CURRENT-REQUEST-REGISTER.json": json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
                     "CURRENT-REQUEST-REGISTER.md": markdown(report)}
         directory = checked_path(project / "run-outputs", existing=False)
