@@ -28,7 +28,7 @@ OCR_ACTIONS = {"ocr_confirm": "confirmed", "ocr_reject": "rejected"}  # OCR-REVI
 TRANSIENT = {"approval_unavailable", "queue_busy", "queue_io", "journal_busy", "ocr_ledger_busy", "message_link_ledger_busy"}  # not final: the entry stays unreceipted and is tried at the next run
 # A store that cannot be read at all (a moved or restored project whose approvals name another path, a damaged journal) says
 # nothing about the decision itself: the entry is deferred like a transient fault, never receipted as a final refusal.
-STORE_FAULTS = {"queue_invalid", "journal_invalid", "packets_unavailable", "switch_unavailable", "file_invalid",
+STORE_FAULTS = {"queue_invalid", "queue_unwritable", "journal_invalid", "packets_unavailable", "switch_unavailable", "file_invalid",
                 "file_too_large", "project_invalid", "ocr_ledger_unreadable", "ocr_review_chain_broken"}
 NOT_FINAL = TRANSIENT | STORE_FAULTS
 CODES = {"approval_unverified": "INVALID_TRANSITION", "stale_revision": "STALE_REVISION", "packet_stale": "STALE_REVISION", "approval_required": "SIGNATURE_REFUSED",

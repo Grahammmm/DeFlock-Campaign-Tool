@@ -8,6 +8,7 @@ content-free message.
 """
 import argparse
 import difflib
+import errno
 from itertools import islice
 import fcntl
 import hashlib
@@ -111,6 +112,23 @@ def _private(info, directory):
     return kind_ok and info.st_uid == os.geteuid() and not info.st_mode & 0o077
 
 
+def _refusal(error, dir_fd, name, directory, write):
+    """Fixed code for a failed open or create. A reader keeps queue_invalid. A writer tells a permission or read-only
+    denial (queue_unwritable) and other I/O (queue_io) from a structurally unsafe entry (queue_invalid); an entry
+    that exists and is observably unsafe (symlink, other owner, group/other bits) always wins over the denial."""
+    if not write:
+        return "queue_invalid"
+    if error.errno in (errno.ELOOP, errno.ENOTDIR, errno.EISDIR, errno.ENXIO):
+        return "queue_invalid"
+    if error.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+        return "queue_io"
+    try:
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)  # diagnosis only; never reopened or trusted
+    except OSError:
+        return "queue_unwritable"
+    return "queue_unwritable" if _private(info, directory) else "queue_invalid"
+
+
 def _open_approvals(root_fd, create):
     try:
         if create:
@@ -122,22 +140,23 @@ def _open_approvals(root_fd, create):
     except FileNotFoundError:
         return None
     except OSError as error:
-        raise ApprovalQueueError("queue_invalid") from error
+        raise ApprovalQueueError(_refusal(error, root_fd, "approvals", True, create)) from error
     if not _private(os.fstat(fd), True):
         os.close(fd)
         raise ApprovalQueueError("queue_invalid")
     return fd
 
 
-def _open_file(dir_fd, name, flags, create=False):
-    """Open without ever blocking (a FIFO would otherwise stall the open), then validate the descriptor."""
+def _open_file(dir_fd, name, flags, create=False, write=False):
+    """Open without ever blocking (a FIFO would otherwise stall the open), then validate the descriptor.
+    ``write`` says the caller is a writer: the open flags alone cannot (the lock is opened O_RDWR by readers too)."""
     try:
         fd = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_CREAT | os.O_EXCL if create else 0),
                      0o600, dir_fd=dir_fd)
     except FileNotFoundError:
         return None
     except OSError as error:  # includes ENXIO for a write-open of a FIFO that has no reader
-        raise ApprovalQueueError("queue_invalid") from error
+        raise ApprovalQueueError(_refusal(error, dir_fd, name, False, write)) from error
     try:
         private = _private(os.fstat(fd), False)
     except OSError as error:
@@ -164,14 +183,16 @@ def _read_capped(fd, cap):
 def _lock(dir_fd, exclusive):
     """Return a locked fd (None for a reader of an absent store)."""
     flags = os.O_RDWR
-    fd = _open_file(dir_fd, ".lock", flags)
+    fd = _open_file(dir_fd, ".lock", flags, write=exclusive)
     if fd is None:
         if not exclusive:
             return None
         try:
-            fd = _open_file(dir_fd, ".lock", flags, create=True)
-        except ApprovalQueueError:
-            fd = _open_file(dir_fd, ".lock", flags)  # lost a creation race
+            fd = _open_file(dir_fd, ".lock", flags, create=True, write=True)
+        except ApprovalQueueError as error:
+            if not isinstance(error.__cause__, FileExistsError):
+                raise  # a denial or other fault is the diagnosis, not a lost race
+            fd = _open_file(dir_fd, ".lock", flags, write=True)  # lost a creation race
         _need(fd is not None, "queue_io")
     deadline = time.monotonic() + LOCK_SECONDS
     while True:
@@ -223,7 +244,7 @@ class _Store:
     def raw(self):
         if self.dir_fd is None:
             return b""
-        fd = _open_file(self.dir_fd, "queue.jsonl", os.O_RDONLY)
+        fd = _open_file(self.dir_fd, "queue.jsonl", os.O_RDONLY, write=self.write)
         if fd is None:
             return b""
         try:
@@ -239,9 +260,10 @@ class _Store:
     def append(self, events):
         data = b"".join((_canon(e) + "\n").encode("utf-8") for e in events)
         _need(all(len(_canon(e).encode("utf-8")) <= MAX_EVENT for e in events), "invalid_draft")
-        fd = _open_file(self.dir_fd, "queue.jsonl", os.O_WRONLY | os.O_APPEND)
+        fd = _open_file(self.dir_fd, "queue.jsonl", os.O_WRONLY | os.O_APPEND, write=True)
         if fd is None:
-            fd = _open_file(self.dir_fd, "queue.jsonl", os.O_WRONLY | os.O_APPEND, create=True)
+            fd = _open_file(self.dir_fd, "queue.jsonl", os.O_WRONLY | os.O_APPEND, create=True, write=True)
+            _need(fd is not None, "queue_io")  # the journal vanished under the lock
         try:
             _need(os.fstat(fd).st_size + len(data) <= MAX_JOURNAL, "queue_invalid")
             view = memoryview(data)
