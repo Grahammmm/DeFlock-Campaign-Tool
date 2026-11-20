@@ -346,9 +346,14 @@ def _load(project):
         return {"schema": INPUT_SCHEMA, "agencies": []}, "fact_sheets_missing"
     if path.stat().st_size > MAX_BYTES:
         raise OSError("comparison_input_bound")
+    with path.open("rb") as source:
+        raw = source.read(MAX_BYTES + 1)
+    return _load_bytes(raw)
+
+
+def _load_bytes(raw):
+    """The one input validator, also run on compiled bytes before they are written."""
     try:
-        with path.open("rb") as source:
-            raw = source.read(MAX_BYTES + 1)
         if len(raw) > MAX_BYTES:
             raise ValueError("input_bound")
         def unique(pairs):
