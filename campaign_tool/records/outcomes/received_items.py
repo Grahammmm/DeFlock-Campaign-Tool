@@ -444,7 +444,10 @@ def _project(report, comparison, by_original):
     unresolved_agencies = set()
     policy_gap_items = set()
     for index, row in enumerate(comparison["rows"]):
-        agency, field = row.get("agency_id"), row.get("field")
+        if not isinstance(row, dict) or not isinstance(row.get("field"), str) or not row["field"]:
+            report["diagnostics"].append("comparison_row_invalid")
+            continue
+        agency, field = row.get("agency_id"), row["field"]
         evidence = row.get("evidence") if isinstance(row.get("evidence"), list) else []
         matched = False
         for entry in evidence:
