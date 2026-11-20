@@ -46,7 +46,7 @@ NEXT_CAVEAT = "Approving records your decision on this draft only. Nothing is po
 SECTIONS = (("mail", "Inbox: mail received"), ("documents", "Documents"), ("stages", "Stage status and run health"),
             ("findings", "Findings"), ("deadlines", "Deadlines"), ("drafts", "Drafts"))
 # Upstream codes are content-free; only these are ever shown.
-QUEUE_CODES = frozenset({"queue_invalid", "queue_io", "unknown_id", "invalid_transition", "approval_required",
+QUEUE_CODES = frozenset({"queue_invalid", "queue_io", "queue_unwritable", "unknown_id", "invalid_transition", "approval_required",
                          "invalid_draft", "invalid_actor", "source_invalid", "source_conflict", "console_model_missing",
                          "console_model_invalid", "console_model_mismatch"})
 MISSING_CSRF = "The form expired; reload the page and try again."

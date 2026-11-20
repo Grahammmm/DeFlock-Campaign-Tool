@@ -73,6 +73,17 @@ class GOLiveStagesTests(unittest.TestCase):
         self.assertIsNone(rows["14"]["masked_by"])
         self.assertEqual(rows["14"]["last_warning"], APPROVAL)
 
+    def test_unwritable_queue_warning_is_known_and_does_not_prove_the_queue_stage(self):
+        # Contract (DF2222-02): OUTPUTS_APPROVAL_QUEUE_UNWRITABLE ranks with the other queue warning. Fails if stage 13
+        # reads proven, stage 14 stops being masked by it, or the unrelated outputs stages stop proving.
+        self.report(6, "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE")
+        rows = self.rows()
+        self.assertIsNone(rows["13"]["last_proven_run"])
+        self.assertIsNone(rows["13"]["masked_by"])
+        self.assertEqual(rows["14"]["masked_by"], "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE")
+        for stage in ("8", "9", "10"):
+            self.assertEqual(rows[stage]["state"], "proven")
+
     def test_since_keeps_old_proof_but_limits_warning_history(self):
         # Filtering the entire history would erase the last proof; sorting by filename reverses the history.
         proof = self.report(6, name="z-proof.json")

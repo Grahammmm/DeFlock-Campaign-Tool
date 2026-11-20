@@ -197,6 +197,14 @@ class ReadTests(Base):
         self.assertIn("queue_invalid", html)
         self.assertNotIn("<form", html)
         self.assertIn("msg-1", html)
+        # DF2222-02: a denied queue write is its own admitted code, not coerced to a format fault, and has its sentence
+        with mock.patch.object(ap.console_snapshot.LiveSource, "queue_rows", side_effect=aq.ApprovalQueueError("queue_unwritable")):
+            denied = self.load()
+        self.assertEqual(denied["queue"], {"state": "unavailable", "code": "queue_unwritable"})
+        self.assertNotIn("<form", ap.render_dashboard(denied, csrf_token="t"))
+        self.assertEqual(ap.console_layout.unavailable_note("Suggested drafts", "queue_unwritable"),
+                         "Suggested drafts: unavailable. The records runner cannot write the approval queue folder; "
+                         "an operator must create it with the runner as owner.")
         # bad inputs per source
         target = self.outputs / "received-items.json"
         for bad in ('{"a":1,"a":2}', '{"schema":"records-received-item-v1","items":[NaN]}', '"\\ud800"'):
