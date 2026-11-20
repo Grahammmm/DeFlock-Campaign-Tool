@@ -35,6 +35,13 @@ reviewer ladder, recipient/subject headers, purpose statement or statute citatio
 Clock evidence and review context remain outside the outgoing body. Existing
 queue rows retain their text and evidence; rerunning does not rewrite them.
 
+Each request register row carries an optional `answer_arrived` (`state` none, `arrived_unrecorded` or
+`unknown`, `first_arrival` in UTC, `occurrence_ids`). A bound agency-side delivery on or after the clock start
+with no recorded determination makes the next action `record answer` rather than a reminder. Arrival is a
+review prompt only: it is not a determination, extension, production, timeliness or fulfillment. Our own sent
+copy never counts; a delivery whose direction or time cannot be established gives `unknown` and the issue
+`arrival_unresolved`, which needs a person. The deadline, promised date and every other field are unchanged.
+
 The optional `default.signature` in `followup-settings.json` supplies the project
 name and public sending address (maximum 200 characters and three newline-separated
 lines, no other control characters). Per-agency signatures are not accepted.

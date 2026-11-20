@@ -139,6 +139,11 @@ class MergeTests(unittest.TestCase):
         self.assertIn("sending stays manual", approved["action"])
         self.assertEqual(only(build(reg(row(action="follow up"))))["next_action"]["owner"], "coordinator")
         self.assertEqual(only(build(reg(row())))["next_action"]["owner"], "agency")
+        reason = "An agency reply arrived on 2026-11-05; record the determination, extension or production before any reminder"
+        answer = only(build(reg(row(action="record answer", action_reason=reason))))["next_action"]
+        self.assertEqual(answer, {"owner": "coordinator", "action": reason})
+        self.assertEqual(only(build(reg(row(action="record answer", action_reason=reason)), drafts=[draft]))
+                         ["next_action"]["owner"], "G")
 
     def test_several_drafts_for_one_request_do_not_break_the_timeline(self):
         base = {"kind": "fee-reply", "status": "pending", "agency_id": "ag1", "request_id": "L-1",
