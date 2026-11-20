@@ -18,8 +18,9 @@ ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "examples" / "fictional-campaign" / "content"
 SENTINEL = "SENTINEL-PRIVATE-7731"
 ABSENT = "every policy comparison row will be unknown"
-BASE_TEXT_SHA = "9e358965fa4e00b07804534b6c7693a12c1b13f5842dd526c2af97eb62ce71a7"
-BASE_JSON_SHA = "c60a6f2d57de1543c8895363acc57b6da3516710f614096a1b378093d4589077"
+# Golden digests of the pre-change report output (public synthetic-fixture hashes, not credentials).
+BASE_TEXT_SHA = "9e358965fa4e00b07804534b6c7693a12c1b13f5842dd526c2af97eb62ce71a7"  # pragma: allowlist secret
+BASE_JSON_SHA = "c60a6f2d57de1543c8895363acc57b6da3516710f614096a1b378093d4589077"  # pragma: allowlist secret
 HEADER = ("agency,system,vendor,data_layer,stated_period,period_days,bound,source_kind,quote,doc_sha256,page,"
           "confidence,checked")
 
