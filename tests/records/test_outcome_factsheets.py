@@ -1,5 +1,6 @@
 """Synthetic-only producer-shaped canonical extraction -> outputs integration."""
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -10,11 +11,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from campaign_tool.records import extraction_routes as routes, run_stages
+from campaign_tool.records import approval_queue, console_cited_pages as cp, console_export, console_snapshot
+from campaign_tool.records import extraction_routes as routes, ocr_review, run_stages
 from campaign_tool.records.extraction_ledger import ExtractionLedgerAdapter, canonical, sha
 from campaign_tool.records.ledger import store
-from campaign_tool.records.outcomes import factsheets as fs
+from campaign_tool.records.outcomes import factsheets as fs, received_items as ri
 from contextlib import closing
+from tests.records import ocr_fixtures
 
 FIXTURE = Path(__file__).parent / "fixtures" / "outcome_factsheets" / "produced.json"
 
@@ -52,11 +55,11 @@ class FactSheetsTests(unittest.TestCase):
         path.write_bytes(raw)
         path.chmod(0o600)
 
-    def document(self, pages, agency, *, status="typed", role="agency_original", scope="in_scope", locator=None):
+    def document(self, pages, agency, *, status="typed", role="agency_original", scope="in_scope", locator=None, raw=None):
         self.serial += 1
         source = self.project / ("original-" + str(self.serial))
-        # Synthetic source bytes; no real PDF parser or OCR qualification claim.
-        self.private(source, ("SYNTHETIC RECEIPT FIXTURE " + str(self.serial) + "\n" + "\n".join(pages)).encode())
+        # Synthetic source bytes; no real PDF parser or OCR qualification claim. `raw` (a synthetic PDF) is enrolled by the caller.
+        self.private(source, raw or ("SYNTHETIC RECEIPT FIXTURE " + str(self.serial) + "\n" + "\n".join(pages)).encode())
         subject = sha(source.read_bytes())
         with store.ledger(self.database) as con:
             con.execute("INSERT INTO originals VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -66,7 +69,8 @@ class FactSheetsTests(unittest.TestCase):
             for stage in store.STAGES:
                 con.execute("INSERT INTO stage_state VALUES(?,?,?,?,?,?,?,?)", (subject, stage, "pending", None, "fixture", "2041-01-01", "fixture", None))
             con.commit()
-        self.enroll(source, pages, locator=locator)
+        if raw is None:
+            self.enroll(source, pages, locator=locator)
         return subject, source
 
     def enroll(self, source, pages, *, locator=None):
@@ -509,6 +513,145 @@ class FactSheetsTests(unittest.TestCase):
                 self.assertTrue(self.sheet(self.collect())["fields"]["vendor"]["statements"])
         self.assertIs(fs.PATTERNS["vendor"], original)
         self.assertTrue(self.sheet(self.collect())["fields"]["vendor"]["statements"])
+
+    # ---- DF2307-07: the text of every cited page, for the private console export ----------------------------------------
+
+    def ocr_document(self, agency, native_text, confidence):
+        """A synthetic two-page PDF (page 1 native text, page 2 OCR text) enrolled through the real extraction route."""
+        try:
+            raw = ocr_fixtures.mixed_pdf(native_text)
+        except ImportError:
+            self.skipTest("pypdf optional parser unavailable")
+        subject, source = self.document([], agency, raw=raw)
+        out, root = (self.project / (name + str(self.serial)) for name in ("pdf-derived-", "page-ocr-"))
+        out.mkdir(mode=0o700)
+        root.mkdir(mode=0o700)
+        result = routes.extract(source, subject, out, "pdf", timeout=30, ocr_output_root=str(root), ocr_tools=ocr_fixtures.TOOLS,
+                                tool_signature="stub-v1", ocr_runner=ocr_fixtures.FakeOCRRunner(confidence=confidence))
+        receipt = Path(result["run_path"]) / "extraction.json"
+        self.adapter.enroll(original_path=source, receipt_path=receipt, receipt_sha256=sha(receipt.read_bytes()))
+        return subject
+
+    def write_citations(self, facts=(), gaps=(), deadlines=(), when=None):
+        """This run's three citation files, schema-shaped and hash-bound: (sha, page) pairs; deadlines are (sha, page, date)."""
+        shas = sorted({c[0] for c in (*facts, *gaps, *deadlines)})
+        items = [{"item_id": ri.item_id(s), "original_sha256": s, "agency_id": "maple", "received_at": (when or {}).get(s),
+                  "deadlines": [{"page": p, "date": d} for t, p, d in deadlines if t == s]} for s in shas]
+        received = (ri._canon({"schema": ri.SCHEMA, "run_id": "test-run", "items": items}) + "\n").encode()
+        proposals = [{"proposal_id": "p-%d" % n, "evidence_kind": "document", "item_id": ri.item_id(s), "page": p,
+                      "type": "policy_gap"} for n, (s, p) in enumerate(gaps, 1)] + [{"proposal_id": "p-ledger", "evidence_kind": "ledger_field"}]
+        sheet = {"schema": "records-agency-factsheets-v1", "run_id": "test-run", "agencies": [{"agency_id": "maple", "fields": {
+            "cost": {"statements": [{"citation": {"document_sha256": s, "page": p}} for s, p in facts]}}}]}
+        gap = {"schema": "records-gap-proposals-v1", "run_id": "test-run", "received_items_sha256": sha(received),
+               "agencies": [{"requests": [{"proposals": proposals}]}]}
+        run = self.project / "run-outputs" / "test-run"
+        self.private(run / "agency-factsheets.json", json.dumps(sheet).encode())
+        self.private(run / "outcomes" / "gap-proposals.json", json.dumps(gap).encode())
+        self.private(run / "outcomes" / "received-items.json", received)
+
+    def test_cited_pages_hold_current_text_route_and_citing_ids(self):
+        # Contract: one row per distinct cited (original, page) with its exact current text, route and every citing id.
+        # Bugs caught: an uncited page exported, a page cited by all three files listed three times, an OCR page shown as
+        # native, or an OCR review state guessed from confidence instead of the recorded decision.
+        d, first, second = self.docs[0][0], self.ocr_document("maple", "First native", "42"), self.ocr_document("cedar", "Second native", "90")
+        self.write_citations(facts=[(d, 1), (first, 2), (second, 2)], gaps=[(first, 1), (first, 2)],
+                             deadlines=[(d, 2, "2041-02-01"), (first, 2, None)], when={d: "2041-01-02T03:04:05Z"})
+        doc = cp.read(self.project, "test-run")
+        self.assertEqual((doc["state"], doc["not_exported"]), ("ok", []))
+        pages = {(r["original_sha256"], r["page"]): r for r in doc["pages"]}
+        self.assertEqual(sorted(pages), sorted([(d, 1), (d, 2), (first, 1), (first, 2), (second, 2)]))  # no uncited page
+        self.assertEqual(list(pages), sorted(pages))
+        source = self.fixture["documents"][0]["pages"]
+        self.assertEqual((pages[d, 1]["text"], pages[d, 2]["text"]), (source[0], source[1]))
+        for row in pages.values():
+            self.assertEqual(row["text_sha256"], hashlib.sha256(row["text"].encode()).hexdigest())
+        self.assertEqual([pages[k]["route"] for k in ((d, 1), (first, 1), (first, 2), (second, 2))], ["native", "native", "ocr", "ocr"])
+        self.assertEqual({k: (pages[k]["confidence_band"], pages[k]["review_state"]) for k in ((d, 1), (first, 2), (second, 2))},
+                         {(d, 1): ("not_applicable", "not_applicable"), (first, 2): ("below_80", "pending"),
+                          (second, 2): ("at_least_80", "pending")})  # 90 is not a confirmation
+        self.assertEqual(pages[first, 2]["text"], "synthetic OCR text\n")
+        self.assertEqual((pages[d, 1]["agency"], pages[d, 1]["received_at"], pages[first, 2]["received_at"]), ("maple", "2041-01-02T03:04:05Z", None))
+        self.assertEqual(pages[first, 2]["citations"], [
+            {"kind": "deadline", "id": ri.item_id(first) + "/1", "label": "Stated deadline"},
+            {"kind": "fact", "id": "maple/cost/2", "label": "cost"}, {"kind": "gap", "id": "p-2", "label": "policy_gap"}])
+        self.assertEqual(pages[d, 2]["citations"], [{"kind": "deadline", "id": ri.item_id(d) + "/1", "label": "2041-02-01"}])
+        reviews = self.project / "ocr-review-v1" / "reviews.jsonl"
+        with run_stages.snapshot_ro(self.database) as con:
+            ocr_review.mark(con, reviews, second, 2, "confirmed", "tester")
+            ocr_review.mark(con, reviews, first, 2, "rejected", "tester")
+        pages = {(r["original_sha256"], r["page"]): r for r in cp.read(self.project, "test-run")["pages"]}
+        self.assertEqual((pages[second, 2]["review_state"], pages[first, 2]["review_state"]), ("confirmed", "rejected"))
+
+    def test_cited_pages_bounds_are_counted_never_dropped(self):
+        # Contract: a page over a bound is listed in not_exported with its reason; text is never truncated and the
+        # serialized model never exceeds the total. Bug caught: bytes counted as characters, or a silent drop.
+        d, (multi, _) = self.docs[0][0], self.document(["é" * 40], "empty")  # 40 characters, 80 UTF-8 bytes
+        self.write_citations(facts=[(d, 1), (d, 2)], gaps=[(multi, 1)])
+        full = cp.read(self.project, "test-run")
+        keys = sorted([(d, 1), (d, 2), (multi, 1)])
+        self.assertEqual([(r["original_sha256"], r["page"]) for r in full["pages"]], keys)
+
+        def run(**limits):
+            with patch.multiple(cp, **limits):
+                doc = cp.read(self.project, "test-run")
+            return (doc, [(r["original_sha256"], r["page"]) for r in doc.get("pages", [])],
+                    {(r["original_sha256"], r["page"]): r["reason"] for r in doc.get("not_exported", [])})
+        _, kept, omitted = run(MAX_PAGE_BYTES=80)
+        self.assertEqual((kept, omitted), ([(multi, 1)], {(d, 1): "page_bytes", (d, 2): "page_bytes"}))
+        _, kept, omitted = run(MAX_PAGE_BYTES=79)
+        self.assertEqual((kept, omitted), ([], dict.fromkeys(keys, "page_bytes")))
+        _, kept, omitted = run(MAX_PAGES=1)
+        self.assertEqual((kept, omitted), (keys[:1], dict.fromkeys(keys[1:], "page_count")))
+        size = len(cp.encode(full))
+        self.assertEqual(run(MAX_TOTAL_BYTES=size)[0], full)
+        doc, kept, omitted = run(MAX_TOTAL_BYTES=size - 1)
+        self.assertLessEqual(len(cp.encode(doc)), size - 1)
+        self.assertEqual(sorted(kept + list(omitted)), keys)
+        self.assertTrue(omitted and set(omitted.values()) == {"total_bytes"})
+        self.assertEqual(run(MAX_TOTAL_BYTES=50)[0], {"state": "unavailable", "code": "cited_pages_metadata_bound"})
+
+    def test_cited_pages_unreadable_unit_or_input_is_unavailable_never_partial(self):
+        # Contract: a unit or input that cannot be checked gives state unavailable with a stable code, in the export too; only
+        # a readable input with no page citations is an empty ok. Bug caught: an empty list or partial text on a read failure.
+        d = self.docs[0][0]
+        self.write_citations()
+        empty = cp.read(self.project, "test-run")
+        self.assertEqual((empty["state"], empty["pages"], empty["not_exported"]), ("ok", [], []))
+        gap = self.project / "run-outputs" / "test-run" / "outcomes" / "gap-proposals.json"
+        for label, mutate, code in (("page without a unit", lambda: self.write_citations(facts=[(d, 99)]), "cited_pages_unit"),
+                                    ("missing input", gap.unlink, "cited_pages_unreadable")):
+            with self.subTest(label):
+                self.write_citations(facts=[(d, 1)])
+                mutate()
+                self.assertEqual(cp.read(self.project, "test-run"), {"state": "unavailable", "code": code})
+        self.write_citations(facts=[(d, 1)])
+        with store.ledger(self.database, readonly=True) as con:
+            path = Path(con.execute("SELECT derived_path FROM units WHERE original_sha256=? ORDER BY legacy_ordinal", (d,)).fetchone()[0])
+        path.chmod(0o600)
+        path.write_bytes(b"corrupt")
+        self.assertEqual(cp.read(self.project, "test-run"), {"state": "unavailable", "code": "artifact_hash_mismatch"})
+        with tempfile.TemporaryDirectory() as dest:
+            os.chmod(dest, 0o700)
+            console_export.build(str(self.project), "test-run", dest)
+            raw = Path(dest, "console-model", "cited-pages.json").read_bytes()
+        self.assertEqual(json.loads(raw), {"schema": cp.SCHEMA, "source_project_id": approval_queue._project_id(self.project),
+                                           "state": "unavailable", "code": "artifact_hash_mismatch"})
+
+    def test_export_lists_cited_pages_with_its_hash_and_the_snapshot_reads_it(self):
+        d = self.docs[0][0]
+        self.write_citations(facts=[(d, 1)], deadlines=[(d, 2, None)])
+        expected, pid = cp.read(self.project, "test-run"), approval_queue._project_id(self.project)
+        with tempfile.TemporaryDirectory() as dest:
+            os.chmod(dest, 0o700)
+            manifest = console_export.build(str(self.project), "test-run", dest)
+            raw = Path(dest, "console-model", "cited-pages.json").read_bytes()
+            self.assertEqual(manifest["files"]["console-model/cited-pages.json"], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(json.loads(Path(dest, "EXPORT.json").read_text())["files"], manifest["files"])
+            self.assertEqual(raw, cp.encode(expected))  # the staged copy gives the live answer, in the one serialization
+            source = console_snapshot.SnapshotSource(console_snapshot.Pin(dest, "test-run", pid, "name", "t"))
+            self.assertEqual(source.cited_pages("test-run"), expected)
+        self.assertEqual(console_snapshot.LiveSource(str(self.project)).cited_pages("test-run"), expected)
+        self.assertEqual([r["page"] for r in expected["pages"]], [1, 2])
 
 
 if __name__ == "__main__":
