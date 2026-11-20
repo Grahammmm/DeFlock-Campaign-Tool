@@ -110,3 +110,13 @@ They exercise the actual stage hook, canonical schema, read-only fingerprints,
 all documentary predicates, CPRA boundaries, unknown/empty/malformed inputs,
 run-specific JSON/Markdown, path refusals, write errors and injected negative
 controls that detect a bypassed citation gate or omitted outputs hook.
+
+## Custodian worksheet (private staging, not an installed input)
+
+`records comparison-worksheet --comparison run-outputs/<run>/comparison.json --facts-store DIR --out FILE` writes a new
+records-comparison-worksheet-v1 file (0600; an existing path is refused) outside the checkout, the fact store and the project.
+It lists each agency and request from the report, one blank entry per CRITERIA field with every key `comparison._fact_row`
+reads (types and one-line hints from `comparison.WORKSHEET_FIELDS`), and reviewed fact-store facts as candidates only;
+disputed and unreviewed facts are counted, never listed. Candidates are not citations, attestations or applicability, and
+the tool fills no predicate, value, role or flag, so an unfilled worksheet compiles to all unknown. The custodian completes it,
+attests it and installs agency-fact-sheets.json as a separate attended step; compilation and installation are not part of this command.

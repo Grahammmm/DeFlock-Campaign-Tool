@@ -77,6 +77,53 @@ CRITERIA = {
 }
 
 
+def _key(kind, hint, required="always", **more):
+    return {"type": kind, "required": required, "hint": hint, **more}
+
+
+def _worksheet_fields():
+    """ONE typed table of every key _fact_row reads from a fact and its value (fixture-checked against _fact_row's AST)."""
+    fact = {
+        "state": _key("enum", "Whether the cited record shows the fact: observed, missing, redacted or unresolved.",
+                      values=["observed", "missing", "redacted", "unresolved"]),
+        "counterevidence": _key("list", "Cited records that contradict the values below; any entry keeps the row unknown."),
+        "custodian_attested": _key("bool", "Custodian attests the citations support every value for this agency, version, data layer and time."),
+        "applicability_confirmed": _key("bool", "Custodian confirms the law, role and operative dates apply to the cited record."),
+        "citations": _key("list", "Non-empty [{source_id, locator}] naming the record page or section that shows each value."),
+    }
+    nonblank = lambda hint, **more: _key("string", hint, **more)  # noqa: E731
+    practice = {
+        "native_coverage_complete": _key("bool", "True only if the cited production covers every native record in scope."),
+        "policy_version": nonblank("Version or date of the operative policy the practice is compared with."),
+        "policy_modality": _key("enum", "Whether the operative policy text says shall or should.", values=["shall", "should"]),
+        "exceptions_resolved": _key("bool", "True only if the cited record resolves every policy exception in scope."),
+    }
+    extra = {
+        "usage_policy_published": {
+            "has_website": _key("bool", "Whether the agency operates a website, shown by a cited record."),
+            "conspicuous_online": _key("bool", "Whether the policy is conspicuously posted on that website.", required="only when has_website is true")},
+        "retention": {"data_layer": nonblank("Data layer (for example images, plate reads) the cited retention policy covers.")},
+        "sharing_practice": {"event_type": _key("enum", "disclosure for a cited actual disclosure; configured_access for a configured relationship.",
+                                                values=["disclosure", "configured_access"])},
+        "retention_practice": {
+            "data_layer": nonblank("Data layer the cited observed retention measures."),
+            "policy_data_layer": nonblank("Data layer the operative policy bound applies to; must equal data_layer."),
+            "observed_days": _key("int", "Observed retention in days (non-negative integer), shown by the cited record."),
+            "min_days": _key("int_or_null", "Policy minimum days; at least one of min_days and max_days, min <= max.", required="one bound at least"),
+            "max_days": _key("int_or_null", "Policy maximum days; at least one of min_days and max_days, min <= max.", required="one bound at least")},
+    }
+    table = {}
+    for name, (_, expected, predicates) in CRITERIA.items():
+        value = {p: _key("bool", f"Cited record must show {p.replace('_', ' ')}; false only for an affirmative cited discrepancy. {expected}")
+                 for p in predicates}
+        value.update(practice if name.endswith("_practice") else {}, **extra.get(name, {}))
+        table[name] = {"fact": fact, "value": value}
+    return table
+
+
+WORKSHEET_FIELDS = _worksheet_fields()
+
+
 def baseline_label():
     """Status and 12-hex SHA-256 prefix of the package bytes read now; never a default 'draft'."""
     try:
