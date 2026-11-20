@@ -241,7 +241,7 @@ def _folder_direction(folder):
     parts = [p.strip().casefold() for p in re.split(r"[/.]", folder.strip())]
     if parts[-1] in SENT_FOLDERS:
         return "sent"
-    return "incoming" if parts[0] == "inbox" else None
+    return "incoming" if "inbox" in parts else None
 
 
 def _instant(value):

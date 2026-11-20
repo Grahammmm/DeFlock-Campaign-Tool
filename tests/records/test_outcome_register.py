@@ -229,6 +229,8 @@ class RegisterTests(unittest.TestCase):
         self.assertEqual(row["promised"], base["promised"])
         self.assertEqual(row["fulfillment"], "not_assessed")
         self.assertEqual(row["issues"], base["issues"])
+        row = self.arrival_case("Sandbox.example.invalid/INBOX", received="2030-01-05T10:00:00-08:00")
+        self.assertEqual(row["answer_arrived"]["state"], "arrived_unrecorded")
         row = self.arrival_case(received="2030-01-05T10:00:00-08:00")
         self.assertEqual(row["answer_arrived"]["first_arrival"], "2030-01-05T18:00:00Z")
         self.assertIn("2030-01-05;", row["action_reason"])
