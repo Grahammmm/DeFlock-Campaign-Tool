@@ -53,13 +53,23 @@ def _out(draft, agency, opts):
     return None, ["--draft", draft, "--team-list", opts.team_list, "--allow", opts.allow]
 
 
+def _precedent(draft, agency, opts):
+    if not opts.agencies:
+        return "no agencies file", None
+    if not opts.agency:
+        return "no agency key", None
+    return None, ["--draft", draft, "--agencies", opts.agencies, "--agency", opts.agency]
+
+
 # Fixed order. Each entry: name, module, input check returning (skip reason, argv).
 _LINTS = [
     ["asks", "lint_asks", _asks],
     ["cites", "lint_cites", _cites],
     ["quotes", "lint_quotes", _quotes],
     ["out", "lint_out", _out],
+    ["precedent", "lint_precedent", _precedent],
 ]
+_PRECEDENT_ROW = re.compile(r"^(\d+) (refusal|note) L9_[A-Z_]+$")
 
 
 def _run(module, argv):
@@ -75,6 +85,14 @@ def _run(module, argv):
     if code not in (0, 1):
         return "error"
     output = out.getvalue()
+    if module == "lint_precedent":  # notes never fail; only refusals count as hits
+        rows = [m.groups() for m in map(_PRECEDENT_ROW.match, output.splitlines()) if m]
+        refusals = [n for n, kind in rows if kind == "refusal"]
+        notes = [n for n, kind in rows if kind == "note"]
+        found = "%d notes, first %s" % (len(notes), notes[0]) if notes else ""
+        if code == 0:
+            return "note, " + found if notes else "pass"
+        return ("FAIL, %d hits, first %s" % (len(refusals), refusals[0]) if refusals else "FAIL, 0 hits") + ("; " + found if notes else "")
     coverage = ""
     summary = None
     if module == "lint_quotes":
@@ -110,6 +128,8 @@ def main(argv=None):
     parser.add_argument("--package")
     parser.add_argument("--team-list")
     parser.add_argument("--allow")
+    parser.add_argument("--agencies")
+    parser.add_argument("--agency")
     args = parser.parse_args(argv)
     draft, agency = Path(args.draft), Path(args.agency_dir)
     try:

@@ -39,9 +39,13 @@ class AgencyLintAllTests(unittest.TestCase):
         self.draft = self.root / "draft.md"
         self.draft.write_text(CLEAN)
 
-    def run_lint(self, fakes=None, draft=None, package=True, agency=None, team=True, allow=True):
-        fakes = {"lint_asks": fake(), "lint_cites": fake(), "lint_quotes": fake(), "lint_out": fake(), **(fakes or {})}
+    def run_lint(self, fakes=None, draft=None, package=True, agency=None, team=True, allow=True, agencies=True, key=True):
+        fakes = {"lint_asks": fake(), "lint_cites": fake(), "lint_quotes": fake(), "lint_out": fake(), "lint_precedent": fake(), **(fakes or {})}
         argv = [str(draft or self.draft), "--agency-dir", str(agency or self.agency)]
+        if agencies:
+            argv += ["--agencies", "agencies.tsv"]
+        if key:
+            argv += ["--agency", "Agency A"]
         if package:
             argv += ["--package", str(self.package)]
         if team:
@@ -55,24 +59,47 @@ class AgencyLintAllTests(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_each_lint_failing_alone_shows_only_that_lint(self):
-        names = {"lint_asks": "asks", "lint_cites": "cites", "lint_quotes": "quotes", "lint_out": "out"}
+        names = {"lint_asks": "asks", "lint_cites": "cites", "lint_quotes": "quotes", "lint_out": "out", "lint_precedent": "precedent"}
         for module, name in names.items():
             with self.subTest(module=module):
-                bad = fake(1, {"lint_quotes": "12:4 R7 %s\n13:1 R7\n" % CANARY, "lint_out": "12 L8_TEAM\n13 L10_LABEL\n"}.get(module, "draft line 12 ask 2: x\ndraft line 15: y\n"))
+                bad = fake(1, {"lint_quotes": "12:4 R7 %s\n13:1 R7\n" % CANARY, "lint_out": "12 L8_TEAM\n13 L10_LABEL\n",
+                               "lint_precedent": "11 note L9_COMPARISON\n12 refusal L9_RELEASE_PRECEDENT\n13 refusal L9_RELEASE_PRECEDENT\n"
+                               }.get(module, "draft line 12 ask 2: x\ndraft line 15: y\n"))
                 code, out, _ = self.run_lint({module: bad})
                 self.assertEqual(code, 1)
                 lines = out.splitlines()
-                self.assertEqual([l.split(":")[0] for l in lines[:5]], ["asks", "cites", "quotes", "out", "banned phrases"])
-                failing = [l for l in lines[:5] if "FAIL" in l]
+                self.assertEqual([l.split(":")[0] for l in lines[:6]], ["asks", "cites", "quotes", "out", "precedent", "banned phrases"])
+                failing = [l for l in lines[:6] if "FAIL" in l]
                 first = "12:4" if module == "lint_quotes" else "12"
-                self.assertEqual(failing, ["%s: FAIL, 2 hits, first %s" % (name, first)])
+                # Contract: only refusals count as hits; the note is reported beside them (a note counted as a hit would say 3 hits, first 11).
+                expected = "precedent: FAIL, 2 hits, first 12; 1 notes, first 11" if module == "lint_precedent" else "%s: FAIL, 2 hits, first %s" % (name, first)
+                self.assertEqual(failing, [expected])
                 self.assertEqual(lines[-1], "agency-lint: FAIL")
                 self.assertNotIn(CANARY, out)
 
     def test_clean_draft_exits_0(self):
         code, out, _ = self.run_lint()
         self.assertEqual(code, 0)
-        self.assertEqual(out.splitlines(), ["asks: pass", "cites: pass", "quotes: pass", "out: pass", "banned phrases: pass", "agency-lint: PASS"])
+        self.assertEqual(out.splitlines(), ["asks: pass", "cites: pass", "quotes: pass", "out: pass", "precedent: pass", "banned phrases: pass", "agency-lint: PASS"])
+
+    # Contract: a precedent note is nonblocking and never hides incomplete quote coverage.
+    def test_precedent_note_is_nonblocking_and_keeps_incomplete_coverage(self):
+        note = fake(0, "4 note L9_COMPARISON\n9 note L9_QUOTED_PRECEDENT\n")
+        code, out, _ = self.run_lint({"lint_precedent": note})
+        self.assertEqual((code, out.splitlines()[4], out.splitlines()[-1]), (0, "precedent: note, 2 notes, first 4", "agency-lint: PASS"))
+        partial = fake(0, "agency-lint-quotes: 0 hits, 1 quotes checked, 2 message quotes not checked against pages\n")
+        code, out, _ = self.run_lint({"lint_precedent": note, "lint_quotes": partial})
+        self.assertEqual((code, out.splitlines()[-1]), (3, "agency-lint: INCOMPLETE (1 incomplete)"))
+        self.assertIn("precedent: note, 2 notes, first 4", out)
+
+    def test_precedent_without_agencies_file_or_key_is_skipped_not_pass(self):
+        boom = fake(exc=AssertionError("called"))
+        for kwargs, reason in (({"agencies": False, "key": False}, "no agencies file"), ({"agencies": False}, "no agencies file"), ({"key": False}, "no agency key")):
+            with self.subTest(reason=reason):
+                code, out, _ = self.run_lint({"lint_precedent": boom}, **kwargs)
+                self.assertEqual(code, 3)
+                self.assertIn("precedent: skipped: " + reason, out)
+                self.assertEqual(out.splitlines()[-1], "agency-lint: INCOMPLETE (1 skipped)")
 
     def test_missing_inputs_are_skipped_not_pass(self):
         (self.agency / "pages" / "DOC1_p001.txt").unlink()
@@ -147,6 +174,7 @@ class AgencyLintAllTests(unittest.TestCase):
     def test_cli_registered(self):
         self.assertEqual(cli.COMMANDS["agency-lint"], ("agency_run.lint_all", "main"))
         self.assertEqual(cli.COMMANDS["agency-lint-out"], ("agency_run.lint_out", "main"))
+        self.assertEqual([lint[0] for lint in lint_all._LINTS][3:], ["out", "precedent"])
 
     def test_wrapper_argument_error_is_fixed_and_value_free(self):
         out, err = io.StringIO(), io.StringIO()
@@ -180,7 +208,9 @@ class RealAgencyLintAllTests(unittest.TestCase):
         if team:
             (self.root / "team.txt").write_text("Jordan Testname\n")
             (self.root / "allow.txt").write_text("records@agency.example.org\n")
-            argv += ["--team-list", str(self.root / "team.txt"), "--allow", str(self.root / "allow.txt")]
+            (self.root / "agencies.tsv").write_text("agency\taliases\nAgency A\tA PD\nAgency B\tB PD\n")
+            argv += ["--team-list", str(self.root / "team.txt"), "--allow", str(self.root / "allow.txt"),
+                     "--agencies", str(self.root / "agencies.tsv"), "--agency", "agency a"]
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             code = lint_all.main(argv)
@@ -210,7 +240,18 @@ class RealAgencyLintAllTests(unittest.TestCase):
         self.assertEqual(code, 0, out + err)
         self.assertIn("quotes: pass; text check only; no visual check", out)
         self.assertIn("out: pass", out)
+        self.assertIn("precedent: pass", out)
         self.assertIn("agency-lint: PASS", out)
+        self.draft.write_text("1. Please send existing records.\nAgencies like B PD keep logs.\n")
+        code, out, err = self.run_real(team=True)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("precedent: note, 1 notes, first 2", out)
+        self.draft.write_text("1. Please send existing records.\nB PD released its logs.\n")
+        code, out, err = self.run_real(team=True)
+        self.assertEqual(code, 1, out + err)
+        self.assertIn("precedent: FAIL, 1 hits, first 2", out)
+        self.assertNotIn("B PD", out + err)
+        self.draft.write_text("1. Please send existing records.\n")
         code, out, err = self.run_real()
         self.assertEqual(code, 3, out + err)
         self.assertIn("out: skipped: no team list", out)
