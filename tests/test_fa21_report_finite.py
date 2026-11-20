@@ -71,11 +71,11 @@ def _sha256(path):
 
 
 def _repo_listing():
-    """Every repository file (outside .git) with its size and mtime: any created,
-    removed or rewritten file changes this snapshot."""
+    """Snapshot file paths, sizes and mtimes outside .git and __pycache__."""
     listing = {}
     for current, dirs, files in os.walk(REPO_ROOT):
-        dirs[:] = [d for d in dirs if d != ".git"]
+        # Other test shards can write interpreter caches in this checkout.
+        dirs[:] = [d for d in dirs if d not in {".git", "__pycache__"}]
         for name in files:
             path = Path(current, name)
             stat = path.lstat()
