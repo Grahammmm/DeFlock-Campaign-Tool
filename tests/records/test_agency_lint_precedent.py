@@ -100,6 +100,30 @@ class AgencyLintPrecedentTests(unittest.TestCase):
         self.assertEqual(self.run_lint("> # Heading\n> Agency B\nreleased logs.\n"), (0, "2 note L9_QUOTED_PRECEDENT\n", ""))
         self.assertEqual(self.run_lint("> ```\n> code\n> ```\n> Agency B\nreleased logs.\n"), (0, "4 note L9_QUOTED_PRECEDENT\n", ""))
 
+    # Contract: a fenced block inside a quote stays open across quoted blank lines and closes only on a matching fence (same character,
+    # at least as long, no info string), so an unmarked line after it is the author's own and an authored release precedent stays a refusal.
+    # Bug caught: a quoted blank line reset the fence state and a fence of the other character toggled it, downgrading the refusal to a note.
+    def test_quoted_fence_state_survives_blank_lines_and_wrong_closers(self):
+        for quote in (
+            "> ```\n>\n> code",  # quoted blank line inside the fence
+            "> ```\n>\n> code\n>\n> more code",
+            "> ~~~\n> code\n> ```\n> code",  # backticks do not close a tilde fence
+            "> ```\n> code\n> ~~~\n> code",  # tildes do not close a backtick fence
+            "> ````\n> code\n> ```\n> code",  # a shorter fence does not close a longer one
+            "> ```\n> code\n> ``` info\n> code",  # a closing fence carries no info string
+            "> ```\n> code\n> ```\n> ```\n> code",  # closed, then a new fence opens
+        ):
+            with self.subTest(quote=quote):
+                line = quote.count("\n") + 2
+                self.assertEqual(self.run_lint(quote + "\nAgency B released logs.\n"), (1, "%d refusal L9_RELEASE_PRECEDENT\n" % line, ""))
+        # a valid closing fence (longer is fine, trailing spaces are fine) ends the fenced block; a quoted paragraph after it continues lazily
+        for quote in ("> ```\n>\n> code\n> ```\n> Agency B", "> ~~~\n> code\n> ~~~~ \n> Agency B", "> ```\n> code\n> `````\n> Agency B"):
+            with self.subTest(quote=quote):
+                line = quote.count("\n") + 1
+                self.assertEqual(self.run_lint(quote + "\nreleased logs.\n"), (0, "%d note L9_QUOTED_PRECEDENT\n" % line, ""))
+        # an unquoted blank line ends the quote and its fence: a later quote starts fresh and its paragraph can be continued lazily
+        self.assertEqual(self.run_lint("> ```\n> code\n\n> Agency B\nreleased logs.\n"), (0, "4 note L9_QUOTED_PRECEDENT\n", ""))
+
     # Contract: bad input exits 2 with one fixed line and never echoes a value; a good run prints no name and writes nothing.
     def test_bad_input_never_echoes(self):
         fixed = (2, "", "refused agency_lint_precedent_input\n")

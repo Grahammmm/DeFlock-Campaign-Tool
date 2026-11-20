@@ -25,7 +25,7 @@ QUOTE = re.compile(r"^\s*(?:>\s?)+")
 ITEM = re.compile(r"\s*(?:[-*+]|\d+[.)])\s")
 BOUNDARY = re.compile(r"[.?!]+[\"')\]]*(?=\s|$)")
 BLOCK = re.compile(r"\s{0,3}(?:#{1,6}(?:\s|$)|`{3,}|~{3,}|(?:[-*_]\s*){3,}$)")  # a line that cannot lazily continue a quote
-FENCE = re.compile(r"\s{0,3}(?:`{3,}|~{3,})")
+FENCE = re.compile(r"\s{0,3}(`{3,}|~{3,})(.*)$")  # (marker run, info string): a fence opens or closes a fenced code block
 ABBREV = re.compile(r"(?:^|[\s(\[\"'])(?:vs|cf|mr|mrs|ms|dr|[a-z]{1,2}(?:\.[a-z]{1,2})+)$", re.I)  # never ends a sentence
 ABBREV_MID = re.compile(r"(?:^|[\s(\[\"'])(?:inc|ltd|llc|co|corp|dept|depts|dist|st|jr|sr|approx)$", re.I)  # ends one only before a capital
 LOWER = re.compile(r"\s+[a-z]")
@@ -74,24 +74,35 @@ def matcher(names, me):
     return re.compile("|".join("(?:%s)" % _literal(p).pattern for p in sorted(owner, key=lambda p: (-len(p), p))), re.I), owner
 
 
+def fenced(body, fence):
+    """-> the fence state after a quoted line: (char, length) while inside a fenced block, else None."""
+    m = FENCE.match(body)
+    if fence is None:  # a backtick fence's info string may not hold a backtick; otherwise this is an opening fence
+        return (m.group(1)[0], len(m.group(1))) if m and not (m.group(1)[0] == "`" and "`" in m.group(2)) else None
+    closes = m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1] and not m.group(2).strip()  # same char, no shorter, no info
+    return None if closes else fence
+
+
 def runs(text):
     """-> [(quoted, one-line text, [(offset, line)])]: paragraphs and quote blocks, soft-wrapped lines joined by a space."""
-    out, cur, lazy, fence = [], None, False, False
+    out, cur, lazy, fence = [], None, False, None
     for number, raw in enumerate(text.split("\n"), 1):
         quoted = bool(QUOTE.match(raw))
         body = QUOTE.sub("", raw, count=1) if quoted else raw
         if not body.strip():
-            cur, lazy, fence = None, False, False
+            cur, lazy = None, False
+            if not quoted:  # only a blank line outside the quote ends it; a quoted blank line keeps a fenced block open
+                fence = None
             continue
         if not quoted and cur is not None and cur[0] and lazy and not ITEM.match(body) and not BLOCK.match(body):
             quoted = True  # Markdown lazy continuation: an unmarked line directly after a quoted paragraph line stays in the quote
         elif quoted:
-            if FENCE.match(body):
-                fence = not fence
+            was = fence
+            fence = fenced(body, fence)
             # only a quoted paragraph line (not a heading, rule, fence line or fenced code) can be continued lazily
-            lazy = not fence and not BLOCK.match(body)
+            lazy = was is None and fence is None and not BLOCK.match(body)
         else:
-            lazy, fence = False, False
+            lazy, fence = False, None
         if cur is None or cur[0] != quoted or ITEM.match(body):
             cur = [quoted, [], [], 0]
             out.append(cur)
