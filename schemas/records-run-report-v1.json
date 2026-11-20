@@ -41,6 +41,18 @@
         "unlisted": {"$ref": "#/$defs/count"}
       }
     },
+    "draft_queue_counts": {
+      "type": "object", "additionalProperties": false,
+      "description": "Outputs stage only: drafts newly queued per producer this run. null means unknown (failed or did not run), never zero. Counts only.",
+      "required": ["received_items", "message_links", "followup_clock", "followup_engine", "next_steps"],
+      "properties": {
+        "received_items": {"type": ["integer", "null"], "minimum": 0},
+        "message_links": {"type": ["integer", "null"], "minimum": 0},
+        "followup_clock": {"type": ["integer", "null"], "minimum": 0},
+        "followup_engine": {"type": ["integer", "null"], "minimum": 0},
+        "next_steps": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
     "arrival_summary": {
       "type": "object", "additionalProperties": false,
       "description": "Arrival runs only, from the outputs stage: new received items by kind this run, and drafts pending now. null means unavailable, never zero.",

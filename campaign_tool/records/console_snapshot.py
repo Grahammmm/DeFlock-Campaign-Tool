@@ -93,7 +93,16 @@ class Pinner:
     def _pin(self):
         match = LINK.fullmatch(os.readlink(os.path.join(self.root, "current")))
         _need(match, "current_invalid")
-        name = match.group(1)
+        return self._named(match[1])
+
+    def historical(self, name):
+        """The Pin of one installed export chosen by name (never `current`). The same verification as a pin; it never
+        updates the good pin or last code and never falls back, so a broken export raises."""
+        _need(isinstance(name, str) and ce.NAME.fullmatch(name), "export_name_invalid")
+        with self.lock:
+            return self._named(name)
+
+    def _named(self, name):
         root_fd, fd = aq._open_chain(self.root), None
         try:
             _need(_private_dir(os.fstat(root_fd)), "export_root_unsafe")

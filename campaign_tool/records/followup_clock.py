@@ -370,7 +370,7 @@ def queue_followups(project, run_id):
                "skipped_answer_unrecorded": 0, "settings_invalid": False}
     register = read_register(project, run_id)
     if register is None:
-        return summary
+        return dict(summary, register_missing=True)
     settings = load_settings(project)
     summary["settings_invalid"] = settings["invalid"]
     queue_rows = approval_queue.load_queue(project)

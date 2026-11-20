@@ -372,7 +372,8 @@ class OutputsStage(unittest.TestCase):
         (project / "processing-v1" / "runs" / "extract-synthetic-run.json").write_text(json.dumps(
             {"schema": "records-extract-outcomes-v1", "run_id": "synthetic-run", "documents": []}))
         before = self.fingerprint(project)
-        self.assertEqual(self.invoke(project), (run_stages.result("ok", {"input": 1, "output": 1}), 0))
+        self.assertEqual(self.invoke(project), (run_stages.result("ok", {"input": 1, "output": 1}, draft_queue_counts={
+            "received_items": 0, "message_links": 0, "followup_clock": 0, "followup_engine": 0, "next_steps": None}), 0))
         output = project / "run-outputs/synthetic-run"
         result = json.loads((output / "comparison.json").read_text())
         self.assertEqual(result["schema"], c.SCHEMA)

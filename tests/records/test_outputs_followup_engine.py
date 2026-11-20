@@ -107,9 +107,11 @@ class OutputsEngineTests(StageTestCase):
         self.settings()
         code, parsed, _ = self.stage_outputs()
         self.assertEqual((code, parsed["status"]), (0, "ok"))
-        # A clean run's result is unchanged: no needs_g key and no extra field.
+        # A clean run's result is unchanged: no needs_g key; the only addition is the per-producer queue counts.
         self.assertEqual(parsed, {"stage_result_version": 1, "status": "ok", "error_code": None,
-                                  "counts": {"input": 1, "output": 1, "failed": 0, "skipped": 0}})
+                                  "counts": {"input": 1, "output": 1, "failed": 0, "skipped": 0},
+                                  "draft_queue_counts": {"received_items": 1, "message_links": 0, "followup_clock": 0,
+                                                         "followup_engine": 1, "next_steps": None}})
         engine = self.rows(fe.KIND)
         self.assertEqual([(r["agency_id"], r["request_id"], r["status"]) for r in engine],
                          [("alpha-pd", "OLD-1", "pending")])

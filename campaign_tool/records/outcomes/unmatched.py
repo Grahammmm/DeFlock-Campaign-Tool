@@ -327,9 +327,9 @@ def queue_relink(project, run_id, message_sha256, supersedes):
     return ident, queue_message_relink(project, run_id, _relink_draft(current, supersedes, entry))[1]
 
 
-def write_run_unmatched(project, run_id):
+def write_run_unmatched(project, run_id, include_created=False):
     """Outputs-stage hook, called after write_run_received_items. Writes unmatched-messages.json (0600) and queues
-    one `message_link` decision per untied message. Returns the report; raises on any failure (caller warns)."""
+    one `message_link` decision per untied message. Returns the report, or (report, newly queued count) with include_created; raises on any failure (caller warns)."""
     from ..approval_queue import queue_message_links
     from ..run_stages import snapshot_ro
     _need(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", run_id) is not None, "unmatched_run_id")
@@ -344,7 +344,7 @@ def write_run_unmatched(project, run_id):
           "unmatched_received_items")
     with snapshot_ro(project / "processing-v1" / "ledger.sqlite") as db:
         report = collect(db, received, run_id=run_id)
-    queue_message_links(project, run_id, [_draft(e) for e in report["messages"]])
+    created = queue_message_links(project, run_id, [_draft(e) for e in report["messages"]])["created"]
     for entry in report["messages"]:
         del entry["agency_id"]
     target, temporary = outcomes / "unmatched-messages.json", outcomes / ".unmatched-messages.json.tmp"
@@ -355,4 +355,4 @@ def write_run_unmatched(project, run_id):
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, target)
-    return report
+    return (report, created) if include_created else report
