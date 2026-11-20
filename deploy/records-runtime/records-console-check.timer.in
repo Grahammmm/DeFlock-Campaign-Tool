@@ -1,0 +1,11 @@
+[Unit]
+Description=Records console health check, hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+Unit=records-console-check.service
+
+[Install]
+WantedBy=timers.target

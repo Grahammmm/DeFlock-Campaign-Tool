@@ -1,0 +1,20 @@
+[Unit]
+Description=DeFlock records console (127.0.0.1, read-only export, sending impossible)
+# Candidate only. Rendered only when the target config sets console_port and console_export_root; never enabled or started by the renderer.
+# Loopback only: the panel has no bind option. NEVER add --send-config, --mail-drafts-config or --manual-events.
+# --decisions-dir is rendered only when console_decisions_dir is set; without it every POST is refused.
+
+[Service]
+Type=simple
+UMask=0077
+WorkingDirectory=@ENGINE_DIR@
+Environment=PYTHONPATH=@ENGINE_DIR@
+ExecStart=@HOST_PYTHON@ -B -m campaign_tool.records panel --export-root @CONSOLE_EXPORT_ROOT@ --run-id auto --run-report @RUNTIME_DIR@/@SCHEDULED_TARGET@/run-report.json --port @CONSOLE_PORT@ --actor G@CONSOLE_DECISIONS_ARGS@
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

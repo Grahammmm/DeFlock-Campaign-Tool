@@ -1,0 +1,15 @@
+[Unit]
+Description=Records console health (loopback only; no body printed)
+# Candidate only. Started by records-console-check.timer; never enabled by the renderer.
+
+[Service]
+Type=oneshot
+UMask=0077
+WorkingDirectory=@ENGINE_DIR@
+Environment=PYTHONPATH=@ENGINE_DIR@
+# Read-only probe of the console on the same port and export root; exit 1 shows as a failed unit.
+ExecStart=@HOST_PYTHON@ -B -m campaign_tool.records console-check --port @CONSOLE_PORT@ --export-root @CONSOLE_EXPORT_ROOT@ --max-age-hours 36
+TimeoutStartSec=2min
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
