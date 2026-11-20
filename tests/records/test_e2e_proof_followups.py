@@ -68,6 +68,12 @@ class FollowupProofTests(unittest.TestCase):
         clock = mock.patch.object(register, "datetime", Frozen)
         clock.start()
         self.addCleanup(clock.stop)
+        # DF2307-01: the offline .eml ingest records no mail receipt time, so the register would now flag
+        # arrival_unresolved for a person. These tests prove follow-up routing, not arrival, so keep arrival "none".
+        arrival = mock.patch.object(register, "answer_arrived",
+                                    return_value={"state": "none", "first_arrival": None, "occurrence_ids": []})
+        arrival.start()
+        self.addCleanup(arrival.stop)
 
     def eml(self, name):
         path = self.tmp / (name + ".eml")

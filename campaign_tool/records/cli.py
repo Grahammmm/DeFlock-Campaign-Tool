@@ -93,6 +93,7 @@ COMMANDS = {
     "comparison-input": ("comparison_input", "main"),
     "quiescence-audit": ("quiescence_audit", "main"),
     "units-diff": ("units_diff", "main"),
+    "outcomes-diff": ("outcomes.changes", "main"),
 }
 
 

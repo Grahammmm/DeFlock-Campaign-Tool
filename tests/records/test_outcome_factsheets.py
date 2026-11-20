@@ -108,6 +108,19 @@ class FactSheetsTests(unittest.TestCase):
         return {str(p.relative_to(self.processing)): (p.read_bytes(), p.stat().st_ino)
                 for p in self.processing.rglob("*") if p.is_file()}
 
+    def statements(self, sheet, field):
+        return sheet["fields"][field]["statements"]
+
+    def assert_rederivable(self, sheet, pages):
+        # Contract: a quote is exactly its cited unit lines joined by single spaces.
+        # Bug caught: a quote built another way (or off-by-one bounds) cannot be re-derived.
+        for field, value in sheet["fields"].items():
+            for s in value["statements"]:
+                cite = s["citation"]
+                lines = pages[cite["page"] - 1].splitlines()
+                self.assertTrue(1 <= cite["line_start"] <= cite["line_end"] <= len(lines), field)
+                self.assertEqual(s["quote"], " ".join(x.strip() for x in lines[cite["line_start"] - 1:cite["line_end"]]), field)
+
     def test_all_fields_exact_citations_and_all_agencies(self):
         report = self.collect()
         self.assertEqual([a["agency_id"] for a in report["agencies"]], ["cedar", "empty", "maple"])
@@ -122,10 +135,40 @@ class FactSheetsTests(unittest.TestCase):
             for statement in value["statements"]:
                 cite = statement["citation"]
                 self.assertEqual(cite["document_sha256"], self.docs[0][0])
-                self.assertIn(statement["quote"], source_pages[cite["page"] - 1])
                 self.assertTrue(all(fs.is_hash(cite[k]) for k in ("document_sha256", "unit_id", "text_sha256", "payload_sha256")))
-        self.assertEqual(sheet["fields"]["cost"]["statements"][0]["quote"], "Annual fee: $12,345.67.")
-        self.assertEqual(sheet["fields"]["camera_count"]["statements"][0]["quote"], "The department operates 7 ALPR cameras.")
+                # Existing keys are unchanged (v1 readers); only the line range is added.
+                self.assertEqual(set(cite), {"document_sha256", "page", "unit_id", "text_sha256", "payload_sha256", "line_start", "line_end"})
+        self.assert_rederivable(sheet, source_pages)
+        # Single-line statements stay byte-identical to main, with equal bounds.
+        cost = sheet["fields"]["cost"]["statements"][0]
+        self.assertEqual(cost["quote"], "Annual fee: $12,345.67.")
+        self.assertEqual((cost["citation"]["line_start"], cost["citation"]["line_end"]), (3, 3))
+        count = sheet["fields"]["camera_count"]["statements"][0]
+        self.assertEqual(count["quote"], "The department operates 7 ALPR cameras.")
+        self.assertEqual((count["citation"]["line_start"], count["citation"]["line_end"]), (4, 4))
+        # The fixture wraps this sentence over two lines: one whole quote, not the old prefix.
+        retention = self.statements(sheet, "retention")[0]
+        self.assertEqual(retention["quote"], "Retention is 21 days unless evidence is preserved.")
+        self.assertEqual((retention["citation"]["line_start"], retention["citation"]["line_end"]), (6, 7))
+        self.assertEqual([s["quote"] for s in self.statements(sheet, "retention")],
+                         ["Retention is 21 days unless evidence is preserved.", "Search logs are retained for 13 months."])
+
+    def test_wrapped_run_on_obeys_statement_length_limit(self):
+        # Contract: 2000 joined characters is a statement; 2001 gives the existing gap and no
+        # prefix/suffix statement. Bug caught: a limit applied per physical line, or a truncated quote.
+        def run_on(total):
+            head = "Retention is "
+            return [head + "x" * 40, "y" * (total - len(head) - 41)]
+        pages = ["\n".join(run_on(2000)), "\n".join(run_on(2001))]
+        self.assertEqual([len(" ".join(p.splitlines())) for p in pages], [2000, 2001])
+        self.document(pages, "empty")
+        sheet = self.sheet(self.collect(), "empty")
+        found = self.statements(sheet, "retention")
+        self.assertEqual([(s["citation"]["page"], s["citation"]["line_start"], s["citation"]["line_end"]) for s in found], [(1, 1, 2)])
+        self.assert_rederivable(sheet, pages)
+        gaps = [g for g in sheet["gaps"] if g["code"] == "statement_too_long"]
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual(sheet["gaps"], gaps)
 
     def test_missing_fields_questions_headings_never_invent_values(self):
         report = self.collect()
@@ -135,6 +178,24 @@ class FactSheetsTests(unittest.TestCase):
         self.assertTrue(all(f["status"] == "NOT FOUND" for f in self.sheet(report, "empty")["fields"].values()))
         self.assertEqual(len(fields["retention"]["statements"]), 2, "no latest-value inference")
         self.assertEqual(fields["audits"]["statements"][0]["quote"], "No responsive audit records were located.")
+
+    def test_wrapped_statements_stop_at_headings_questions_blank_lines_and_units(self):
+        # Contract: joining never absorbs a heading, a question, text after a blank line or the next unit.
+        # Bug caught: a naive join of all non-blank lines (heading prefix, swallowed paragraph, cross-page sentence).
+        pages = ["Contract\nThe contract is signed\nand filed.\n\nAudits are reviewed\n\nevery quarter.\n"
+                 "Is retention 30 days\nor longer?\nRetention is 5 days.\n\nAudits are quarterly.\n\nAudits are quarterly.\n"
+                 "Data are retained for 9 days and",
+                 "then deleted."]
+        self.document(pages, "empty")
+        sheet = self.sheet(self.collect(), "empty")
+        self.assert_rederivable(sheet, pages)
+        got = {f: [(s["quote"], s["citation"]["page"], s["citation"]["line_start"], s["citation"]["line_end"])
+                   for s in v["statements"]] for f, v in sheet["fields"].items() if v["statements"]}
+        self.assertEqual(got, {
+            "contract": [("The contract is signed and filed.", 1, 2, 3)],
+            "audits": [("Audits are reviewed", 1, 5, 5), ("Audits are quarterly.", 1, 12, 12)],
+            "retention": [("Retention is 5 days.", 1, 10, 10), ("Data are retained for 9 days and", 1, 15, 15)]})
+        self.assertEqual(sheet["gaps"], [])
 
     def test_negation_proposal_and_policy_dates_preserved_not_resolved(self):
         report = self.collect()
@@ -165,7 +226,11 @@ class FactSheetsTests(unittest.TestCase):
             for value in sheet["fields"].values():
                 for statement in value["statements"]:
                     cite = statement["citation"]
-                    self.assertIn("document sha256 " + cite["document_sha256"] + ", page " + str(cite["page"]), text)
+                    self.assertIn("document sha256 " + cite["document_sha256"] + ", page " + str(cite["page"])
+                                  + ", lines " + str(cite["line_start"]) + "–" + str(cite["line_end"]) + "]", text)
+        # Independently expected rendering of the wrapped fixture sentence (lines 6-7 of page 1).
+        self.assertIn("<code>Retention is 21 days unless evidence is preserved.</code> [document sha256 "
+                      + self.docs[0][0] + ", page 1, lines 6–7]", text)
         self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o700)
         for path in output.iterdir():
             if path.name == "outcomes":  # received-items directory (REC-AUTO-3)

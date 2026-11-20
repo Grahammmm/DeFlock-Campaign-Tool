@@ -42,7 +42,10 @@ def _quotes(draft, agency, opts):
     pages = agency / "pages"
     if not pages.is_dir() or not any(pages.glob("*_p[0-9][0-9][0-9]*.txt")):
         return "no pages", None
-    return None, ["--draft", draft, "--pages", str(pages)]
+    argv = ["--draft", draft, "--pages", str(pages)]
+    if opts.quote_ledger:
+        argv += ["--ledger", opts.quote_ledger, "--inventory", opts.inventory, "--original-root", opts.original_root]
+    return None, argv
 
 
 def _out(draft, agency, opts):
@@ -99,6 +102,8 @@ def _run(module, argv):
         summary = re.search(r"^agency-lint-quotes: \d+ hits, \d+ quotes checked, (\d+) message quotes not checked against pages$", output, re.MULTILINE)
         if summary:
             coverage = "; text check only; no visual check of page images"
+            coverage += ("; Q3 ledger consistency only, no visual check" if "--ledger" in argv
+                         else "; Q3 original-page ledger not run")
             if int(summary.group(1)):
                 coverage += "; %s message quotes not checked against pages" % summary.group(1)
     if code == 0:
@@ -130,9 +135,15 @@ def main(argv=None):
     parser.add_argument("--allow")
     parser.add_argument("--agencies")
     parser.add_argument("--agency")
+    parser.add_argument("--quote-ledger", help="quote-verify.tsv; with --inventory and --original-root adds quote rule Q3")
+    parser.add_argument("--inventory", help="agency-pages inventory.tsv (Q3)")
+    parser.add_argument("--original-root", help="the root given to agency-pages (Q3)")
     args = parser.parse_args(argv)
     draft, agency = Path(args.draft), Path(args.agency_dir)
+    group = (args.quote_ledger, args.inventory, args.original_root)
     try:
+        if any(group) and not all(group):
+            raise OSError
         if not agency.is_dir() or draft.stat().st_size > MAX_DRAFT:
             raise OSError
         text = draft.read_bytes().decode("utf-8-sig")
