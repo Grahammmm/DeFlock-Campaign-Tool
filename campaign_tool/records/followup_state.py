@@ -141,7 +141,8 @@ def classify_run(project, run_id):
     report = _read(outcomes / "timeline.json")
     if report.get("schema") != timeline.SCHEMA or report.get("run_id") != run_id:
         raise ValueError("followup_state_timeline")
-    if not isinstance(report.get("requests"), list) or timeline._day(report.get("as_of")) is None:
+    report_day = timeline._day(report.get("as_of"))
+    if not isinstance(report.get("requests"), list) or report_day is None:
         raise ValueError("followup_state_timeline")
     try:
         ratings = _read(outcomes / "response-items.json")
@@ -155,6 +156,9 @@ def classify_run(project, run_id):
         register = _read(root / "CURRENT-REQUEST-REGISTER.json")
     except FileNotFoundError:
         register = {"requests": []}
+    # Dated registers must declare the same canonical ISO day; legacy ones may omit it.
+    if "as_of" in register and register["as_of"] != report_day.isoformat():
+        raise ValueError("followup_state_invalid_input")
     by_register = _index(register["requests"])
     _index(report["requests"])
     rows = []
