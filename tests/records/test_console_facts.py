@@ -137,6 +137,7 @@ class Facts(Panel):
                  ("shape_invalid", mutate(lambda d: d["agencies"][0]["fields"]["cost"].update(status="NOT FOUND"))),
                  ("shape_invalid", mutate(lambda d: d["agencies"][0]["fields"].pop("audits"))),
                  ("shape_invalid", mutate(lambda d: d.update(basis="Exact source excerpts."))),
+                 ("shape_invalid", mutate(lambda d: d.update(basis=d["basis"] + "\ud800"))),
                  ("shape_invalid", mutate(lambda d: d["agencies"].append(d["agencies"][0]))),
                  ("invalid_json", "{not json"), ("invalid_json", '{"a": 1, "a": 2}')]
         for code, data in cases:

@@ -79,7 +79,7 @@ def load_facts(project, run_id):
         if doc.get("run_id") != run_id:
             return _unavailable("run_mismatch")
         agencies, gaps = doc.get("agencies"), doc.get("gaps")
-        if not (isinstance(doc.get("basis"), str) and BASIS in doc["basis"] and isinstance(gaps, list) and all(isinstance(g, str) and TOKEN.fullmatch(g) for g in gaps)
+        if not (_s(doc.get("basis")) and BASIS in doc["basis"] and isinstance(gaps, list) and all(isinstance(g, str) and TOKEN.fullmatch(g) for g in gaps)
                 and isinstance(agencies, list) and all(isinstance(a, dict) and _agency_ok(a) for a in agencies)
                 and len({a["agency_id"] for a in agencies}) == len(agencies)):
             return _unavailable("shape_invalid")
