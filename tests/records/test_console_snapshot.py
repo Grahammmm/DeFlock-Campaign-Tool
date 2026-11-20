@@ -324,6 +324,8 @@ class HoldsView(Panel):
     def test_golden_model_and_page_live_equals_export(self):
         self.seed()
         live = self.live_page()
+        target = "/holds?outcome=EXTRACT_ERROR"
+        live_filtered = self.get(target)
         self.make_export()
         model = self.holds_json()
         items = [{"sha256_prefix": p, "code": c, "detail_code": d, "attempts": a, "route": r} for p, c, d, a, r, _ in ROWS]
@@ -356,11 +358,25 @@ class HoldsView(Panel):
         for row in ROWS:
             self.assertIn("<td>%s</td>" % row[5], page)
         self.assertEqual(self.tables(page), self.tables(live))  # live and export render the same rows
+        # A filter must not narrow the totals or leave unrelated detail tables in either reader.
+        filtered = self.get(target)
+        totals, errors = self.tables(filtered)
+        self.assertEqual([totals, errors], self.tables(live_filtered))
+        self.assertEqual(totals, self.tables(page)[0])
+        self.assertIn(f'<a href="{target}">EXTRACT_ERROR</a>', totals)
+        self.assertIn('<a href="/holds">Clear filter</a>', filtered)
+        self.assertIn('<a href="/holds">Clear filter</a>', live_filtered)
+        for text in (filtered, live_filtered):
+            self.assertIn("<h2>EXTRACT_ERROR</h2>", text)
+            self.assertNotIn("aaaaaaaaaaaa", text)
+        self.assertIn("<td>999999999999</td>", errors)
+        self.assertIn("<td>cccccccccccc</td>", errors)
 
     def test_missing_invalid_or_empty_is_unavailable_never_none(self):
         self.make_export(RUN2)
         self.up()
         self.assertIn("No held documents.", self.get("/holds"))  # control: an exported empty listing is a real zero
+        self.assertIn("No held documents.", self.get("/holds?outcome=EXTRACT_ERROR"))
         self.seed()
 
         def edit(change):
@@ -393,9 +409,21 @@ class HoldsView(Panel):
         self.seed()
         self.live_page()
         before = tree_state(self.live)
-        status, _ = self.request("POST", "/holds", {"csrf_token": self.server.csrf_token})
-        self.assertEqual(status, 404)
-        self.assertEqual(self.request("GET", "/holds?id=1")[0], 400)  # no query selector, and the query is not echoed
+        fields = {"csrf_token": self.server.csrf_token}
+        for path in ("/holds", "/holds?outcome=EXTRACT_ERROR"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request("POST", path, fields)[0], 404)
+
+        # Reject ambiguity (including blank fields parse_qs can otherwise drop) and never echo rejected input.
+        for query in ("outcome=NOT_AN_OUTCOME", "outcome=EXTRACTED", "outcome=extract_error", "outcome=", "outcome",
+                      "outcome=+", "outcome=EXTRACT_ERROR&outcome=EXTRACT_ERROR",
+                      "outcome=EXTRACT_ERROR&outcome=PRESERVE_PENDING", "outcome=&outcome=EXTRACT_ERROR",
+                      "outcome=EXTRACT_ERROR&%6Futcome=", "outcome=EXTRACT_ERROR&id=", "id=1",
+                      "outcome=EXTRACT_ERROR&id", "outcome=EXTRACT_ERROR&", "outcome=EXTRACT_ERROR;id=1",
+                      "outcome=EXTRACT_ERROR%ZZ", "outcome=%FF", "outcome=%3Cdfg3-canary%3E"):
+            with self.subTest(query=query):
+                self.assertNotIn("dfg3-canary", self.get("/holds?" + query, status=400))
+        self.assertIn("<h2>EXTRACT_ERROR</h2>", self.get("/holds?outcome=EXTRACT%5FERROR"))
         self.assertEqual(tree_state(self.live), before)
 
 
