@@ -17,6 +17,8 @@ import sqlite3
 import stat
 import tempfile
 
+from ... import law
+
 SCHEMA = "records-agency-comparison-v1"
 INPUT_SCHEMA = "records-agency-fact-sheets-v1"
 INPUT_NAME = "agency-fact-sheets.json"
@@ -26,7 +28,8 @@ DISCLAIMER = (
     "meets means only the supplied cited documentary criteria match; gap means "
     "a cited documentary discrepancy, not a violation; unknown means unresolved. "
     "Missing production or redaction is not proof of absent controls. "
-    "Every row needs attorney review. The us-ca law package remains draft; "
+    "Every row needs attorney review. Each citation baseline names the us-ca law "
+    "package status and revision as package metadata, not legal acceptance; "
     "current law, scope, exceptions, policy versions and practice need review."
 )
 BASE_URL = "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml"
@@ -74,11 +77,26 @@ CRITERIA = {
 }
 
 
-def citation(section, law="CIV"):
+def baseline_label():
+    """Status and 12-hex SHA-256 prefix of the package bytes read now; never a default 'draft'."""
+    try:
+        raw = law.package_path("us-ca").read_bytes()
+        package = json.loads(raw.decode("utf-8"))
+        law.validate(package, law.load_schema())
+        law._semantic_checks(package, "us-ca")
+        status = package["status"]
+        if status not in ("draft", "reviewed"):
+            raise ValueError("package_status")
+    except (OSError, ValueError, UnicodeError, RecursionError, KeyError, TypeError):
+        return "package unavailable"  # no path or error text: the label is stored in outputs
+    return f"jurisdictions/us-ca/package.json ({status}; sha256 {hashlib.sha256(raw).hexdigest()[:12]})"
+
+
+def citation(section, law="CIV", baseline=None):
     number = section.split(";")[0].split("(")[0]
     return {"label": ("Civ. Code §§ " if law == "CIV" else "Gov. Code § ") + section,
             "url": BASE_URL + f"?lawCode={law}&sectionNum={number}.",
-            "baseline": "jurisdictions/us-ca/package.json (draft)"}
+            "baseline": baseline if baseline is not None else baseline_label()}
 
 
 def _cites(value):
@@ -104,16 +122,16 @@ def _qualified(agency, fact, field):
             and _cites(fact.get("citations")))
 
 
-def _row(agency_id, field, section, expected, status="unknown", reason="missing_or_unqualified_evidence", **extra):
+def _row(agency_id, field, section, expected, status="unknown", reason="missing_or_unqualified_evidence", *, baseline, **extra):
     return {"agency_id": agency_id, "field": field, "status": status,
-            "citation": citation(section), "expected": expected, "reason": reason,
+            "citation": citation(section, baseline=baseline), "expected": expected, "reason": reason,
             "needs_attorney_review": True, "legal_conclusion": False,
             "evidence": [], **extra}
 
 
-def _fact_row(agency, field, fact):
+def _fact_row(agency, field, fact, baseline):
     section, expected, keys = CRITERIA[field]
-    row = _row(agency["agency_id"], field, section, expected)
+    row = _row(agency["agency_id"], field, section, expected, baseline=baseline)
     if not _qualified(agency, fact, field):
         return row
     row["evidence"] = fact["citations"]
@@ -170,11 +188,11 @@ def _fact_row(agency, field, fact):
     return row
 
 
-def _cpra_row(agency, request, as_of):
+def _cpra_row(agency, request, as_of, baseline):
     row = _row(agency["agency_id"], "cpra_response_deadline", "7922.535(a)-(c)",
                "Determination within 10 calendar days of confirmed receipt; a qualified written unusual-circumstances extension is at most 14 additional days. Not a production deadline.",
-               request_id=request["request_id"])
-    row["citation"] = citation("7922.535(a)-(c); 6800; 6700", "GOV")
+               baseline=baseline, request_id=request["request_id"])
+    row["citation"] = citation("7922.535(a)-(c); 6800; 6700", "GOV", baseline)
     if not (agency.get("jurisdiction") == "us-ca" and "public_agency" in agency.get("regulated_roles", [])
             and request.get("applicability_confirmed") is True and _cites(request.get("citations"))):
         return row
@@ -238,19 +256,21 @@ def _cpra_row(agency, request, as_of):
 def compare(agencies, *, run_id, as_of):
     """Compare explicit cited fact predicates; never infer facts from prose/counts."""
     as_of = _day(as_of)
+    baseline = baseline_label()  # one read per comparison, shared by every row
     rows = []
     for agency in sorted(agencies, key=lambda a: a["agency_id"]):
         facts = agency.get("facts", {})
         for field in CRITERIA:
-            rows.append(_fact_row(agency, field, facts.get(field)))
+            rows.append(_fact_row(agency, field, facts.get(field), baseline))
         # Preserve unmapped fact-sheet fields rather than silently omit them.
         for field in sorted(set(facts) - set(CRITERIA)):
             rows.append(_row(agency["agency_id"], field, "1798.90.5; 1798.90.51–1798.90.55",
-                             "No documentary comparison mapping supplied.", reason="unmapped_fact_sheet_field"))
+                             "No documentary comparison mapping supplied.", reason="unmapped_fact_sheet_field",
+                             baseline=baseline))
         requests = agency.get("requests", [])
         if not requests:
             requests = [{"request_id": None}]
-        rows.extend(_cpra_row(agency, request, as_of) for request in requests)
+        rows.extend(_cpra_row(agency, request, as_of, baseline) for request in requests)
     return {"schema": SCHEMA, "run_id": run_id, "as_of": as_of.isoformat(),
             "review_required": True, "legal_conclusion": False, "disclaimer": DISCLAIMER,
             "agency_count": len(agencies), "rows": rows}
