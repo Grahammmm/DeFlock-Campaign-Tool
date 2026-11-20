@@ -90,7 +90,7 @@ log = Path(__file__).with_name('launches.jsonl')
 profile = Path(next(arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--user-data-dir=')))
 attempt = len(log.read_text().splitlines()) if log.exists() else 0
 with log.open('a') as record:
-    print(json.dumps([os.getpid(), str(profile)]), file=record)
+    print(json.dumps([os.getpid(), str(profile), os.environ.get('TMPDIR')]), file=record)
 for n in range(25):
     print(f'fake chrome launch {attempt + 1} stderr line {n:02d}', file=sys.stderr, flush=True)
 mode = """ + repr(launch_modes) + """[attempt]
@@ -107,10 +107,26 @@ time.sleep(15)  # Backstop if the helper fails to terminate the process.
         return [json.loads(line) for line in self.log.read_text().splitlines()]
 
     def assert_cleaned(self, launch):
-        pid, profile = launch
+        pid, profile, _ = launch
         self.assertFalse(Path(profile).exists(), profile)
         with self.assertRaises(ProcessLookupError):
             os.killpg(pid, 0)
+
+    def test_long_tmpdir_keeps_browser_socket_paths_short(self):
+        # Protects phone launch when the worker TMPDIR exceeds the Unix socket limit (107 bytes).
+        long_root = self.root / ('x' * 110)
+        long_root.mkdir()
+        with patch.dict(os.environ, TMPDIR=str(long_root), TMP=str(self.root.parent)):
+            with patch.object(tempfile, 'tempdir', str(long_root)):
+                phone = journey.Phone(self.browser('ready'))
+        try:
+            launch, = self.launches()
+            _, profile, child_tmp = launch
+            for path in (profile, child_tmp):
+                self.assertLessEqual(len(os.fsencode(os.path.realpath(path))), 60)
+        finally:
+            phone.close()
+        self.assert_cleaned(launch)
 
     def test_relaunches_stalled_browser_once_with_a_fresh_profile(self):
         # Without a retry, the first launch fails before the fake transport can initialize.

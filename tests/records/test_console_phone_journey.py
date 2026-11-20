@@ -154,9 +154,19 @@ class Phone:
         self.ws = None
         self.counter = 0
         self.events = []
+        # Leave room for Chrome's per-process directory and SingletonSocket
+        # under the 107-byte Unix-domain socket path limit.
+        for root in (tempfile.gettempdir(), os.environ.get("TMP"), "/tmp"):
+            if root:
+                short_root = os.path.realpath(root)
+                if (len(os.fsencode(short_root)) <= 60 and os.path.isdir(short_root)
+                        and os.access(short_root, os.W_OK | os.X_OK)):
+                    break
+        else:
+            raise CdpError("no writable temporary directory short enough for Chrome's SingletonSocket")
         for attempt in (1, 2):
             started = time.monotonic()
-            profile = self.profile = tempfile.mkdtemp(prefix="deflock-phone-")
+            profile = self.profile = tempfile.mkdtemp(prefix="dfp-", dir=short_root)
             stderr_path = Path(profile) / "chrome.stderr"
             try:
                 with stderr_path.open("wb") as stderr:
@@ -165,7 +175,8 @@ class Phone:
                          "--no-first-run", "--no-default-browser-check", "--disable-extensions",
                          "--disable-background-networking", "--password-store=basic", "--remote-debugging-port=0",
                          "--user-data-dir=" + profile, "about:blank"],
-                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True)
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr, start_new_session=True,
+                        env=dict(os.environ, TMPDIR=short_root))
                 port = self._debug_port(process, Path(profile) / "DevToolsActivePort", started + STARTUP_TIMEOUT)
                 if port is not None:
                     self._connect(port)
