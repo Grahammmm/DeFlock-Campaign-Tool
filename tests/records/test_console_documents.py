@@ -15,6 +15,7 @@ from unittest import mock
 
 from campaign_tool.records import admin_panel as ap, console_layout
 from campaign_tool.records import console_documents as cd, console_export, console_ocr, finding_review
+from campaign_tool.records import console_cited_pages, console_snapshot
 
 RUN = "run_1"
 NOW = datetime(2026, 11, 5, tzinfo=timezone.utc)
@@ -390,6 +391,76 @@ class ScreenC(unittest.TestCase):
                         self.assertIn("Search oversight", pinned_page)
                         self.assertNotIn("Search oversight", local)
         self.assertEqual({call.kwargs["agency"] for call in listed.call_args_list}, {"alpha-pd", "beta-so"})
+
+    def test_cited_page_viewer_export_and_live_parity(self):
+        build(self.project)
+        hostile = "<script>alert(1)</script> & \"q\" " + "d" * 64 + " /home/user/secret/file.txt"
+        row = lambda sha, page, text, route, band, review, cites: {
+            "original_sha256": sha, "page": page, "agency": "alpha-pd", "received_at": "2026-09-01T06:30:00Z", "route": route,
+            "confidence_band": band, "review_state": review, "text": text,
+            "text_sha256": hashlib.sha256(text.encode()).hexdigest(), "citations": cites}
+        kinds = [{"kind": "fact", "id": "alpha-pd/x/1", "label": "retention"}, {"kind": "gap", "id": "p1", "label": "policy_gap"},
+                 {"kind": "deadline", "id": "i-a/1", "label": "2026-11-30"}]
+        cited = {"schema": "records-console-cited-pages-v1", "source_project_id": "1" * 16, "state": "ok", "run_id": RUN,
+                 "pages": [row(H1, 2, "Native line one\nline two", "native", "not_applicable", "not_applicable", kinds),
+                           row(H1, 3, hostile, "ocr", "below_80", "pending", kinds[:1])],
+                 "not_exported": [{"original_sha256": H1, "page": 5, "reason": "page_bytes"}]}
+        self.edit("outcomes/gap-proposals.json", lambda doc: doc["agencies"][0]["requests"][0]["proposals"][1].update(
+            item_id="i-a", evidence_kind="document"))
+        root, name = self.project / "hosting", "20261105T000000Z-" + RUN
+        pinned = root / "exports" / name
+        root.mkdir(mode=0o700)
+        pinned.mkdir(parents=True, mode=0o700)
+        shutil.copytree(self.project / "run-outputs", pinned / "run-outputs")
+        (pinned / "console-model").mkdir()
+        (pinned / "console-model" / "cited-pages.json").write_bytes(console_cited_pages.encode(cited))
+
+        def seal():
+            names = {str(p.relative_to(pinned)): hashlib.sha256(p.read_bytes()).hexdigest()
+                     for p in pinned.rglob("*") if p.is_file() and p.name != "EXPORT.json"}
+            put(pinned / "EXPORT.json", {"schema": console_export.SCHEMA, "run_id": RUN, "source_project_id": "1" * 16,
+                                         "exported_at": "2026-11-05T00:00:00Z", "files": names})
+        seal()
+        (root / "current").symlink_to(Path("exports") / name)
+        exported = self.panel(export_root=str(root), run_id="auto")
+        with mock.patch.object(console_snapshot.LiveSource, "cited_pages", return_value=cited):
+            live = self.panel(self.project, RUN)
+            documents = live("/documents?agency=alpha-pd")[1]
+            self.assertEqual(documents.count('href="/page?doc='), 1)  # only the document-backed proposal row
+            self.assertIn(f'href="/page?doc={H1[:12]}&amp;p=2"', documents)
+            self.assertEqual(documents.count('href="/document?id='), 1)
+            for get in (live, exported):
+                status, body = get(f"/page?doc={H1[:12]}&p=2")
+                self.assertEqual(status, 200)
+                for marker in ("Private; source text, review required; not for publication", "alpha-pd", "2026-08-31 23:30 PDT",
+                               "<dd>Native</dd>", "<pre>Native line one\nline two</pre>", "Fact statement: retention",
+                               "Gap proposal: policy_gap", "Deadline: 2026-11-30"):
+                    self.assertIn(marker, body)
+                status, body = get(f"/page?doc={H1[:12]}&p=3")
+                self.assertEqual(status, 200)
+                for marker in ("<dd>OCR</dd>", "Below 80", "Awaiting review", "&lt;script&gt;alert(1)&lt;/script&gt; &amp;"):
+                    self.assertIn(marker, body)
+                self.assertNotIn("<script>", body)
+                self.assertNotRegex(body, r"[0-9a-fA-F]{64}")
+                self.assertNotIn("/home/user", body)
+                self.assertNotIn("<form", body)
+                status, body = get(f"/page?doc={H1[:12]}&p=5")
+                self.assertEqual(status, 200)
+                self.assertIn("larger than the export's per-page limit", body)
+                self.assertEqual(get(f"/page?doc={H1[:12]}&p=4")[0], 404)  # not cited
+                self.assertEqual(get("/page?doc=" + "f" * 12 + "&p=2")[0], 404)
+                for bad in ("/page", f"/page?doc={H1[:12]}", f"/page?doc={H1}&p=2", f"/page?doc={H1[:12]}&p=0",
+                            f"/page?doc={H1[:12]}&p=2&p=3", f"/page?doc={H1[:12]}&p=2&x=1", f"/page?doc={H1[:12]}&p=%d" % 10 ** 12):
+                    with self.subTest(bad=bad):
+                        self.assertEqual(get(bad)[0], 400)
+            # A second received document sharing the prefix, even one that cites no page, makes it ambiguous.
+            self.edit("outcomes/received-items.json", lambda doc: doc["items"].append(
+                {"item_id": "i-c", "original_sha256": H1[:12] + "a" * 52, "agency_id": "alpha-pd"}))
+            self.assertEqual(live(f"/page?doc={H1[:12]}&p=2")[0], 409)
+        # An older export without the model is unavailable, never "not cited".
+        (pinned / "console-model" / "cited-pages.json").unlink()
+        seal()
+        self.assertEqual(self.panel(export_root=str(root), run_id="auto")(f"/page?doc={H1[:12]}&p=2")[0], 503)
 
 
 if __name__ == "__main__":
