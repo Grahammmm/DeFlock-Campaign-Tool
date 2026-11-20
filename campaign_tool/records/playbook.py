@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 SCHEMA = "records-playbook-v1"
+RULES_VERSION = "1"  # bump when the banned-phrase lint logic changes: agency lint receipts bind it
 DEFAULT_PATH = Path(__file__).resolve().parents[1] / "_resources" / "playbooks" / "records-alpr-v1.json"  # packaged resource
 MAX_BYTES = 512 * 1024
 CITE_STATUS = ("verified-in-package", "unverified")
