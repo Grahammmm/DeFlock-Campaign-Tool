@@ -178,7 +178,8 @@ def collect(db, processing, run_id):
             if not pages or any(type(p) is not int or p < 1 for p in pages) or len(set(pages)) != 1:
                 sheet["gaps"].append({"document_sha256": subject, "unit_id": unit["id"], "code": "page_locator_unavailable"})
                 continue
-            _need(any(p.get("page_no") == pages[0] for p in manifest.get("pages", [])
+            _need(any(type(p.get("page_no")) is int and p["page_no"] == pages[0]
+                      for p in manifest.get("pages", [])
                       if isinstance(p, dict)), "factsheet_page_not_in_manifest")
             for quote, line_start, line_end in _statements(payload["text"]):
                 if "?" in quote:
