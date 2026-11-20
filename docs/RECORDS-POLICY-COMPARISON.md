@@ -2,9 +2,8 @@
 
 Words only: this guide runs nothing, installs nothing, sends nothing and publishes nothing.
 
-Checked against commit `969679754d25f067b531839ea36af165b375aa9c` (the DF1117L-09 head that adds `records comparison-input`;
-that unit is not on `main` yet). When it merges, re-walk every command, option, file and page below against the new `main` commit
-and update this line before relying on it.
+Checked against `main` commit `342cc0b06f4f40510aa12b17a7b7c8e7bed6f67c`, which includes `records comparison-input` (DF1117L-09).
+After later changes to the comparison code, re-walk every command, option, file and page below and update this line before relying on it.
 
 ## 1. What `comparison.json` is, and is not
 
