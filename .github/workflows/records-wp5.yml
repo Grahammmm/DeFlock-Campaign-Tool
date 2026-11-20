@@ -3,6 +3,7 @@ on:
   schedule:
     - cron: '17 7 * * *'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   merge_group:
     types: [checks_requested]
   push:
@@ -39,6 +40,7 @@ env:
     .github/workflows/records-wp5.yml
 jobs:
   wp5:
+    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
