@@ -76,7 +76,9 @@ class UnmatchedTests(unittest.TestCase):
         return http.post("/approvals/" + action, {"csrf_token": server.csrf_token, "id": ident, **fields})[0]
 
     def test_untied_message_listed_metadata_only_and_one_decision_queued(self):
-        self.assertEqual(self.run_outputs()[0], 0)
+        code, first = self.run_outputs()
+        self.assertEqual(code, 0)
+        self.assertEqual(first["draft_queue_counts"]["message_links"], 1)
         raw = (self.outcomes() / "unmatched-messages.json").read_text()
         report = json.loads(raw)
         self.assertEqual(report["schema"], "records-unmatched-v1")
@@ -92,7 +94,7 @@ class UnmatchedTests(unittest.TestCase):
         self.assertEqual((row["status"], row["item_id"]), ("pending", self.sha))
         for text in (SUBJECT, SENDER):
             self.assertNotIn(text, json.dumps(row))
-        self.run_outputs()  # a replay never queues a second decision
+        self.assertEqual(self.run_outputs()[1]["draft_queue_counts"]["message_links"], 0)  # a replay queues none
         self.row()  # still exactly one
 
     def test_console_shows_the_decision_and_approval_ties_the_next_run(self):

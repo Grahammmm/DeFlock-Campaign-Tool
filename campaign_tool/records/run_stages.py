@@ -116,7 +116,8 @@ def result(status, counts, error_code=None, **extra):
     out = {"stage_result_version": 1, "status": status,
            "counts": {key: int(counts.get(key, 0)) for key in ("input", "output", "failed", "skipped")},
            "error_code": error_code}
-    for key in ("new_data", "review_required", "needs_g", "outcomes", "arrival_summary", "internal"):
+    for key in ("new_data", "review_required", "needs_g", "outcomes", "arrival_summary", "internal",
+                "draft_queue_counts"):
         if extra.get(key):
             out[key] = extra[key]
     return out
@@ -133,6 +134,15 @@ def internal_error(error):
         where = ".".join(("campaign_tool", *rel.with_suffix("").parts, frame.f_code.co_name))
     return {"type": re.sub(r"\W", "_", type(error).__name__)[:64],
             "where": re.sub(r"[^\w.<>]", "_", where or "unknown")[:160]}
+
+
+DRAFT_QUEUE_PRODUCERS = ("received_items", "message_links", "followup_clock", "followup_engine", "next_steps")
+
+
+def known_count(summary, key):
+    """A producer's newly created count when it is a strict non-negative int, else None (unknown, never 0)."""
+    value = summary.get(key) if isinstance(summary, dict) else None
+    return value if type(value) is int and value >= 0 else None
 
 
 def needs(*items):
@@ -1048,10 +1058,12 @@ def stage_outputs(args):
     finally:
         os.umask(old)
     warnings = []  # Ordered fixed codes of every failed sub-step, the first included.
+    draft_counts = dict.fromkeys(DRAFT_QUEUE_PRODUCERS)  # Newly queued drafts per producer; None = unknown, never 0.
     # Cited reply drafts for this run's received items go to the private review queue; nothing is sent.
     try:
         from .approval_queue import queue_received_items
-        queue_received_items(args.project, args.run_id, directory / name / "outcomes" / "received-items.json")
+        draft_counts["received_items"] = known_count(queue_received_items(
+            args.project, args.run_id, directory / name / "outcomes" / "received-items.json"), "created")
     except StageTimeout:
         raise
     except Exception as error:  # noqa: BLE001 - content-free additive warning; never expose private exception text
@@ -1061,7 +1073,8 @@ def stage_outputs(args):
     # Untied received messages become 'tie to a request' decisions (DFGL-04): own try, own code; earlier outputs stay.
     try:
         from .outcomes.unmatched import write_run_unmatched
-        write_run_unmatched(args.project, args.run_id)
+        draft_counts["message_links"] = known_count(
+            {"created": write_run_unmatched(args.project, args.run_id, include_created=True)[1]}, "created")
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
@@ -1089,8 +1102,11 @@ def stage_outputs(args):
     if register_ok:
         try:
             from .followup_clock import queue_followups
-            if queue_followups(args.project, args.run_id).get("settings_invalid"):
+            queued = queue_followups(args.project, args.run_id)
+            if queued.get("settings_invalid"):
                 warnings.append("OUTPUTS_FOLLOWUP_SETTINGS_INVALID")
+            elif not queued.get("register_missing"):
+                draft_counts["followup_clock"] = known_count(queued, "created")
         except StageTimeout:
             raise
         except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
@@ -1109,9 +1125,11 @@ def stage_outputs(args):
         campaign_root = next_steps_campaign_root(args)
         if campaign_root:
             from .next_steps import queue_run_next_steps
-            if queue_run_next_steps(args.project, args.run_id, campaign_root=campaign_root).get("skipped") in (
-                    "content_invalid", "proposals_invalid", "proposals_stale"):
+            queued = queue_run_next_steps(args.project, args.run_id, campaign_root=campaign_root)
+            if queued.get("skipped") in ("content_invalid", "proposals_invalid", "proposals_stale"):
                 warnings.append("OUTPUTS_NEXT_STEPS_UNAVAILABLE")
+            if not queued.get("skipped"):
+                draft_counts["next_steps"] = known_count(queued, "queued")
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - isolate next-step errors; never expose private exception text
@@ -1141,7 +1159,9 @@ def stage_outputs(args):
         warnings.append("OUTPUTS_TIMELINE_UNAVAILABLE")
     try:  # Engine-owned follow-up drafts (FLK-REC-1): needs received-item drafts, response items and timeline above.
         from .followup_engine import run as run_followup_engine
-        run_followup_engine(args.project, args.run_id, apply=True)  # The engine keeps its own autonomy/identity gates.
+        # The engine keeps its own autonomy/identity gates.
+        draft_counts["followup_engine"] = known_count(
+            run_followup_engine(args.project, args.run_id, apply=True), "queued")
     except StageTimeout:
         raise
     except Exception:  # noqa: BLE001 - content-free additive warning; never expose private exception text
@@ -1161,14 +1181,15 @@ def stage_outputs(args):
             digest_outcome = usage_digest.commit_digest(prepared_digest)
         except (OSError, usage_digest.DigestRefused):
             return result("fail", {"input": 1, "output": 1, "failed": 1},
-                          "OUTPUTS_DIGEST_WRITE_FAILED", needs_g=items), 1
+                          "OUTPUTS_DIGEST_WRITE_FAILED", needs_g=items, draft_queue_counts=draft_counts), 1
         produced = 3
         if digest_outcome["status"] == "unresolved":
             items = items + needs(("OUTPUTS_DIGEST_UNRESOLVED", "action", 1))
             warnings = ["OUTPUTS_DIGEST_UNRESOLVED"]  # Overrides only the primary code, not the item list.
     if warnings:
-        return result("warn", {"input": 1, "output": produced}, warnings[0], needs_g=items), 0
-    return result("ok", {"input": 1, "output": produced}), 0
+        return result("warn", {"input": 1, "output": produced}, warnings[0], needs_g=items,
+                      draft_queue_counts=draft_counts), 0
+    return result("ok", {"input": 1, "output": produced}, draft_queue_counts=draft_counts), 0
 
 
 HANDLERS = {"sync": stage_sync, "delta": stage_delta, "adoption": stage_adoption,
