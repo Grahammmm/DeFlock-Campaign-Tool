@@ -157,9 +157,9 @@ def classify(raw, validity, uid):
         if part.is_multipart():
             continue
         name = part.get_filename()
-        if name is not None:
+        if name is not None or part.get_content_disposition() == "attachment":
             attachments += 1
-            if UNSAFE_NAME.search(name):
+            if name is not None and UNSAFE_NAME.search(name):
                 unsafe.append({"part": index, "reason": "attachment_name_unsafe"})
         elif part.get_content_type() in ("text/plain", "text/html"):
             with contextlib.suppress(LookupError, ValueError):
