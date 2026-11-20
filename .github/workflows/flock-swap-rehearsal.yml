@@ -8,6 +8,7 @@ name: flock-swap-rehearsal
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   merge_group:
     types: [checks_requested]
   schedule:
@@ -28,6 +29,7 @@ permissions:
 
 jobs:
   rehearse:
+    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
