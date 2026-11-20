@@ -468,6 +468,7 @@ never zero. Notify failure markers are counted separately as historical markers
 with resolution unknown. Even an empty alarm folder is not an all-clear: a stopped
 monitor cannot refresh it. The page neither creates nor clears an alarm.
 Rollback: revert the Automation page commit; existing Jobs/Oversight stay intact.
+For the policy comparison (`/comparison`, `/facts`) and how to qualify its input, see [RECORDS-POLICY-COMPARISON.md](RECORDS-POLICY-COMPARISON.md).
 
 `GET /jobs` (More: Jobs) is a read-only list of every scheduled job. The list is discovered from the unit files under
 `deploy/` (`*.timer`, `*.path`, `.in` templates included) plus any `--timer-unit`, so another geography with its own units

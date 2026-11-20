@@ -135,3 +135,4 @@ Compiler contract: `records comparison-input` compiles a custodian-filled record
 the typed `comparison.WORKSHEET_FIELDS` table. It emits a field only when attested, applicability-confirmed, cited by a fact checked in
 the store at build time and every required key is filled; a field with a null required key is omitted (unknown). It never derives a
 value and writes only a new --out file; installing it as agency-fact-sheets.json stays a separate attended custodian step.
+Operator guide: [docs/RECORDS-POLICY-COMPARISON.md](../../../../docs/RECORDS-POLICY-COMPARISON.md).
