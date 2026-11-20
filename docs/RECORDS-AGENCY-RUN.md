@@ -145,36 +145,46 @@ python3 -m campaign_tool.records agency-next --agencies AGENCIES_TABLE [--today 
 
 ## 9. Lint: `agency-lint` and the receipt
 
-**Purpose:** one mechanical check of the human-written letter draft (`DRAFT.md`) against your
-private inputs. Nothing is sent. Hit text is never printed, only the place and a rule code.
+**Purpose:** one mechanical check of the human-written letter body (`LETTER-BODY.txt`, see below)
+against your private inputs. Nothing is sent. Hit text is never printed, only the place and a rule code.
 
 ```
 python3 -m campaign_tool.records agency-lint --agency-dir AGENCY_DIR --package PACKAGE \
   --team-list TEAM_LIST --allow ALLOW_FILE --agencies AGENCIES_TABLE --agency AGENCY_KEY \
   --inventory PAGES_OUT/inventory.tsv --original-root PRIVATE_ROOT --quote-ledger QUOTE_LEDGER \
-  --receipt LINT-RECEIPT.json DRAFT.md
+  --receipt LINT-RECEIPT.json LETTER-BODY.txt
 ```
+
+**Lint the extracted body, not the structured Markdown.** The receipt binds the SHA-256 of
+exactly the bytes `agency-lint` reads. Export (step 10) hashes only the letter body it extracts
+from the structured Markdown, so linting the whole Markdown file always ends in
+`LINT_RECEIPT_STALE`. Save the body as its own file, `LETTER-BODY.txt`, with exactly the bytes
+export extracts: the lines of the first blockquote under the mapped heading, each with its
+leading `> ` (or `>`) removed; without the `Subject:` line and the one blank line after it;
+without trailing blank lines; and ending in exactly one newline. Export refuses a missing
+heading (`section_unknown`), a missing blockquote (`letter_missing`) or a missing first
+`Subject:` line (`subject_missing`).
 
 Each lint runs in a fixed order and prints `name: result`. `agency-lint` is the one entry point;
 the others can also be run alone:
 
 1. **asks**: the draft's asks against what the agency already gave or answered. Needs
    `inventory.tsv`, `asks.tsv` and `events.tsv` in `AGENCY_DIR`. Alone:
-   `agency-lint-asks --draft DRAFT.md --agency-dir AGENCY_DIR [--json]`.
+   `agency-lint-asks --draft LETTER-BODY.txt --agency-dir AGENCY_DIR [--json]`.
 2. **cites**: loose citations, unsourced facts, bare "overdue" wording. Needs `--package`. Alone:
-   `agency-lint-cites --draft DRAFT.md --package PACKAGE [--json]`. A section number found in a
+   `agency-lint-cites --draft LETTER-BODY.txt --package PACKAGE [--json]`. A section number found in a
    package is not a human review of that package.
 3. **quotes**: quoted words against the extracted page text in `AGENCY_DIR/pages`. Alone:
-   `agency-lint-quotes --draft DRAFT.md --pages PAGES [--ledger QUOTE_LEDGER --inventory INVENTORY --original-root ROOT]`.
+   `agency-lint-quotes --draft LETTER-BODY.txt --pages PAGES [--ledger QUOTE_LEDGER --inventory INVENTORY --original-root ROOT]`.
    This is a text check only; it does not look at page images. Rule Q3 runs only when you give
    the quote ledger, inventory and original root together, and then checks only that the
    ledger agrees. The ledger is a person's record of comparing a quote with the original page;
    no lint writes it. Message quotes it cannot match to pages make the result `incomplete`.
 4. **out** (outgoing privacy and residue): our team's names or contacts not on the allow file, and
    internal working marks. Needs `--team-list` and `--allow`. Alone:
-   `agency-lint-out --draft DRAFT.md --team-list TEAM_LIST --allow ALLOW_FILE`.
+   `agency-lint-out --draft LETTER-BODY.txt --team-list TEAM_LIST --allow ALLOW_FILE`.
 5. **precedent**: another agency named as a release precedent. Needs `--agencies` and `--agency`.
-   Alone: `agency-lint-precedent --draft DRAFT.md --agencies AGENCIES_TABLE --agency AGENCY_KEY`.
+   Alone: `agency-lint-precedent --draft LETTER-BODY.txt --agencies AGENCIES_TABLE --agency AGENCY_KEY`.
    Notes (comparison or quoted) do not fail; only a refusal does.
 6. **banned phrases**: the playbook's banned wording. No extra input; it always runs.
 
@@ -193,7 +203,7 @@ fit to send. A clean lint approves nothing.
 
 ## 10. Draft export: `agency-draft-export`
 
-**Purpose:** turn the lint-checked letter plus your operator mapping into console review copies,
+**Purpose:** turn the lint-checked letter body plus your operator mapping into console review copies,
 and prove each through the draft-import dry run. Nothing is applied, approved or sent.
 
 ```
@@ -204,9 +214,17 @@ python3 -m campaign_tool.records agency-draft-export --md DRAFT.md --mapping MAP
   --original-root PRIVATE_ROOT --quote-ledger QUOTE_LEDGER
 ```
 
+**Input shape.** `DRAFT.md` is the structured Markdown: a heading (one to three `#`) whose text
+equals the mapping's `source_section` exactly, followed by a blockquote whose first line is
+`Subject: ...`, then (optionally) one blank quoted line, then the body. Only the first
+blockquote under the first matching heading is used. The mapping gives each draft its own
+`source_section`, so each mapped draft has its own extracted body and needs its own
+`LETTER-BODY.txt`, its own `agency-lint` run and its own receipt; one receipt cannot cover two
+different bodies. Run export once per receipt with the mapping entry for that body.
+
 **Writes:** one `DRAFT_KEY.json` per mapped draft in `EXPORT_OUT`, which must be new or empty and
-outside the project. Pass the **same** lint options as step 9 so the receipt is checked against
-the same inputs. If the body, rules or an input differ, export refuses with
+outside the project. Pass the **same** lint options as step 9 (the receipt's inputs, not the draft path) so the
+receipt is checked against the same inputs. If the body, rules or an input differ, export refuses with
 `LINT_RECEIPT_STALE` (with the reason) or `LINT_RECEIPT_UNVERIFIABLE`; rerun step 9, do not
 work around it. The receipt state is written at the front of each draft's reason line.
 **A person still judges:** that the body, recipient and mapped evidence are exactly what you
