@@ -5,6 +5,8 @@ console page that shows a code. A code with no entry is shown as itself with "no
 """
 import re
 
+from . import console_layout
+
 CODE_RE = re.compile(r"[A-Z][A-Z0-9_]{2,63}")  # the run report schema's code grammar
 NO_DESCRIPTION = "no description yet"
 
@@ -105,6 +107,7 @@ CODES = {
     "OUTPUTS_LEDGER_UNREADABLE": "The records ledger could not be read, so no outputs were made.",
     "OUTPUTS_WRITE_FAILED": "This run's output files could not be written.",
     "OUTPUTS_APPROVAL_QUEUE_UNAVAILABLE": "Reply drafts could not be queued in this run.",
+    "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE": console_layout.UNAVAILABLE["queue_unwritable"],
     "OUTPUTS_UNMATCHED_UNAVAILABLE": "Messages not yet tied to a request could not be listed in this run.",
     "OUTPUTS_MODEL_ADVICE_UNAVAILABLE": "The model advice summary could not be made in this run.",
     "OUTPUTS_REGISTER_UNAVAILABLE": "The request register could not be read in this run.",
