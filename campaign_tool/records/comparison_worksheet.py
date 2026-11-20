@@ -13,12 +13,15 @@ import re
 import stat
 import sys
 
-from .outcomes import comparison as cmp
+from .outcomes import comparison as cmp, register
 
 SCHEMA = "records-comparison-worksheet-v1"
 REPO = Path(__file__).resolve().parents[2]
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 QUOTE_CAP = 400
+REGISTER_NAME = "CURRENT-REQUEST-REGISTER.json"
+ISSUES = ("invalid_date:received_at", "invalid_date:submitted_at", "request_date_in_future", "invalid_date:determination_at",
+          "determination_date_inconsistent", "extension_unresolved", "source_conflict:extension")
 # fact_type -> worksheet field: CRITERIA names map to themselves, plus four fixed aliases; anything else is unmapped.
 FACT_FIELDS = {**{field: field for field in cmp.CRITERIA}, "retention_days": "retention", "search_log_fields": "access_logs",
                "audit_reports": "audit_practice", "training_records": "authorized_users_training"}
@@ -37,21 +40,27 @@ def _unique(pairs):
     return result
 
 
+def _load(path, schema, rows_key):
+    """Bounded regular no-follow JSON read with duplicate-key rejection; returns the checked document."""
+    path = cmp._checked(path)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError("wrong_file_type")
+        raw = handle.read(cmp.MAX_BYTES + 1)
+    if len(raw) > cmp.MAX_BYTES:
+        raise ValueError("bound")
+    doc = json.loads(raw, object_pairs_hook=_unique)
+    if type(doc) is not dict or doc.get("schema") != schema or type(doc.get(rows_key)) is not list:
+        raise ValueError("schema")
+    cmp._day(doc.get("as_of"))
+    return doc
+
+
 def _read_comparison(path):
-    """Bounded regular no-follow read; returns (run_id, as_of, agency ids, request pairs) from rows only."""
+    """Returns (run_id, as_of, agency ids, request pairs) from rows only."""
     try:
-        path = cmp._checked(path)
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                raise OSError("wrong_file_type")
-            raw = handle.read(cmp.MAX_BYTES + 1)
-        if len(raw) > cmp.MAX_BYTES:
-            raise ValueError("bound")
-        doc = json.loads(raw, object_pairs_hook=_unique)
-        if type(doc) is not dict or doc.get("schema") != cmp.SCHEMA or type(doc.get("rows")) is not list:
-            raise ValueError("schema")
-        cmp._day(doc.get("as_of"))
+        doc = _load(path, cmp.SCHEMA, "rows")
         if type(doc.get("run_id")) is not str:
             raise ValueError("run_id")
         agencies, owners = set(), {}
@@ -69,9 +78,80 @@ def _read_comparison(path):
         raise WorksheetError("comparison_unreadable") from None
 
 
+def _read_register(comparison_path):
+    """The same run's sibling register only: (as_of day, rows). Never searches or regenerates one."""
+    try:
+        doc = _load(Path(comparison_path).parent / REGISTER_NAME, register.SCHEMA, "requests")
+        rows = doc["requests"]
+        if len(rows) > register.MAX_ROWS or doc.get("request_count") != len(rows):
+            raise ValueError("count")
+        for row in rows:
+            if type(row) is not dict:
+                raise ValueError("row")
+            ledger = row.get("ledger_request_id")
+            if (type(row.get("agency_key")) is not str or type(row.get("request_id")) is not str
+                    or not (ledger is None or type(ledger) is str) or type(row.get("deadline")) is not dict
+                    or type(row.get("issues")) is not list or not all(type(i) is str for i in row["issues"])):
+                raise ValueError("row")
+        return cmp._day(doc["as_of"]), rows
+    except (OSError, ValueError, UnicodeError, RecursionError, AttributeError):
+        raise WorksheetError("register_unreadable") from None
+
+
+def _valid_day(value, as_of):
+    """A strict ISO civil date no later than the register as-of, else None (invalid text is never echoed)."""
+    try:
+        day = cmp._day(value)
+    except ValueError:
+        return None
+    return day if day <= as_of else None
+
+
+def _proposal(number, row, as_of):
+    clock, issues = row["deadline"], set(row["issues"])
+    start = _valid_day(row.get("request_date"), as_of)
+    received = submitted = None
+    basis = clock.get("basis")
+    field = {"recorded_receipt": "received_at", "submission_proxy": "submitted_at"}.get(basis)
+    # Only the issues of the field the proposal rests on can withhold it; the other field's issues stay listed, not blocking.
+    if start and field and not issues & {"request_date_in_future", "source_conflict:" + field, "invalid_date:" + field}:
+        received = start if basis == "recorded_receipt" else None
+        submitted = start if basis == "submission_proxy" else None
+    made = _valid_day(clock.get("determination_at"), as_of)
+    if made and (issues & {"invalid_date:determination_at", "determination_date_inconsistent", "source_conflict:determination_at"}
+                 or (start and made < start)):
+        made = None
+    claimed = clock.get("extension_recorded") is True and not issues & {"extension_unresolved", "source_conflict:extension"}
+    iso = lambda day: day.isoformat() if day else None  # noqa: E731
+    return {"register_source": {"artifact": REGISTER_NAME, "entry": number}, "received_on": iso(received),
+            "submitted_on": iso(submitted), "submitted_note": "submitted, receipt not recorded" if submitted else None,
+            "receipt_confirmed": None, "calendar_confirmed": None, "calendar_start": None, "calendar_end": None, "holidays": None,
+            "determination_state": "made" if made else "pending", "determination_on": iso(made),
+            "extension_claimed": True if claimed else None, "extension_days": 14 if claimed else None,
+            "extension_notice_on": None, "extension_notice_qualified": None, "applicability_confirmed": None,
+            "citations": [], "counterevidence": [], "register_issues": sorted(i for i in ISSUES if i in issues),
+            "hint": "proposal from the register only; custodian must confirm receipt, calendar and extension notice"}
+
+
 def build_requests(comparison_path, request_inventory):
-    """DF1117L-08 seam: the request inventory only in this unit (no timing fields, no mismatches)."""
-    return {"items": [{"agency_id": a, "request_id": r} for a, r in request_inventory], "mismatches": []}
+    """Exact (agency, request) joins to register rows become timing proposals; anything else is a listed mismatch."""
+    as_of, rows = _read_register(comparison_path)
+    index = {}
+    for number, row in enumerate(rows, 1):
+        index.setdefault((row["agency_key"], row.get("ledger_request_id") or row["request_id"]), []).append(number)
+    wanted, items, mismatches = set(request_inventory), [], []
+    for pair in sorted(index.keys() | wanted):
+        entries = index.get(pair, [])
+        ident = {"agency_id": pair[0] if ID.fullmatch(pair[0]) else None, "request_id": pair[1] if ID.fullmatch(pair[1]) else None}
+        if pair not in wanted:
+            mismatches.append({"kind": "register_only", **ident, "register_entries": entries})
+        elif not entries:
+            mismatches.append({"kind": "comparison_only", **ident, "register_entries": []})
+        elif len(entries) > 1:
+            mismatches.append({"kind": "ambiguous_register", **ident, "register_entries": entries})
+        else:
+            items.append({"agency_id": pair[0], "request_id": pair[1], **_proposal(entries[0], rows[entries[0] - 1], as_of)})
+    return {"items": items, "mismatches": mismatches}
 
 
 def _tool():

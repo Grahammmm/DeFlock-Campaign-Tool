@@ -17,6 +17,10 @@ from campaign_tool.records import cli, comparison_worksheet as ws
 from campaign_tool.records.outcomes import comparison as c
 from tests.flock.test_facts import snapshot
 from tests.flock.test_facts_review import ADDED, DOC, facts
+from tests.records.test_outcome_register import TODAY, data, request
+from campaign_tool.records.outcomes.register import build_register
+
+REG = ws.REGISTER_NAME
 
 REPO = Path(__file__).resolve().parents[2]
 TABLE = c.WORKSHEET_FIELDS
@@ -75,9 +79,31 @@ class WorksheetTest(unittest.TestCase):
                 self.assertEqual(facts.main(["review", "--store", str(self.store), "--agency", "Alpha", "--ids", ",".join(ids),
                                              "--set", to, "--reviewer", "ben"]), 0)
         agency = lambda aid, **kw: {"agency_id": aid, **kw}  # noqa: E731
-        report = c.compare([agency("alpha", requests=[{"request_id": "REQ-1"}]), agency("beta-no-facts")], run_id="syn-run", as_of="2026-04-30")
+        self.agency = agency
         self.comparison = self.dir / "comparison.json"
+        self.make([request("REQ-1", "alpha", "EXT-1")])
+
+    def make(self, reqs, inventory=None, mutate=None, extra=()):
+        """Write a real producer register (and a comparison whose inventory is `inventory`) beside each other."""
+        reg = data()
+        reg["agencies"] = [{"id": "alpha", "name": "Alpha PD"}, {"id": "beta", "name": "Beta PD"}]
+        reg["requests"] = list(reqs)
+        report = build_register(reg, list(extra), as_of=TODAY)
+        if mutate:
+            mutate(report)
+        (self.dir / REG).write_text(json.dumps(report))
+        inventory = [r["id"] for r in reqs if r["agency_id"] == "alpha"] if inventory is None else inventory
+        report = c.compare([self.agency("alpha", requests=[{"request_id": i} for i in inventory]), self.agency("beta-no-facts")],
+                           run_id="syn-run", as_of="2026-04-30")
         self.comparison.write_text(json.dumps(report))
+
+    def items(self, reqs, **kw):
+        self.make(reqs, **kw)
+        (self.out_dir / "worksheet.json").unlink(missing_ok=True)
+        code, _, err = self.run_cli()
+        self.assertEqual((code, err), (0, ""))
+        requests = json.loads((self.out_dir / "worksheet.json").read_text())["requests"]
+        return {i["request_id"]: i for i in requests["items"]}, requests["mismatches"]
 
     def run_cli(self, *extra, out=None, store=None, comparison=None):
         argv = ["records", "comparison-worksheet", "--comparison", str(comparison or self.comparison),
@@ -121,7 +147,7 @@ class WorksheetTest(unittest.TestCase):
     def test_worksheet_preserves_inventory_including_agency_without_facts_and_requests(self):
         doc = self.sheet()
         self.assertEqual((doc["schema"], doc["run_id"], doc["reviewer_role"], doc["review_date"]), (ws.SCHEMA, "syn-run", "", ""))
-        self.assertEqual(doc["requests"], {"items": [{"agency_id": "alpha", "request_id": "REQ-1"}], "mismatches": []})
+        self.assertEqual((doc["requests"]["mismatches"], [i["request_id"] for i in doc["requests"]["items"]]), ([], ["REQ-1"]))
         self.assertEqual([a["agency_id"] for a in doc["agencies"]], ["alpha", "beta-no-facts"])
         beta = doc["agencies"][1]
         self.assertEqual((set(beta["facts"]), beta["regulated_roles"], beta["jurisdiction"], beta["unmapped"]), (set(c.CRITERIA), [], None, []))
@@ -239,6 +265,109 @@ class WorksheetTest(unittest.TestCase):
         self.assertNotEqual(mutated, source)
         self.assertEqual(read_keys(mutated) - declared, {"novel_key"})
         self.assertTrue(all(reason for reason in ALLOWED.values()))
+
+    # DF1117L-08: request timing is proposed from the sibling register only; receipt/calendar/notice stay custodian-owned.
+    def test_proposes_recorded_receipt_and_points_to_register_row(self):
+        items, mismatches = self.items([request("r9", "beta", "X"), request("REQ-1", "alpha", "EXT-1", received_at="2030-01-03")])
+        item = items["REQ-1"]
+        self.assertEqual((item["received_on"], item["submitted_on"], item["submitted_note"]), ("2030-01-03", None, None))
+        self.assertEqual(mismatches, [{"kind": "register_only", "agency_id": "beta", "request_id": "r9", "register_entries": [2]}])
+        self.assertEqual(item["register_source"], {"artifact": REG, "entry": 1})  # canonical ledger id matched, not the external ref
+        self.assertEqual((item["calendar_start"], item["calendar_end"], item["holidays"], item["citations"]), (None, None, None, []))
+
+    def test_submission_proxy_is_labelled_not_receipt(self):
+        item = self.items([request("REQ-1", "alpha", "EXT-1")])[0]["REQ-1"]
+        self.assertEqual((item["received_on"], item["submitted_on"], item["submitted_note"]),
+                         (None, "2030-01-01", "submitted, receipt not recorded"))
+
+    def test_recorded_determination_is_made(self):
+        items = self.items([request("REQ-1", "alpha", "E1", determination_at="2030-01-04"),
+                            request("REQ-2", "alpha", "E2", determination_due_at="2030-01-09", production_at="2030-01-05")])[0]
+        self.assertEqual((items["REQ-1"]["determination_state"], items["REQ-1"]["determination_on"]), ("made", "2030-01-04"))
+        self.assertEqual((items["REQ-2"]["determination_state"], items["REQ-2"]["determination_on"]), ("pending", None))
+
+    def test_no_recorded_determination_is_pending(self):
+        item = self.items([request("REQ-1", "alpha", "E1", status="complete", production_at="2030-01-05")])[0]["REQ-1"]
+        self.assertEqual((item["determination_state"], item["determination_on"]), ("pending", None))
+
+    def test_only_recorded_extension_proposes_days(self):
+        reqs = [request(f"REQ-{n}", "alpha", f"E{n}", **kw) for n, kw in enumerate(
+            [{"extension": "yes"}, {"extension": "no"}, {"extension": "maybe"}, {"determination_due_at": "2030-01-25"}], 1)]
+        items = self.items(reqs)[0]
+        got = [(items[r["id"]]["extension_claimed"], items[r["id"]]["extension_days"]) for r in reqs]
+        self.assertEqual(got, [(True, 14), (None, None), (None, None), (None, None)])
+        self.assertEqual(items["REQ-3"]["register_issues"], ["extension_unresolved"])
+        self.assertEqual((items["REQ-1"]["extension_notice_on"], items["REQ-1"]["extension_notice_qualified"]), (None, None))
+
+    def test_invalid_register_dates_are_not_promoted(self):
+        proxy = self.items([request("REQ-1", "alpha", "E1", received_at="not-a-date")])[0]["REQ-1"]
+        self.assertEqual((proxy["received_on"], proxy["submitted_on"], proxy["register_issues"]), (None, "2030-01-01", ["invalid_date:received_at"]))
+
+        def corrupt(report):
+            report["requests"][0]["request_date"] = "garbage-date"
+            report["requests"][0]["deadline"]["determination_at"] = "2030-13-45"
+            report["requests"][1]["request_date"] = "2031-02-02"  # after register as-of
+            report["requests"][1]["deadline"]["determination_at"] = "2031-01-01"
+        items = self.items([request("REQ-1", "alpha", "E1", received_at="2030-01-03"), request("REQ-2", "alpha", "E2")], mutate=corrupt)[0]
+        for item in items.values():
+            self.assertEqual((item["received_on"], item["submitted_on"], item["determination_state"], item["determination_on"]),
+                             (None, None, "pending", None))
+        text = (self.out_dir / "worksheet.json").read_text()
+        self.assertTrue(all(raw not in text for raw in ("garbage-date", "2030-13-45", "2031-01-01", "2031-02-02", "not-a-date")))
+
+    # Contract: a date issue withholds a proposal only when it concerns the field that proposal rests on (receipt vs proxy).
+    # Bug caught: a malformed submitted_at dropping a valid recorded receipt, or an invalid received_at not stopping a receipt.
+    def test_date_issues_withhold_only_the_basis_they_concern(self):
+        # Real producer row: valid recorded receipt, malformed submitted_at (carries invalid_date:submitted_at).
+        item = self.items([request("REQ-1", "alpha", "E1", received_at="2030-01-03", submitted_at="not-a-date")])[0]["REQ-1"]
+        self.assertEqual((item["received_on"], item["submitted_on"], item["register_issues"]), ("2030-01-03", None, ["invalid_date:submitted_at"]))
+
+        def inject(report):
+            report["requests"][0]["issues"].append("invalid_date:received_at")  # receipt basis: its own issue withholds
+            report["requests"][1]["issues"].append("source_conflict:received_at")  # proxy basis: the receipt field is not its basis
+            report["requests"][2]["issues"].append("source_conflict:submitted_at")  # proxy basis: its own conflict withholds
+        items = self.items([request("REQ-1", "alpha", "E1", received_at="2030-01-03"), request("REQ-2", "alpha", "E2"),
+                            request("REQ-3", "alpha", "E3")], mutate=inject)[0]
+        self.assertEqual([(items[r]["received_on"], items[r]["submitted_on"]) for r in ("REQ-1", "REQ-2", "REQ-3")],
+                         [(None, None), (None, "2030-01-01"), (None, None)])
+
+    def test_inventory_mismatches_never_become_proposals(self):
+        def duplicate(report):
+            row = next(r for r in report["requests"] if r["ledger_request_id"] == "AMBIG")
+            report["requests"].append(dict(row))
+            report["request_count"] += 1
+        reqs = [request("REQ-1", "alpha", "SAME"), request("REG-ONLY", "alpha", "E2"), request("W1", "beta", "SAME"),
+                request("AMBIG", "alpha", "E4")]
+        items, mismatches = self.items(reqs, inventory=["REQ-1", "SAME", "AMBIG", "INV-ONLY", "W1"], mutate=duplicate)
+        self.assertEqual(sorted(items), ["REQ-1"])  # an external ref never stands in for a ledger id, nor a beta id for alpha
+        got = [(m["kind"], m["agency_id"], m["request_id"], m["register_entries"]) for m in mismatches]
+        self.assertEqual(got, [("ambiguous_register", "alpha", "AMBIG", [2, 5]), ("comparison_only", "alpha", "INV-ONLY", []),
+                               ("register_only", "alpha", "REG-ONLY", [1]), ("comparison_only", "alpha", "SAME", []),
+                               ("comparison_only", "alpha", "W1", []), ("register_only", "beta", "W1", [4])])
+        self.assertFalse(any("received_on" in m for m in mismatches))
+
+    def test_no_timing_proposal_confirms_or_qualifies(self):
+        reqs = [request("REQ-1", "alpha", "E1", received_at="2030-01-03", determination_at="2030-01-04", extension="yes"),
+                request("REQ-2", "alpha", "E2", received_at="bad")]
+        items = self.items(reqs)[0]
+        for item in items.values():
+            self.assertTrue(all(item[k] is None for k in ("receipt_confirmed", "calendar_confirmed", "extension_notice_qualified",
+                                                          "applicability_confirmed", "extension_notice_on", "calendar_start", "calendar_end", "holidays")))
+            self.assertEqual((item["citations"], item["counterevidence"]), ([], []))
+        before = snapshot(self.dir)
+        self.assertEqual(self.run_cli(out=self.out_dir / "second.json")[0], 0)
+        self.assertEqual({k: v for k, v in snapshot(self.dir).items() if not k.startswith("out/")}, {k: v for k, v in before.items() if not k.startswith("out/")})
+
+    def test_missing_or_misplaced_register_is_refused_before_output(self):
+        elsewhere = self.dir / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "comparison.json").write_text(self.comparison.read_text())
+        self.assertEqual(self.run_cli(comparison=elsewhere / "comparison.json"), (1, "", "comparison_worksheet_register_unreadable\n"))
+        (elsewhere / REG).symlink_to(self.dir / REG)
+        self.assertEqual(self.run_cli(comparison=elsewhere / "comparison.json")[2], "comparison_worksheet_register_unreadable\n")
+        (self.dir / REG).write_text('{"schema": "records-request-register-v1", "schema": "x", "requests": []}')
+        self.assertEqual(self.run_cli()[2], "comparison_worksheet_register_unreadable\n")
+        self.assertEqual(list(self.out_dir.iterdir()), [])
 
 
 if __name__ == "__main__":
