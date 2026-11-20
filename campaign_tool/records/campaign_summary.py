@@ -74,8 +74,11 @@ def _result(state, code=None, summary=None, exported_at=None, now=None):
         out.update(summary["counts"])
         out["unavailable"] = list(summary["unavailable"])
         when = None
-        if STAMP.fullmatch(exported_at or ""):
-            when = datetime.strptime(exported_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        if exported_at is not None and STAMP.fullmatch(exported_at):
+            try:
+                when = datetime.strptime(exported_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass  # A bad calendar date makes the time unknown, not the verified counts.
         if when is None or when > now:  # never clamp a future instant to a fresh export
             out["code"] = "RECORDS_EXPORT_TIME_UNAVAILABLE"
         else:
