@@ -2,8 +2,8 @@
 
 This guide is for an organizer starting the next agency after the Sheriff. It walks the
 agency-run commands in order: what each step is for, the command, the file it writes, and what a
-person must still decide. It is words only. Every command and option below was checked against
-`records <command> --help` on main commit `35788fa9da571b79dc19dfb2a34a08734d0fc904`.
+person must still decide. It is words only. The commands and options below were checked against
+the CLI on main commit `48bd7f46ade2268290abe5582ae53959dc3ab0e1`.
 
 Examples use symbolic labels (`PRIVATE_ROOT`, `AGENCY_DIR`, `AGENCY_KEY`). Substitute your own
 local paths **outside the checkout**. Use `python3 -m campaign_tool.records` for each command.
@@ -16,7 +16,7 @@ local paths **outside the checkout**. Use `python3 -m campaign_tool.records` for
   publishes a page, deploys, queues a draft for approval, approves or signs. Sends and
   publication stay G-approved human actions, taken outside this guide.
 - **Private inputs are never committed.** Keep the team list, the records root, the mail-store
-  receipts, the alias and allow files, the quote ledger, the draft mapping and every output
+  receipts, the alias and allow files, the log index, the quote ledger, the draft mapping and every output
   below in a private folder outside git. Do not paste their paths, names or contents into a pull
   request, an issue or a card.
 - **`skipped` means the check did not run** (an input it needs was not given or not found). It is
@@ -54,8 +54,28 @@ originals versus leads, and every skipped or refused path.
 It does not retrieve mail; give it receipts you already hold.
 
 ```
-python3 -m campaign_tool.records agency-events --receipts RECEIPTS --agency-aliases ALIASES --out EVENTS_OUT
+python3 -m campaign_tool.records agency-events --receipts RECEIPTS --agency-aliases EVENT_CONFIG --out EVENTS_OUT
 ```
+
+**Input shape:** `EVENT_CONFIG` is a UTF-8 JSON object, not a line-based alias list. Synthetic
+example (no request mappings):
+
+```json
+{
+  "agency": "Example Borough Records Office",
+  "agency_id": "example-borough",
+  "event_prefix": "EXB",
+  "aliases": ["Example Borough Records Office", "Example Records Office"],
+  "requests": {}
+}
+```
+
+All five fields are required: a nonblank agency name, a lowercase agency ID (letters, digits
+and hyphens, starting with a letter or digit), a 2–6 uppercase-letter event prefix, a nonempty
+array of aliases (3–80 characters each, with at least three ASCII letters or digits), and a
+`requests` object. For your private run, map each relevant mail subject request reference
+(two digits, a hyphen, then two to five digits) to its nonempty local request ID string. An
+empty mapping shows the shape but cannot classify receipts into request events.
 
 **Writes:** `events.tsv`, `manual-events.jsonl` and `unclassified.tsv` in `EVENTS_OUT`.
 Check a written file with `--validate FILE` (add `--json` for one JSON object).
@@ -107,14 +127,41 @@ withholding, and "not addressed" means only "not found in the text that was read
 **Purpose:** count other agencies' produced logs that name this agency as the searcher.
 
 ```
-python3 -m campaign_tool.records agency-cross-logs --index EVIDENCE_OUT/evidence-index.tsv --root PRIVATE_ROOT --aliases ALIASES [--ori ORI]
+python3 -m campaign_tool.records agency-cross-logs --index CROSS_LOG_INDEX --root PRIVATE_ROOT --aliases CROSS_LOG_ALIASES [--ori ORI]
 ```
+
+**Alias input:** `CROSS_LOG_ALIASES` is UTF-8 plain text, with one searcher name per line (not
+the step-2 JSON). Blank lines and lines starting with `#` after trimming whitespace are
+ignored. Include at least one alias, at most 120 characters per alias. Synthetic example:
+
+```text
+# Names as they appear in the searching-agency column
+Example Borough Records Office
+Example Records Office
+```
+
+**Build the log index:** Create `CROSS_LOG_INDEX` privately as a UTF-8 TSV with a single
+header, `path`, and one row per file. Inventory the logs produced by **all other agencies**
+in scope: check each production's file list against the local copies, including logs whose
+filenames and folders never mention the target agency. For every produced `.csv`, `.xlsx`
+or `.pdf` log you hold, put its slash-separated path relative to `PRIVATE_ROOT` in the TSV.
+Use regular files under that root, without absolute paths, `..` or symlinks. Reconcile the
+TSV to the inventory and note missing files and unsupported formats separately. Do not use
+step 1's index: it selects evidence by agency aliases in paths or mail metadata, not by the
+searcher named inside another agency's log.
+
+**Coverage:** The command reads only listed paths; it does not discover or fetch files. It
+checks CSVs and XLSX sheets with recognizable, unambiguous search-time and agency or ORI
+columns (XLSX requires `openpyxl`). It matches normalized agency names or the optional ORI
+code. PDFs are reported but not parsed. Unreadable or refused inputs and files or sheets
+that exceed the scan limits (100 MiB per file; two million nonblank rows per CSV or sheet)
+do not contribute to totals. The index itself is limited to 100 MiB. Check per-file and
+per-sheet statuses and the separate inventory gaps before interpreting a zero.
 
 **Writes:** no file. It prints counts, a Pacific date range, case fill and coverage to stdout;
 capture the output yourself if you want to keep it, in `AGENCY_DIR`.
 **A person still judges:** attribution, rows that look duplicated, unresolved rows and files that
-could not be read. PDF logs are listed as not parsed. A gap in coverage is `unknown`, never
-evidence of no searches.
+could not be read. A gap in coverage is `unknown`, never evidence of no searches.
 
 ## 7. Status: `agency-status`
 
