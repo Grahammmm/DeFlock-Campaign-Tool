@@ -90,6 +90,17 @@ class GOLiveStagesTests(unittest.TestCase):
         for stage in ("8", "9", "10"):
             self.assertEqual(rows[stage]["state"], "proven")
 
+    def test_full_list_unwritable_queue_is_stage_13_own_failure_not_proof(self):
+        # Contract (DF2222-02): on the full-list path the unwritable-queue code is stage 13's own failure. Fails if stage
+        # 13 reads proven with no warning although the queue write failed; stage 14 (clock) must stay independent.
+        unwritable = "OUTPUTS_APPROVAL_QUEUE_UNWRITABLE"
+        self.report(6, unwritable, needs=((unwritable, "outputs", "action"),))
+        rows = self.rows()
+        row = rows["13"]
+        self.assertEqual((row["state"], row["last_warning"], row["last_proven_run"], row["basis"]),
+                         ("not proven", unwritable, None, "full-list"))
+        self.assertEqual((rows["14"]["state"], rows["14"]["masked_by"]), ("proven", None))
+
     def test_since_keeps_old_proof_but_limits_warning_history(self):
         # Filtering the entire history would erase the last proof; sorting by filename reverses the history.
         proof = self.report(6, name="z-proof.json")
