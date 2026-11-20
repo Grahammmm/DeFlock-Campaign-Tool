@@ -185,7 +185,7 @@ def compile_sheet(doc, run_id, as_of, tool, store, inventory_agencies, pairs):
     for number, agency in enumerate(doc["agencies"], 1):
         where = {"agency": number}
         aid = agency.get("agency_id") if type(agency) is dict else None
-        if aid not in build.agencies:
+        if type(aid) is not str or aid not in build.agencies:
             raise Refused("unknown_agency", **where)
         if aid in sheets:
             raise Refused("duplicate_agency", **where)
@@ -206,7 +206,10 @@ def compile_sheet(doc, run_id, as_of, tool, store, inventory_agencies, pairs):
             if fact:
                 facts[name] = fact
         sheets[aid] = {"agency_id": aid, "jurisdiction": agency.get("jurisdiction"), "regulated_roles": roles, "facts": facts, "requests": []}
-    items, seen = (doc.get("requests") or {}).get("items", []), set()
+    block = doc.get("requests")
+    if block is not None and type(block) is not dict:
+        raise Refused("unknown_request_key")
+    items, seen = (block or {}).get("items", []), set()
     if type(items) is not list:
         raise Refused("unknown_request_key")
     for number, item in enumerate(items, 1):

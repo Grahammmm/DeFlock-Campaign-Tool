@@ -210,6 +210,11 @@ class CompileTest(unittest.TestCase):
                 self.refused(code, mutate)
                 self.setUp()
 
+    def test_refuses_unhashable_or_misshapen_containers_without_crashing(self):
+        self.refused("unknown_agency", lambda d: d["agencies"][0].update(agency_id=[]))
+        self.setUp()
+        self.refused("unknown_request_key", lambda d: d.update(requests=[{"agency_id": "alpha"}]))
+
     def test_request_timing_compiles_through_compare_and_unconfirmed_stays_unknown(self):
         proposal = {"register_source": {"entry": 1}, "register_issues": [], "hint": CANARY, "submitted_on": "2026-04-01"}
         confirmed = {"agency_id": "alpha", "request_id": "REQ-1", "received_on": "2026-04-01", "receipt_confirmed": True, "calendar_confirmed": True,
