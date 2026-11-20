@@ -89,6 +89,7 @@ COMMANDS = {
     "backup-check": ("records_backup", "check_main"),
     "campaign-readiness": ("campaign_readiness", "main"),
     "quiescence-audit": ("quiescence_audit", "main"),
+    "units-diff": ("units_diff", "main"),
 }
 
 

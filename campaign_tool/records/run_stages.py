@@ -92,6 +92,8 @@ import threading
 import time
 import traceback
 
+from . import run_report
+
 STAGES = ("sync", "delta", "adoption", "portal", "extract", "digest_gates", "outputs")
 GATED = ("catalog", "detect", "review", "compare", "privacy")
 MAX_EML_BYTES = 64 * 1024 * 1024
@@ -324,6 +326,15 @@ def _adoption_needs(report):
         ("ADOPTION_RECEIPT_GAPS", "blocking", receipt_gaps))
 
 
+def _gap_partition(res, report):
+    """Attach the coded-gap partition (DF1117L-05) to a classified delta/adoption result."""
+    from .mail_adoption import ACCEPTED_GAP_CODES
+    rows = run_report.gap_partition(report, ACCEPTED_GAP_CODES)
+    if rows is not None:
+        res["outcomes"] = rows
+    return res
+
+
 def stage_delta(args):
     code, report = adopt_mail(args, apply=False)
     if report is None or report.get("status") == "refused" or "receipts" not in report:
@@ -333,9 +344,9 @@ def stage_delta(args):
               "skipped": report.get("already_adopted", 0) + report.get("coded_gap_messages", 0),
               "failed": conflicts + unaccepted}
     if code not in (0, 3):
-        return result("fail", counts, "DELTA_FAILED", needs_g=items), 1
+        return _gap_partition(result("fail", counts, "DELTA_FAILED", needs_g=items), report), 1
     status, error = ("warn", "DELTA_BLOCKING_CONFLICTS") if code == 3 else ("ok", None)
-    return result(status, counts, error, needs_g=items), 0
+    return _gap_partition(result(status, counts, error, needs_g=items), report), 0
 
 
 # --- adoption backup --------------------------------------------------------
@@ -622,11 +633,11 @@ def stage_adoption(args):
     items += skip_items
     new_data = new_data or None
     if code == 3:
-        return result("fail", counts, "ADOPTION_BLOCKED", new_data=new_data, needs_g=items), 1
+        return _gap_partition(result("fail", counts, "ADOPTION_BLOCKED", new_data=new_data, needs_g=items), report), 1
     if code != 0:
-        return result("fail", counts, "ADOPTION_FAILED", new_data=new_data, needs_g=items), 1
+        return _gap_partition(result("fail", counts, "ADOPTION_FAILED", new_data=new_data, needs_g=items), report), 1
     status, error = ("warn", "ADOPTION_CODED_GAPS") if report.get("coded_gap_messages") else ("ok", None)
-    return result(status, counts, error, new_data=new_data, needs_g=items), 0
+    return _gap_partition(result(status, counts, error, new_data=new_data, needs_g=items), report), 0
 
 
 # --- portal -----------------------------------------------------------------

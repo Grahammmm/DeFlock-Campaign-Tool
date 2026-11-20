@@ -211,6 +211,21 @@ class CheckerTests(unittest.TestCase):
                 code = checker.main(argv)
             return code, out.getvalue()
 
+    def test_adoption_partition_does_not_change_extraction_criteria(self):
+        # Believable bug: GA_/GB_ gap codes in the aggregate trip "known outcome codes only" (P12).
+        report = copy.deepcopy(self.report)
+        stage = report['stages'][2]
+        stage['counts'].update(input=200, skipped=199)
+        code, before = self.invoke(report, self.baseline)
+        self.assertEqual(code, 0, before)
+        stage['outcomes'] = [dict(code='GA_ORIGINAL_SCOPE_UNRESOLVED', count=116), dict(code='GAP_NONE', count=84)]
+        run_report.validate_run_report(report)
+        self.assertEqual(run_report.adoption_gap_breakdown(stage)[0]['count'], 116)
+        self.assertEqual(self.invoke(report, self.baseline), (code, before))
+        # A non-partition code on the same stage is rejected as input (sync-stage unknown_outcome stays P12).
+        stage['outcomes'] = [dict(code='UNKNOWN_OUTCOME', count=200)]
+        self.assertNotEqual(self.invoke(report, self.baseline)[0], 0)
+
     def test_pass_and_fail_fixtures_each_new_criterion(self):
         prior = copy.deepcopy(self.report)
         for criterion, (mutation, value) in json.loads((FIXTURES / 't15-cases.json').read_text()).items():

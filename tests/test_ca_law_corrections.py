@@ -2,8 +2,10 @@
 import unittest
 from pathlib import Path
 from campaign_tool import law
+from campaign_tool.records import law_package_check
 
 ROOT = Path(__file__).resolve().parents[1]
+SECTION_34090_6 = "ca-gov-34090.6-routine-recordings-destruction"
 CPRA_2026 = "ca-gov-7922.535-determination-and-extension-2026"
 COMMENT = "ca-civ-1798.90.55-public-comment-before-implementation"
 
@@ -119,6 +121,33 @@ class CaliforniaCorrectionTests(unittest.TestCase):
         self.assertNotIn(guidance, selected("2023-10-26"))
         self.assertIn(guidance, selected("2023-10-27"))
         self.assertIn(COMMENT, selected("2016-01-01"))
+
+    def test_34090_6_is_one_draft_cross_reference(self):
+        # Contract: Gov. Code 34090.6 is carried once, sourced, quoted, draft and
+        # review-required, with the city/county and ALPR questions left open.
+        # Fails if the rule is absent, duplicated, loses its source date or note,
+        # or the package fails the structural checker.
+        checked, errors = law_package_check.check(ROOT / "jurisdictions" / "us-ca")
+        self.assertEqual(errors, [])
+        self.assertEqual(checked, self.package)
+        matches = [r for r in self.package["rules"] if "34090.6" in r["citation"]]
+        self.assertEqual([r["rule_id"] for r in matches], [SECTION_34090_6])
+        rule = matches[0]
+        self.assertEqual(rule["citation"], "Gov. Code § 34090.6")
+        self.assertEqual((rule["effective_from"], rule["effective_to"]), ("2010-01-01", None))
+        self.assertEqual(rule["review"], "needs_attorney_review")
+        self.assertEqual(self.package["status"], "draft")
+        self.assertEqual(len(rule["sources"]), 1)
+        source = rule["sources"][0]
+        self.assertEqual(source["url"], "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?lawCode=GOV&sectionNum=34090.6")
+        self.assertEqual(source["accessed"], "2026-11-19")
+        self.assertIn("Stats. 2009, Ch. 88", source["title"])
+        self.assertIn("the head of a department of a city or city and county, after one year, may destroy recordings of routine video monitoring", rule["duty"])
+        self.assertIn("preserved until pending litigation is resolved", rule["duty"])
+        notes = " ".join(rule["exceptions"])
+        for open_question in ("ordinary county agency", "any particular ALPR data", "routine video monitoring"):
+            self.assertIn(open_question, notes)
+        self.assertIn("no retention period or duty", rule["duty"])
 
     def test_draft_gates_and_canonical_bundled_bytes_are_preserved(self):
         self.assertEqual(self.package["status"], "draft")

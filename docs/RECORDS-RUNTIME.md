@@ -43,9 +43,21 @@ campaign or reuse development/production services. The runner container is a
 separate scheduler runtime; building it alone is not validation of full records
 intake.
 
+## Coded adoption gap breakdown (`stages[].outcomes` on delta and adoption)
+
+`delta` and `adoption` record which coded adoption gaps hold messages back, not only how many, in the existing run report v1
+`stages[].outcomes` field (and `outcomes` in the stage result); no schema version changed. Each `{code, count}` row is a wire code:
+`GA_<CODE>` (a gap code in `mail_adoption.ACCEPTED_GAP_CODES`, reported but not blocking), `GB_<CODE>` (blocking) with `<CODE>` the
+upper-cased adopter gap code, and `GAP_NONE` for the receipts with no coded gap (a count of receipts, not a success count). At most 32
+named codes are kept per stage (highest count, then code); the rest are summed into `GA_OTHER` and `GB_OTHER`. Positive counts only, so
+the rows sum to `counts.input`; the gap rows sum to the `ADOPTION_CODED_GAPS` item and the `GB_` rows to the `ADOPTION_UNACCEPTED_GAP`
+item. `run_report.adoption_gap_breakdown(stage)` returns `[{code, count, accepted}]`; `run_coverage`'s coded-gap count is its sum.
+`[]` is a measured stage with no input; a missing field means unavailable (older report or a gap payload that did not add up).
+Older validators accept the shape; an older standalone `run_report_check` can flag these codes as unknown outcomes until updated.
+
 ## Pipeline health watch
 
-`records pipeline-health --runtime-dir ABS --target NAME --root RECORDS_ROOT [--mail-store DIR] [--analysis-root DIR [--analysis-max-minutes 60]] [--console-export-root DIR] [--disk-warn-gib 100] [--disk-stop-gib 30] [--now ISO] [--json] [--record-alerts]`
+`records pipeline-health --runtime-dir ABS --target NAME --root RECORDS_ROOT [--mail-store DIR] [--analysis-root DIR [--analysis-max-minutes 60]] [--console-export-root DIR] [--disk-warn-gib 100] [--disk-stop-gib 30] [--outputs-streak 3] [--now ISO] [--json] [--record-alerts]`
 reads the existing state files and prints one line, `Run health: <state> - <reason>`, for the console, the run summary or a
 Telegram line elsewhere. It never runs, retries, restarts, notifies or clears anything, and reads no credentials. **This unit
 installs no timer or service**; wiring it to one is a separate deploy step. Exit codes: `ok` 0, `warn` 1, `unknown` 2, `stop` 3
@@ -76,6 +88,10 @@ are never touched; a symlinked or foreign-owned alert directory or file is refus
 | `disk_low` | warn | The `disk` check: free space (`os.statvfs` `f_bavail * f_frsize`) of the volume holding `--runtime-dir` or `--root` is below `--disk-warn-gib` (default 100). Each volume (by device) is read once; the report carries `free_gib` and `path_role` (`runtime` or `records_root`), never a path. Free space before the next 20 GB backup, then the run. |
 | `disk_critical` | stop | Free space is below `--disk-stop-gib` (default 30; must be lower than warn, both 1 to 10000, else exit 2 before anything is read). `disk_ok` is ok. Nothing is deleted or cleaned up. |
 | `disk_unreadable` | unknown | A volume could not be read (`path_role` names which; `free_gib` is null). It never hides a known low volume on the other root, and never clears an open alert. |
+| `outputs_degraded` | warn | The `outputs` check: the newest `--outputs-streak` (default 3, whole number 2 to 10, else exit 2 before anything is read) valid, non-future run reports in `reports/` all carry one `OUTPUTS_*` code. A report carries a code as the `outputs` stage's `error_code` or as a `needs_g` item whose `stage` is `outputs`; other stages and non-`OUTPUTS_` codes never count, and a report without the code ends the streak, whatever its overall status. A damaged or future file is neither a run nor a break, and `run-report.json` is not counted twice. The check carries `code` (the lexically first code common to every report in the window), `streak` (the window size) and `since` (when the oldest report finished); the line reads `outputs_degraded (CODE, N runs)`, also beside a stop. Check the named outputs sub-step in the run log. Nothing is retried or cleared. |
+| `outputs_history_short` | unknown | Fewer than `--outputs-streak` valid reports exist, so repeated outputs failures cannot be ruled out; never ok. `outputs_ok` (ok): some run in the window lacks any common code. The console oversight Stuck list shows the check whenever it is not ok. |
+
+The `outputs_degraded` alert file (`health-outputs-outputs_degraded.json`) adds only `code` and `streak` to the usual keys. `count` is the number of passes that saw the problem; `streak` is the window of runs that share the code, so they differ. Unknown history leaves the file open; a known break (`outputs_ok`) renames it to `.cleared.json`.
 
 Historical reports in `reports/` that finished after the assessment clock are ignored by the failure-streak and notify checks and by the oversight run table, so a future-dated success cannot reset a failure streak or suppress a notify alert; they count with the skipped reports. Limits are in `pipeline_health.LIMITS`. A machine-valid report is review-required, not semantic acceptance of the run.
 

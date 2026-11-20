@@ -81,7 +81,8 @@ class HostOfflineInboxTests(support.HostFixture):
         value = json.loads(self.profile.read_text())
         del value["mail_config"]
         value["input_mode"] = "inbox"
-        value["inbox"] = str(self.inbox) if bind else "/synthetic/inbox"
+        # The container destination is independent of the host scratch path.
+        value["inbox"] = "/synthetic/inbox"
         value["inbox_manifest_sha256"] = host.inbox_snapshot(self.inbox)["sha256"]
         value["mounts"] = [m for m in value["mounts"] if m["target"] != "/synthetic/mail.json"]
         value["mounts"].append({"kind": "bind" if bind else "volume",
@@ -140,7 +141,7 @@ class HostOfflineInboxTests(support.HostFixture):
         records = self.root / "fresh-records"
         records.mkdir(mode=0o700)
         self.assertEqual(list(records.iterdir()), [])
-        paths = dict(value, root=str(records), python=sys.executable,
+        paths = dict(value, root=str(records), inbox=str(self.inbox), python=sys.executable,
                      role="worker", job_id=support.sha("offline-real-entry")[:32])
         project = str(Path(__file__).resolve().parents[2])
         environment_profile = SimpleNamespace(value=dict(
