@@ -32,7 +32,8 @@ class ScanBoundTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="synthetic-scan-bound-")
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name) / "campaign"
+        # The CLI resolves its directory before the scan reader uses it.
+        self.root = Path(temporary.name).resolve() / "campaign"
         shutil.copytree(EXAMPLE, self.root, ignore=shutil.ignore_patterns("public"))
         self.scan = self.root / "kit" / "meetings.json"
         self.manual = self.root / "kit" / "meetings-manual.json"
@@ -147,7 +148,9 @@ class ScanBoundTests(unittest.TestCase):
                 "--source-url", BASE["source_url"], "--checked-on", BASE["checked_on"]]
         with self.grow_after_preflight(), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             try:
-                with mock.patch("sys.argv", ["campaign_tool", *argv]):
+                # Use the fixture's date so CLI validation reaches the scan even after the meeting has passed.
+                with mock.patch.object(mm, "date", wraps=date) as clock, mock.patch("sys.argv", ["campaign_tool", *argv]):
+                    clock.today.return_value = TODAY
                     code = cli.main()
             except SystemExit as exc:
                 code = exc.code
