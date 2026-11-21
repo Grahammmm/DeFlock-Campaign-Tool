@@ -290,6 +290,9 @@ def view(model, agency, now, *, detail_links=False):
                                  "asks": [{"ask_id": a["ask_id"], "tier": a["tier"], "tier_name": a["tier_name"],
                                            "state": a["state"], "text": a["text"]} for a in req["asks"]]})
     proposals = []
+    owners = {}  # item_id -> digest; an item_id seen twice is ambiguous and links nothing
+    for i in _items(model):
+        owners[i.get("item_id")] = None if i.get("item_id") in owners else i.get("original_sha256")
     for block in (model["proposals"].get("doc") or {}).get("agencies", []):
         if _key(model, block.get("agency_id")) == agency:
             for req in block.get("requests", []):
@@ -299,6 +302,10 @@ def view(model, agency, now, *, detail_links=False):
                                                             "review_bucket", "review_reasons")}
                                      | {"review_state": "review required" if p.get("review_required") else "unknown",
                                         "publishable": False})
+                    owner, page = owners.get(p.get("item_id")), p.get("page")
+                    if (detail_links and p.get("evidence_kind") == "document" and isinstance(owner, str) and _ri.is_hash(owner)
+                            and type(page) is int and page > 0):
+                        proposals[-1]["page_link"] = "/page?doc=%s&p=%d" % (owner[:12], page)
     rank = {"high": 0, "medium": 1, "low": 2}
     proposals.sort(key=lambda p: (rank.get(p["confidence"], 3), p["proposal_id"] or ""))
     return {"agency_id": agency, "items": items, "release_links": links, "dispositions": dispositions,
@@ -313,7 +320,7 @@ def sources(model):
 
 # ---- rendering ---------------------------------------------------------------------------------------
 
-def _table(headers, rows, caption, *, item_prefixes=None):
+def _table(headers, rows, caption, *, item_prefixes=None, page_links=None, page_col=3):
     if not rows:
         return "<p>None reported in this source.</p>"
     out = ["<table><caption>%s</caption><thead><tr>%s</tr></thead><tbody>" % (
@@ -322,6 +329,8 @@ def _table(headers, rows, caption, *, item_prefixes=None):
         cells = [esc("" if c is None else c) for c in row]
         if item_prefixes is not None and item_prefixes[idx] is not None:
             cells[1] = '<a href="/document?id=%s">%s</a>' % (esc(item_prefixes[idx]), cells[1] or "Document details")
+        if page_links is not None and page_links[idx] is not None:
+            cells[page_col] = '<a href="%s">%s</a>' % (esc(page_links[idx]), cells[page_col])
         out.append("<tr>" + "".join("<td>%s</td>" % cell for cell in cells) + "</tr>")
     return "".join(out) + "</tbody></table>"
 
@@ -353,7 +362,8 @@ def render_agency(v):
         [(p["confidence"], p["type"], p["request_id"], p["page"], p["quote"],
           json.dumps(p["policy_section"], sort_keys=True) if p["policy_section"] else "unavailable",
           p["review_state"] + (" (list)" if p["review_bucket"] == "review_list" else "") + ", not publishable",
-          p["question"]) for p in v["findings"]], "Proposals; a lead is a reason to ask, not evidence"))
+          p["question"]) for p in v["findings"]], "Proposals; a lead is a reason to ask, not evidence",
+        page_links=[p.get("page_link") for p in v["findings"]]))
     return "".join(out) + "</section>"
 
 
