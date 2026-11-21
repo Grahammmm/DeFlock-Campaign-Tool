@@ -116,23 +116,36 @@ def step(item):
     return STEPS.get(code, "review required")
 
 
-def _table(title, head, rows):
-    cells = "".join("<tr>%s</tr>" % "".join("<td>%s</td>" % esc(c) for c in row) for row in rows)
+def _table(title, head, rows, *, outcome_links=False):
+    def cell(index, value):
+        if outcome_links and index == 0:
+            query = urllib.parse.urlencode({"outcome": value})
+            return '<td><a href="/holds?%s">%s</a></td>' % (esc(query), esc(value))
+        return "<td>%s</td>" % esc(value)
+
+    cells = "".join("<tr>%s</tr>" % "".join(cell(n, c) for n, c in enumerate(row)) for row in rows)
     return ('<h2>%s</h2><div class="scroll"><table><thead><tr>%s</tr></thead><tbody>%s</tbody></table></div>'
             % (esc(title), "".join('<th scope="col">%s</th>' % esc(h) for h in head), cells))
 
 
-def render(doc):
+def render(doc, outcome=None):
     out = ["<h1>Held documents</h1>", "<p>%s. Counts are the listing captured at export time (the current listing on a "
            "live console); the release itself is an attended step outside this console.</p>" % esc(LABEL)]
+    if outcome is not None:
+        out.append('<p>Showing %s. <a href="/holds">Clear filter</a></p>' % esc(outcome))
     if doc.get("state") != "ok":
         out.append('<p role="status">holds: unavailable</p>')
     elif not doc["items"]:
         out.append('<p role="status">No held documents.</p>')
     else:
         out.append(_table("Totals", ("Outcome", "Held", "Detail codes"), [
-            (c, n, ", ".join("%s %d" % kv for kv in doc["detail_counts"][c].items())) for c, n in doc["counts"].items()]))
+            (c, n, ", ".join("%s %d" % kv for kv in doc["detail_counts"][c].items()))
+            for c, n in doc["counts"].items()], outcome_links=True))
+        if outcome is not None and outcome not in doc["counts"]:
+            out.append('<p role="status">No held documents for this outcome.</p>')
         for code in doc["counts"]:
+            if outcome is not None and code != outcome:
+                continue
             out.append(_table(code, ("Document", "Detail code", "Attempts", "Route", "Next step"),
                               [(i["sha256_prefix"], i["detail_code"], i["attempts"], i["route"] or "-", step(i))
                                for i in doc["items"] if i["code"] == code]))
@@ -141,12 +154,18 @@ def render(doc):
 
 
 def serve(handler):
-    """GET /holds (no query). True when the path is ours; there is no POST route."""
+    """GET /holds with an optional single held outcome. There is no POST route."""
     parts = urllib.parse.urlsplit(handler.path)
     if parts.path != "/holds":
         return False
-    if parts.query:
+    try:
+        query = urllib.parse.parse_qs(parts.query, keep_blank_values=True, strict_parsing=True, max_num_fields=1)
+    except ValueError:
         handler._fail(400)
         return True
-    handler._send(200, render(handler.options["source"].holds()))
+    outcome = query.get("outcome", [None])[0]
+    if query and outcome not in HELD:
+        handler._fail(400)
+        return True
+    handler._send(200, render(handler.options["source"].holds(), outcome))
     return True
