@@ -121,3 +121,5 @@ class ConsolePagesTests(Base):
                   '/calendar.ics', '/redactions', '/review', '/site-prs']
         # A primary-nav link served by a registered page (Timeline) is a route, not a reserved built-in path.
         self.assertEqual({urlsplit(path).path for path in inputs} - set(pages._ROUTES), pages.EXISTING_PATHS)
+        self.assertIn('/page', pages._ROUTES)  # the cited-page viewer is registered, with no navigation link
+        self.assertNotIn('/page', [path for _, path in pages.nav_links()])
