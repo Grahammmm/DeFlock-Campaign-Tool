@@ -49,7 +49,7 @@ class AnalysisPacketImportTests(unittest.TestCase):
         (self.path,) = outbox.outbox()  # the real builder's file
         self.name, self.data = self.path.name, self.path.read_bytes()
         self.body = json.loads(self.data)
-        self.run = self.body["packets"][0]["provenance"]["documents"][0]["run_id"]
+        self.run_id = self.body["packets"][0]["provenance"]["documents"][0]["run_id"]
         received = tri.ReceivedItemsTests("test_stage_artifact_modes_replay_conflict_and_no_coordinator_input")
         received.setUp()
         self.addCleanup(received.doCleanups)
@@ -60,10 +60,10 @@ class AnalysisPacketImportTests(unittest.TestCase):
         self.assertEqual(digest, outbox.digest)
         received.mail(digest, "2026-11-02T18:00:00Z")
         (received.processing / "runs").mkdir(mode=0o700)
-        (received.processing / "runs" / ("extract-%s.json" % self.run)).write_text(json.dumps(
-            {"schema": "records-extract-outcomes-v1", "run_id": self.run, "documents": []}))
+        (received.processing / "runs" / ("extract-%s.json" % self.run_id)).write_text(json.dumps(
+            {"schema": "records-extract-outcomes-v1", "run_id": self.run_id, "documents": []}))
         with contextlib.redirect_stdout(io.StringIO()):  # the real writer of received-items.json
-            self.assertEqual(run_stages.main(["outputs", "--project", str(received.project), "--run-id", self.run]), 0)
+            self.assertEqual(run_stages.main(["outputs", "--project", str(received.project), "--run-id", self.run_id]), 0)
         self.project, self.digest = received.project, digest
         self.journal = self.project / pp.JOURNAL
 
@@ -146,6 +146,32 @@ class AnalysisPacketImportTests(unittest.TestCase):
         body["agency_id"] = "agency-y"
         self.assertIn("IMPORT_IDENTITY_MISMATCH", self.run_main(rekey(body))[1])
         self.assertFalse(self.journal.exists())
+        self.assertEqual(pp.pending(self.project), [])
+
+    def test_received_items_header_must_match_without_writing_a_proposal(self):
+        def project_tree():
+            return {p: p.read_bytes() if p.is_file() else None for p in self.project.rglob("*")
+                    if p != self.project / ap.RECEIPT}
+
+        evidence = self.project / "run-outputs" / self.run_id / "outcomes" / "received-items.json"
+        produced = json.loads(evidence.read_bytes())
+        # Copying another run's report into this path must not work even when all item rows match.
+        for field, value in (("run_id", "run_20261102T000000Z_bbbbbbbb"), ("schema", "records-response-items-v1"),
+                             ("run_id", None), ("schema", None)):
+            with self.subTest(field=field, value=value):
+                report = dict(produced)
+                if value is None:
+                    del report[field]
+                else:
+                    report[field] = value
+                evidence.write_text(json.dumps(report))
+                before, seen = project_tree(), len(self.receipts())
+                code, out = self.run_main(self.edited(title=f"Finding for {field}: {value}"))
+                self.assertEqual(code, 0, out)
+                self.assertIn("IMPORT_DOCUMENT_UNKNOWN=1", out)
+                self.assertEqual([r["result"] for r in self.receipts()[seen:]], ["IMPORT_DOCUMENT_UNKNOWN"])
+                self.assertFalse(self.journal.exists())
+                self.assertEqual(project_tree(), before)
         self.assertEqual(pp.pending(self.project), [])
 
     def test_a_clean_refusal_is_a_recorded_outcome_with_exit_zero_and_no_event(self):
