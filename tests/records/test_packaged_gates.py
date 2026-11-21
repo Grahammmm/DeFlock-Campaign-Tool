@@ -78,6 +78,17 @@ class PackagedGateTests(unittest.TestCase):
             "author_declared_full": 1, "author_declared_partial": 1,
             "conflicting_coverage_declarations": 1})
 
+    def test_reconcile_rejects_malformed_key_points_in_full_digest(self):
+        inventory = [{"sha256": self.sha}]
+        digest = {"sha256": self.sha, "review_status": "full", "coverage": "page 1"}
+        # A truthy value is not enough: the digest must contain a list of text points.
+        for key_points in ("synthetic", {"point": "synthetic"}, [], ["synthetic", 1]):
+            with self.subTest(key_points=key_points):
+                summary, details = reconcile(inventory, [dict(digest, key_points=key_points)])
+                self.assertEqual(summary["coverage_states"], {"incomplete_digest": 1})
+                self.assertEqual(summary["intake_unique_hashes"], 1)
+                self.assertEqual(details[0]["analysis_state"], "incomplete_digest")
+
     def test_reconcile_cli_uses_configured_root(self):
         (self.root / "intake").mkdir()
         (self.root / "intake/all-agency-document-queue.jsonl").write_text(

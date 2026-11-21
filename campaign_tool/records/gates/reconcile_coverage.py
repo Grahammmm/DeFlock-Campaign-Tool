@@ -26,6 +26,12 @@ def rows(path):
                 yield item
 
 
+def _valid_key_points(points):
+    return isinstance(points, list) and bool(points) and all(
+        isinstance(point, str) for point in points
+    )
+
+
 def reconcile(intake, digests):
     inventory = {}
     for item in intake:
@@ -47,7 +53,10 @@ def reconcile(intake, digests):
     for sha, original in sorted(inventory.items()):
         analyses = by_hash.get(sha, [])
         statuses = {x.get("review_status", "not_reviewed") for x in analyses}
-        malformed = any(not x.get("coverage") or not x.get("key_points") for x in analyses)
+        malformed = any(
+            not x.get("coverage") or not _valid_key_points(x.get("key_points"))
+            for x in analyses
+        )
         if not analyses:
             state = "no_analyst_digest"
         elif malformed:
