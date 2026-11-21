@@ -10,6 +10,7 @@ stay unknown. No extraction, network, model calls, ledger writes or promotion.
 from datetime import date, datetime, timedelta
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -363,7 +364,13 @@ def _load_bytes(raw):
                     raise ValueError("duplicate_json_key")
                 result[key] = item
             return result
-        value = json.loads(raw, object_pairs_hook=unique)
+        def finite_float(literal):
+            number = float(literal)
+            if not math.isfinite(number):
+                raise ValueError("nonfinite_json_number")
+            return number
+        # Check both explicit constants and ordinary literals that overflow to infinity.
+        value = json.loads(raw, object_pairs_hook=unique, parse_float=finite_float, parse_constant=finite_float)
         if type(value) is not dict or value.get("schema") != INPUT_SCHEMA or type(value.get("agencies")) is not list:
             raise ValueError("input_schema")
         seen, request_ids = set(), set()
