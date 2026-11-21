@@ -24,8 +24,9 @@ class SnapshotTests(Base):
         with patch.object(schedule, "_runs", side_effect=PermissionError):
             current = self.assess(records_root=self.root / "inaccessible", schedule_snapshot_path=path)
         self.assertEqual(self.check(current, "schedule")["state"], "ok")
-        self.assertEqual([c for c in current["checks"] if c["check"] not in ("schedule", "disk")],
-                         [c for c in self.assess()["checks"] if c["check"] not in ("schedule", "disk")])
+        self.assertEqual([c for c in current["checks"] if c["check"] not in ("schedule", "disk", "release_links")],
+                         [c for c in self.assess()["checks"] if c["check"] not in ("schedule", "disk", "release_links")])
+        self.assertEqual(self.check(current, "release_links")["reason_code"], "release_links_unavailable")  # the register is not readable here
         # The inaccessible records root cannot be measured; that is unknown, never ok (and the roomy runtime volume does not hide it).
         disk = self.check(current, "disk")
         self.assertEqual((disk["state"], disk["reason_code"], disk["path_role"]), ("unknown", "disk_unreadable", "records_root"))

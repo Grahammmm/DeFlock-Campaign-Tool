@@ -16,10 +16,10 @@ import sys
 
 APPROVED_MANIFESTS = {
     'docs/records-gates-import.json': (
-        '79c496fcfcba8c46'  # pragma: allowlist secret
-        'a313e17d4e69caf6'  # pragma: allowlist secret
-        '3963ae7cf2de0ff1'  # pragma: allowlist secret
-        '1817d63755403fbb'  # pragma: allowlist secret
+        'eb95853ae2b9d0a1'  # pragma: allowlist secret
+        '4571ab59e0f43e9c'  # pragma: allowlist secret
+        '7d8e11a5a945e9b3'  # pragma: allowlist secret
+        '77bd2b7e0718a032'  # pragma: allowlist secret
     ),
     'docs/records-intake-import.json': (
         'f718a9c5ccc8f8ec'  # pragma: allowlist secret

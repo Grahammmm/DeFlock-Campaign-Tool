@@ -299,6 +299,7 @@ no files are created and no network is contacted. Add `--apply` to queue one
 **pending** `correspondence-draft` through the existing approval journal. This
 never approves, signs, places, sends, changes settings or starts a records run.
 Use a private input outside the engine repository; never commit real drafts.
+Before this step, see the [Agency-run guide](RECORDS-AGENCY-RUN.md).
 
 The input is exactly one UTF-8 JSON object (not an array or JSONL), schema
 `records-console-draft-input-v1`, with these exact keys:
@@ -468,6 +469,7 @@ never zero. Notify failure markers are counted separately as historical markers
 with resolution unknown. Even an empty alarm folder is not an all-clear: a stopped
 monitor cannot refresh it. The page neither creates nor clears an alarm.
 Rollback: revert the Automation page commit; existing Jobs/Oversight stay intact.
+For the policy comparison (`/comparison`, `/facts`) and how to qualify its input, see [RECORDS-POLICY-COMPARISON.md](RECORDS-POLICY-COMPARISON.md).
 
 `GET /jobs` (More: Jobs) is a read-only list of every scheduled job. The list is discovered from the unit files under
 `deploy/` (`*.timer`, `*.path`, `.in` templates included) plus any `--timer-unit`, so another geography with its own units
