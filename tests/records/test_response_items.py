@@ -72,6 +72,26 @@ class SplitTests(unittest.TestCase):
 
 
 class RatingTests(unittest.TestCase):
+    def test_response_line_breaks_keep_cues_and_quotes_on_their_own_line(self):
+        asked = "audit logs; vendor contracts"
+        quote = "Vendor\tcontracts are attached — see appendix."
+        # No punctuation after the audit-log mention: the line break alone
+        # stops the next line's answer cue from being attributed to it.
+        lines = ("", "  Audit logs under review", "", f" \t{quote}  Contact the clerk. ", "")
+        lf = run(asked, "\n".join(lines))
+        self.assertEqual([a["rating"] for a in lf], ["missing", "answered"])
+        self.assertEqual(lf[0]["flags"], ["mentioned_without_status"])
+        self.assertEqual(lf[0]["evidence"], [])
+        self.assertEqual(lf[1]["evidence"], [{"item_id": H1, "page": 1, "quote": quote}])
+        for sep in ("\r", "\r\n", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"):
+            with self.subTest(separator=repr(sep)):
+                page = sep.join(lines)
+                got = run(asked, page)
+                self.assertEqual(got, lf)
+                for ask in got:
+                    for entry in ask["evidence"]:
+                        self.assertIn(entry["quote"], page)
+
     def test_negation_and_no_records(self):
         self.assertEqual(run("audit logs", "We are not withholding the audit logs.")[0]["rating"], "missing")
         got = run("audit logs", "There are no responsive records for the audit logs.")[0]
@@ -115,8 +135,10 @@ class RatingTests(unittest.TestCase):
         self.assertEqual((got["rating"], "text_unreviewed" in got["flags"]), ("answered", True))
 
     def test_long_quote_is_clipped_and_flagged(self):
-        got = run("audit logs", "Audit logs attached " + "x" * 700 + ".")[0]
-        self.assertEqual((len(got["evidence"][0]["quote"]), "quote_truncated" in got["flags"]), (600, True))
+        sentence = "Audit logs attached " + "x" * 700 + "."
+        got = run("audit logs", "Appendix\r\n  " + sentence)[0]
+        self.assertEqual(got["evidence"][0]["quote"], sentence[:600])
+        self.assertIn("quote_truncated", got["flags"])
 
 
 class JoinTests(unittest.TestCase):

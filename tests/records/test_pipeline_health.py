@@ -105,6 +105,23 @@ class Base(unittest.TestCase):
         (self.target_dir / "reports" / (data["run_id"] + ".json")).write_text(text)
         if latest:
             (self.target_dir / "run-report.json").write_text(text)
+            self.write_links([], run_id=data["run_id"])  # a healthy project has a current, empty release-link register
+
+    def link(self, days, retrieval="pending", state="stated", **extra):
+        row = {"expiry_state": state, "expiry": {"date": (NOW + timedelta(days=days)).date().isoformat()} if state == "stated" else None,
+               "url_redacted": CANARY, "link_id": "CANARY-id"}
+        if retrieval is not None:
+            row["retrieval"] = {"state": retrieval, "reason": CANARY}
+        return dict(row, **extra)
+
+    def write_links(self, links, run_id=None, raw=None, **envelope):
+        """The newest run's release-links.json (production layout: project/run-outputs/<run>/outcomes)."""
+        run_id = run_id or json.loads((self.target_dir / "run-report.json").read_text())["run_id"]
+        folder = self.root / "run-outputs" / run_id / "outcomes"
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        body = dict({"schema": "records-release-links-v1", "run_id": run_id, "links": links}, **envelope)
+        (folder / "release-links.json").write_text(json.dumps(body) if raw is None else raw)
+        return folder / "release-links.json"
 
     def write_poll(self, updated):
         (self.store / "mail-poll" / "state.json").write_text(json.dumps({"updated_at": updated.isoformat()}))
@@ -314,6 +331,97 @@ class CheckTests(Base):
         self.assertEqual((report["state"], report["exit_code"]), ("unknown", 2))
         self.assertTrue(ph.status_line(report).startswith("Run health: UNKNOWN - "))
 
+    def release(self, now=NOW):
+        item = self.check(self.assess(now=now), "release_links")
+        return item["state"], item["reason_code"], {k: item[k] for k in ("expiring", "expired", "expiry_unknown", "retrieval_unknown", "earliest_date") if k in item}
+
+    def test_release_links_expiry_states_and_boundaries(self):
+        cases = [([], "ok", "release_links_ok", (0, 0, 0, 0, None)),
+                 ([self.link(8)], "ok", "release_links_ok", (0, 0, 0, 0, "2026-11-12")),
+                 ([self.link(7)], "warn", "release_links_expiring", (1, 0, 0, 0, "2026-11-11")),
+                 ([self.link(0, "refused")], "warn", "release_links_expiring", (1, 0, 0, 0, "2026-11-04")),
+                 ([self.link(-1, "not_in_portal")], "stop", "release_links_expired", (0, 1, 0, 0, "2026-11-03")),
+                 ([self.link(-30)], "stop", "release_links_expired", (0, 1, 0, 0, "2026-10-05")),
+                 ([self.link(-31)], "ok", "release_links_ok", (0, 0, 0, 0, "2026-10-04")),
+                 ([self.link(3, "retrieved"), self.link(-3, "retrieved")], "ok", "release_links_ok", (0, 0, 0, 0, None)),
+                 ([self.link(0, state="none_stated"), self.link(0, state="ambiguous"), self.link(0, state="unresolved")],
+                  "ok", "release_links_ok", (0, 0, 3, 0, None)),
+                 ([self.link(2, "unknown"), self.link(1, None)], "warn", "release_links_expiring", (2, 0, 0, 2, "2026-11-05")),
+                 ([self.link(2), self.link(-2, "pending")], "stop", "release_links_expired", (1, 1, 0, 0, "2026-11-02"))]
+        for links, state, reason, counts in cases:
+            with self.subTest(links=len(links), reason=reason, counts=counts):
+                self.write_links(links)
+                got = self.release()
+                self.assertEqual(got[:2], (state, reason))
+                self.assertEqual(tuple(got[2].values()), counts)
+        self.write_links([self.link(2)])
+        report = self.assess()
+        for text in (json.dumps(report), ph.status_line(report)):
+            self.assertNotIn("CANARY", text)
+            self.assertNotIn(str(self.base), text)
+        self.assertIn("release_links_expiring", ph.status_line(report))
+
+    def test_release_links_requires_current_valid_register(self):
+        run_id = json.loads((self.target_dir / "run-report.json").read_text())["run_id"]
+        good = self.link(2)
+        stale = self.root / "run-outputs" / "run_old"
+        stale.mkdir(mode=0o700, parents=True)
+        self.write_links([good], run_id="run_old")  # an alarming file of an older run is never evidence
+        bad = {"missing newest file": None, "other run in newest file": dict(run_id="run_old"),
+               "bad json": dict(raw="{nope"), "bad schema": dict(schema="records-release-links-v2"),
+               "links not a list": dict(links={}), "row not an object": dict(links=["x"]),
+               "unknown expiry state": dict(links=[self.link(2, state="soon")]),
+               "impossible date": dict(links=[{"expiry_state": "stated", "expiry": {"date": "2026-02-30"}}]),
+               "non-canonical date": dict(links=[{"expiry_state": "stated", "expiry": {"date": "2026-1-5"}}]),
+               "stated without date": dict(links=[{"expiry_state": "stated", "expiry": None}]),
+               "bad retrieval state": dict(links=[self.link(2, retrieval="maybe")]),
+               "retrieval not an object": dict(links=[dict(self.link(2), retrieval="pending")]),
+               "oversize": dict(raw=" " * (16 * 1024 * 1024 + 1))}
+        for name, change in bad.items():
+            with self.subTest(name):
+                target = self.root / "run-outputs" / run_id / "outcomes" / "release-links.json"
+                if target.exists():
+                    target.unlink()
+                if change is not None:
+                    self.write_links(**dict({"links": [good]}, **change))
+                self.assertEqual(self.release()[:2], ("unknown", "release_links_unavailable"))
+        with self.subTest("symlinked file and directory"):
+            elsewhere = self.base / "elsewhere.json"
+            real = self.write_links([good])
+            real.rename(elsewhere)
+            real.symlink_to(elsewhere)
+            self.assertEqual(self.release()[0], "unknown")
+            real.unlink()
+            os.link(elsewhere, real)
+            os.link(elsewhere, self.base / "second-link.json")
+            self.assertEqual(self.release()[0], "unknown")
+            real.unlink()
+            folder = real.parent
+            folder.rmdir()
+            (self.base / "outcomes-elsewhere").mkdir()
+            folder.symlink_to(self.base / "outcomes-elsewhere")
+            self.assertEqual(self.release()[0], "unknown")
+        with self.subTest("no valid latest run"):
+            (self.target_dir / "run-report.json").unlink()
+            self.assertEqual(self.check(self.assess(), "release_links")["state"], "unknown")
+
+    def test_release_links_rejects_symlinked_project_and_ancestor(self):
+        latest = json.loads((self.target_dir / "run-report.json").read_text())
+        self.write_links([])
+        # A valid register must not make health OK if reaching it follows a project symlink.
+        project_link = self.base / "project-link"
+        project_link.symlink_to(self.root, target_is_directory=True)
+        ancestor_link = self.base / "ancestor-link"
+        ancestor_link.symlink_to(self.base, target_is_directory=True)
+        for project in (project_link, ancestor_link / self.root.name):
+            for root in (project, project / "processing-v1"):
+                with self.subTest(root=root):
+                    result = ph._release_links(root, latest, NOW)
+                    self.assertEqual((result["state"], result["reason_code"]),
+                                     ("unknown", "release_links_unavailable"))
+        result = ph._release_links(self.root, latest, NOW)
+        self.assertEqual((result["state"], result["reason_code"]), ("ok", "release_links_ok"))
+
     def test_read_only_assess(self):
         self.write_stamp(NOW - timedelta(minutes=5))
 
@@ -456,6 +564,25 @@ class AlertTests(Base):
             path.write_text("{bad")
         ph.write_alerts(self.assess(), alerts)
         self.assertIn("health-arrival_backlog-arrival_not_consumed.json", os.listdir(alerts))
+
+    def test_release_links_alert_lifecycle(self):
+        alerts = self.target_dir / "alerts"
+        self.write_links([self.link(2, "pending")])
+        self.assertEqual(ph.write_alerts(self.assess(), alerts), 1)
+        name = "health-release_links-release_links_expiring.json"
+        self.assertEqual(os.listdir(alerts), [name])
+        data = json.loads((alerts / name).read_text())
+        self.assertEqual(sorted(data), ["check", "count", "first_seen", "last_seen", "reason_code", "schema", "state"])
+        self.write_links([self.link(-2, "pending")])
+        self.assertEqual(ph.write_alerts(self.assess(), alerts), 1)
+        self.assertEqual(sorted(os.listdir(alerts)), ["health-release_links-release_links_expired.json",
+                                                      "health-release_links-release_links_expiring.cleared.json"])
+        self.write_links([], raw="{bad")  # unknown keeps the open alert
+        ph.write_alerts(self.assess(), alerts)
+        self.assertIn("health-release_links-release_links_expired.json", os.listdir(alerts))
+        self.write_links([self.link(-2, "retrieved")])
+        self.assertEqual(ph.write_alerts(self.assess(), alerts), 0)
+        self.assertNotIn("health-release_links-release_links_expired.json", os.listdir(alerts))
 
     def test_outputs_alert_lifecycle(self):
         """Contract: the outputs alert opens, counts observations apart from the streak, stays open on unknown history,
