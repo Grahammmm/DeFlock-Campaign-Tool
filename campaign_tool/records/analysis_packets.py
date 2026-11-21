@@ -50,13 +50,16 @@ def _body(name, data):
 
 
 def _items(project, run, cache):
-    """The live project's received items of one run (read-only; written once per run); [] when absent or unreadable."""
+    """The live project's received items for this run; [] when evidence is absent, unreadable or mismatched."""
     if run not in cache:
+        cache[run] = []
         try:
             raw = pp._read(os.path.join(project, "run-outputs", run, "outcomes", "received-items.json"), 64 << 20) if ae.RUN.fullmatch(run) else None
-            cache[run] = [i for i in json.loads(raw.decode("utf-8"))["items"] if isinstance(i, dict)] if raw else []
+            report = json.loads(raw.decode("utf-8")) if raw else None
+            if isinstance(report, dict) and report.get("schema") == ri.SCHEMA and report.get("run_id") == run:
+                cache[run] = [i for i in report["items"] if isinstance(i, dict)]
         except (pp.PacketError, ValueError, UnicodeError, KeyError, TypeError):
-            cache[run] = []
+            pass
     return cache[run]
 
 

@@ -20,7 +20,7 @@ import re
 import stat
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import arrival, run_report, schedule, schedule_snapshot
@@ -31,6 +31,14 @@ LIMITS = {"arrival_max_minutes": 30, "mail_poll_warn_hours": 6, "mail_poll_stop_
           "failure_streak": 3, "report_window": 20, "analysis_max_minutes": 60, "export_grace_minutes": 15,
           "disk_warn_gib": 100, "disk_stop_gib": 30, "outputs_streak": 3}
 GIB = 1024 ** 3
+RELEASE_LINKS_SCHEMA = "records-release-links-v1"  # outcomes/release_links.py: schema, 16 MiB file and 20,000-link bounds
+RELEASE_LINKS_MAX_BYTES = 16 * 1024 * 1024
+RELEASE_LINKS_MAX = 20000
+RELEASE_WARN_DAYS, RELEASE_EXPIRED_DAYS = 7, 30
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+EXPIRY_STATES = frozenset({"stated", "none_stated", "ambiguous", "unresolved"})
+RETRIEVAL_STATES = frozenset({"retrieved", "pending", "refused", "not_in_portal", "unknown"})
 DISK_GIB_RANGE = (1, 10000)
 OUTPUTS_STREAK_RANGE = (2, 10)
 REPORT_NAME_RE = re.compile(r"^run_[0-9TZ]{16}_[0-9a-f]{8}\.json$")
@@ -364,6 +372,88 @@ def _console_export(export_root, latest, now, limits, *, pinned_run_id=None):
     return _check("console_export", "ok", "console_export_pending", finished)
 
 
+def _release_register(project, run_id):
+    """The newest run's release-links.json, read without following links; ValueError when absent or unsafe."""
+    fds = []
+    try:
+        project = Path(project).absolute()  # preserve lexical components; resolve() would follow symlinks
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        fd = os.open(project.anchor, flags)
+        fds.append(fd)
+        for part in (*project.parts[1:], "run-outputs", run_id, "outcomes"):
+            fd = os.open(part, flags, dir_fd=fd)
+            fds.append(fd)
+        fd = os.open("release-links.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=fd)
+        fds.append(fd)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > RELEASE_LINKS_MAX_BYTES:
+            raise ValueError("register_file")
+        with os.fdopen(os.dup(fd), "rb") as handle:
+            raw = handle.read(RELEASE_LINKS_MAX_BYTES + 1)
+    except OSError:
+        raise ValueError("register_unreadable") from None
+    finally:
+        for fd in fds:
+            os.close(fd)
+    if len(raw) > RELEASE_LINKS_MAX_BYTES:
+        raise ValueError("register_file")
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, RecursionError):
+        raise ValueError("register_json") from None
+    if (type(data) is not dict or data.get("schema") != RELEASE_LINKS_SCHEMA or data.get("run_id") != run_id
+            or type(data.get("links")) is not list or len(data["links"]) > RELEASE_LINKS_MAX):
+        raise ValueError("register_invalid")
+    return data["links"]
+
+
+def _release_row(link):
+    """(retrieval state, stated expiry date or None) of one validated row; ValueError when a field we use is bad."""
+    if type(link) is not dict or link.get("expiry_state") not in EXPIRY_STATES:
+        raise ValueError("row")
+    retrieval = link["retrieval"] if "retrieval" in link else {"state": "unknown"}
+    if type(retrieval) is not dict or retrieval.get("state") not in RETRIEVAL_STATES:
+        raise ValueError("retrieval")
+    stated = None
+    if link["expiry_state"] == "stated":
+        expiry = link.get("expiry")
+        text = expiry.get("date") if type(expiry) is dict else None
+        if type(text) is not str or not DATE_RE.match(text):
+            raise ValueError("date")
+        stated = date.fromisoformat(text)  # ValueError for an impossible day
+        if stated.isoformat() != text:
+            raise ValueError("date")
+    return retrieval["state"], stated
+
+
+def _release_links(records_root, latest, now):
+    """Warn or stop on links whose records are not retrieved and whose stated expiry is near or just past.
+
+    Reads only the newest run's register; any missing, unsafe, invalid or other-run evidence is unknown, never ok.
+    Reports counts and the earliest stated date only: no URL, path, id or row."""
+    unavailable = _check("release_links", "unknown", "release_links_unavailable")
+    if latest is None or not isinstance(latest.get("run_id"), str) or not RUN_ID_RE.match(latest["run_id"]):
+        return unavailable
+    root = Path(records_root)
+    project = root.parent if root.name == "processing-v1" else root
+    try:
+        rows = [_release_row(link) for link in _release_register(project, latest["run_id"])]
+    except (ValueError, TypeError, OSError):
+        return unavailable
+    today = now.astimezone(timezone.utc).date()
+    open_rows = [(state, when) for state, when in rows if state != "retrieved"]
+    offsets = [(when - today).days for _, when in open_rows if when is not None]
+    expiring = sum(0 <= days <= RELEASE_WARN_DAYS for days in offsets)
+    expired = sum(-RELEASE_EXPIRED_DAYS <= days < 0 for days in offsets)
+    dates = [when for _, when in open_rows if when is not None]
+    extra = {"expiring": expiring, "expired": expired, "expiry_unknown": sum(when is None for _, when in open_rows),
+             "retrieval_unknown": sum(state == "unknown" for state, _ in open_rows),
+             "earliest_date": min(dates).isoformat() if dates else None}
+    state, reason = (("stop", "release_links_expired") if expired else ("warn", "release_links_expiring") if expiring
+                     else ("ok", "release_links_ok"))
+    return _check("release_links", state, reason, **extra)
+
+
 def _disk(runtime_dir, records_root, limits):
     """Free space (``f_bavail * f_frsize``, what a non-root writer can use) of the runtime and records volumes.
 
@@ -406,7 +496,8 @@ def assess(*, runtime_dir, target, records_root, mail_store=None, now=None, limi
     last_run, latest = _last_run(target_dir, now, limits, spec)
     checks = [backlog, _mail_poll(mail_store, now, limits), last_run, _run_failures(target_dir, latest, limits, now),
               _outputs(target_dir, limits, now), _notify(target_dir, limits, now), _schedule(records_root, now, spec, schedule_snapshot_path), _analysis(analysis_root, now, limits),
-              _console_export(console_export_root, latest, now, limits, pinned_run_id=pinned_export_run_id)]
+              _console_export(console_export_root, latest, now, limits, pinned_run_id=pinned_export_run_id),
+              _release_links(records_root, latest, now)]
     if check_disk:
         checks.append(_disk(runtime_dir, records_root, limits))
     states = {item["state"] for item in checks if item["reason_code"] not in NOT_CONFIGURED}
